@@ -19,6 +19,7 @@ from .explorer import ExplorerParams, Goal, GoalSelector
 from .frontier import FrontierCluster, detect_frontiers
 from .geodesic import geodesic_distance, geodesic_nearest_cell
 from .grid import FREE, OCCUPIED, UNKNOWN, GridMap
+from .state_machine import Command, ExplorerStateMachine, Phase
 from .projector import (
     CameraIntrinsics,
     DepthEncodingError,
@@ -46,4 +47,6 @@ __all__ = [
     # anomaly
     "FallAssessment", "torso_tilt_from_vertical", "assess_fall_from_keypoints_3d",
     "bbox_aspect_is_fallen", "midpoints_from_keypoints_2d",
+    # state machine
+    "ExplorerStateMachine", "Phase", "Command",
 ]
