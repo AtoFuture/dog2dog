@@ -1,0 +1,518 @@
+<title>机器狗自主侦查计划</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap">
+
+<style>
+/* ── tokens ─────────────────────────────────────────────── */
+:root{
+  --ground:#F4F6F6;
+  --surface:#FFFFFF;
+  --sunken:#EAEEEE;
+  --line:#DBE0E0;
+  --line-2:#C2CACA;
+  --ink:#141A1E;
+  --ink-2:#3C464D;
+  --muted:#68737B;
+  --accent:#B45309;
+  --t1:#0F766E;  --t1-tint:#0F766E12;  --t1-edge:#0F766E3D;
+  --t2:#4338CA;  --t2-tint:#4338CA12;  --t2-edge:#4338CA3D;
+  --t3:#46566A;  --t3-tint:#46566A12;  --t3-edge:#46566A3D;
+  --warn:#9A3412; --warn-tint:#9A341212; --warn-edge:#9A34123D;
+  --sans:'Noto Sans SC',-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#0E1316; --surface:#161C20; --sunken:#1C2429;
+    --line:#28323A; --line-2:#3B474F;
+    --ink:#E9EDEF; --ink-2:#C0C9CF; --muted:#8C99A2;
+    --accent:#FBBF24;
+    --t1:#5EEAD4; --t1-tint:#5EEAD41A; --t1-edge:#5EEAD440;
+    --t2:#A5B4FC; --t2-tint:#A5B4FC1A; --t2-edge:#A5B4FC40;
+    --t3:#94A3B8; --t3-tint:#94A3B81A; --t3-edge:#94A3B840;
+    --warn:#FB923C; --warn-tint:#FB923C1A; --warn-edge:#FB923C40;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0E1316; --surface:#161C20; --sunken:#1C2429;
+  --line:#28323A; --line-2:#3B474F;
+  --ink:#E9EDEF; --ink-2:#C0C9CF; --muted:#8C99A2;
+  --accent:#FBBF24;
+  --t1:#5EEAD4; --t1-tint:#5EEAD41A; --t1-edge:#5EEAD440;
+  --t2:#A5B4FC; --t2-tint:#A5B4FC1A; --t2-edge:#A5B4FC40;
+  --t3:#94A3B8; --t3-tint:#94A3B81A; --t3-edge:#94A3B840;
+  --warn:#FB923C; --warn-tint:#FB923C1A; --warn-edge:#FB923C40;
+}
+
+/* ── base ───────────────────────────────────────────────── */
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:var(--sans); font-size:15px; line-height:1.7;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{
+  max-width:1000px; margin:0 auto;
+  padding-block:40px 72px; padding-inline:clamp(16px,4vw,32px);
+  display:flex; flex-direction:column; gap:52px;
+}
+h1,h2,h3{margin:0; text-wrap:balance; line-height:1.25}
+p{margin:0}
+ul{margin:0; padding:0; list-style:none}
+strong{font-weight:700}
+.mono{font-family:var(--mono); font-variant-numeric:tabular-nums}
+
+.eyebrow{
+  font-family:var(--mono); font-size:11px; font-weight:500;
+  letter-spacing:.14em; text-transform:uppercase; color:var(--accent);
+}
+h2{
+  font-size:19px; font-weight:700; letter-spacing:-.01em;
+  padding-bottom:10px; border-bottom:1px solid var(--line-2);
+}
+.sec{display:flex; flex-direction:column; gap:20px}
+.note{color:var(--muted); font-size:13.5px; max-width:62ch}
+
+/* ── masthead ───────────────────────────────────────────── */
+.mast{display:flex; flex-direction:column; gap:18px}
+.mast h1{font-size:clamp(30px,6vw,44px); font-weight:900; letter-spacing:-.025em}
+.lede{font-size:16px; color:var(--ink-2); max-width:44ch}
+.facts{
+  display:flex; flex-wrap:wrap; gap:0;
+  border:1px solid var(--line); border-radius:3px; overflow:hidden;
+  background:var(--surface);
+}
+.fact{
+  flex:1 1 132px; padding:12px 16px;
+  border-right:1px solid var(--line); display:flex; flex-direction:column; gap:3px;
+}
+.fact:last-child{border-right:0}
+.fact dt{font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted)}
+.fact dd{margin:0; font-size:14.5px; font-weight:500}
+
+/* ── filter ─────────────────────────────────────────────── */
+.filter{display:flex; flex-wrap:wrap; gap:8px; align-items:center}
+.filter .lbl{font-family:var(--mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); margin-right:4px}
+.fbtn{
+  font-family:var(--mono); font-size:12px; font-weight:500;
+  padding:6px 13px; border-radius:999px; cursor:pointer;
+  border:1px solid var(--line-2); background:var(--surface); color:var(--ink-2);
+  transition:background .15s, color .15s, border-color .15s;
+}
+.fbtn:hover{border-color:var(--ink-2); color:var(--ink)}
+.fbtn:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+.fbtn[aria-pressed="true"]{background:var(--ink); color:var(--ground); border-color:var(--ink)}
+
+/* ── team cards ─────────────────────────────────────────── */
+.teams{display:grid; grid-template-columns:repeat(auto-fit,minmax(268px,1fr)); gap:14px}
+.team{
+  background:var(--surface); border:1px solid var(--line);
+  border-top:3px solid var(--tc); border-radius:3px;
+  padding:20px 20px 22px; display:flex; flex-direction:column; gap:14px;
+  transition:opacity .2s, box-shadow .2s;
+}
+.team[data-team="g1"]{--tc:var(--t1); --tt:var(--t1-tint); --te:var(--t1-edge)}
+.team[data-team="g2"]{--tc:var(--t2); --tt:var(--t2-tint); --te:var(--t2-edge)}
+.team[data-team="g3"]{--tc:var(--t3); --tt:var(--t3-tint); --te:var(--t3-edge)}
+.t-id{font-family:var(--mono); font-size:11px; letter-spacing:.12em; color:var(--tc); font-weight:600}
+.team h3{font-size:17px; font-weight:700}
+.t-tag{font-size:13px; color:var(--muted); margin-top:-8px}
+.t-duties{display:flex; flex-direction:column; gap:7px; font-size:13.5px; color:var(--ink-2)}
+.t-duties li{padding-left:15px; position:relative}
+.t-duties li::before{
+  content:""; position:absolute; left:0; top:.62em;
+  width:6px; height:1px; background:var(--tc);
+}
+.t-out{
+  font-size:12.5px; background:var(--tt); border:1px solid var(--te);
+  border-radius:2px; padding:9px 11px; color:var(--ink-2);
+}
+.t-out b{color:var(--tc); font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; display:block; margin-bottom:3px}
+.t-flag{
+  font-family:var(--mono); font-size:11px; color:var(--warn);
+  display:flex; align-items:baseline; gap:6px;
+}
+
+/* ── interfaces ─────────────────────────────────────────── */
+.ifaces{display:flex; flex-direction:column; gap:0; border:1px solid var(--line); border-radius:3px; overflow:hidden; background:var(--surface)}
+.iface{
+  display:grid; grid-template-columns:auto 1fr; gap:0 18px;
+  padding:15px 18px; border-bottom:1px solid var(--line);
+  transition:opacity .2s, background .2s;
+}
+.iface:last-child{border-bottom:0}
+.if-n{font-family:var(--mono); font-size:12px; font-weight:600; color:var(--accent); padding-top:2px}
+.if-body{display:flex; flex-direction:column; gap:5px}
+.if-flow{font-family:var(--mono); font-size:11.5px; color:var(--muted); letter-spacing:.02em}
+.if-title{font-size:14.5px; font-weight:700}
+.if-desc{font-size:13px; color:var(--ink-2)}
+
+/* ── gantt ──────────────────────────────────────────────── */
+.gantt-box{border:1px solid var(--line); border-radius:3px; background:var(--surface); overflow-x:auto}
+.gantt{--lw:172px; min-width:calc(var(--lw) + 16*30px); padding:18px 20px 20px}
+.grow,.ghead{display:grid; grid-template-columns:var(--lw) 1fr; align-items:center; gap:14px}
+.ghead{margin-bottom:9px}
+.gweeks{display:grid; grid-template-columns:repeat(16,1fr)}
+.gweeks span{font-family:var(--mono); font-size:10px; color:var(--muted); text-align:center}
+.glabel{font-size:12.5px; color:var(--ink-2); line-height:1.35}
+.glabel i{font-style:normal; font-family:var(--mono); font-size:9.5px; color:var(--tc,var(--muted)); margin-right:5px; letter-spacing:.08em}
+.grow{padding:3.5px 0; transition:opacity .2s}
+.gtrack{
+  position:relative; height:17px; display:grid; grid-template-columns:repeat(16,1fr);
+  background-image:linear-gradient(to right,var(--line) 0 1px,transparent 1px);
+  background-size:calc(100% / 16) 100%;
+}
+.gtrack::after{content:""; position:absolute; inset:0; border-right:1px solid var(--line)}
+.gbar{grid-row:1; grid-column:var(--s)/calc(var(--e) + 1); border-radius:2px; align-self:stretch;
+  background:var(--tc); opacity:.82}
+.gbar.ms{background:repeating-linear-gradient(135deg,var(--tc) 0 4px,transparent 4px 8px); opacity:.5; border:1px solid var(--tc)}
+.grow[data-team="g1"]{--tc:var(--t1)}
+.grow[data-team="g2"]{--tc:var(--t2)}
+.grow[data-team="g3"]{--tc:var(--t3)}
+.grow[data-team="all"]{--tc:var(--accent)}
+.ggap{height:9px}
+.gkey{display:flex; flex-wrap:wrap; gap:18px; margin-top:16px; padding-top:14px; border-top:1px solid var(--line); font-size:12px; color:var(--muted)}
+.gkey span{display:flex; align-items:center; gap:7px}
+.gkey i{width:22px; height:9px; border-radius:2px; display:block}
+
+/* ── tables ─────────────────────────────────────────────── */
+.tbox{border:1px solid var(--line); border-radius:3px; background:var(--surface); overflow-x:auto}
+table{width:100%; border-collapse:collapse; font-size:13.5px; min-width:520px}
+th,td{text-align:left; padding:11px 16px; border-bottom:1px solid var(--line); vertical-align:top}
+th{
+  font-family:var(--mono); font-size:10.5px; font-weight:600;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--muted);
+  background:var(--sunken); white-space:nowrap;
+}
+tbody tr:last-child td{border-bottom:0}
+td.mono{font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:12.5px}
+td b{font-weight:700}
+
+/* ── risks ──────────────────────────────────────────────── */
+.risks{display:flex; flex-direction:column; gap:9px}
+.risk{
+  display:grid; grid-template-columns:auto 1fr; gap:14px; align-items:start;
+  background:var(--surface); border:1px solid var(--line); border-left:3px solid var(--rc,var(--line-2));
+  border-radius:3px; padding:14px 18px;
+}
+.risk[data-lv="hi"]{--rc:var(--warn)}
+.risk[data-lv="mid"]{--rc:var(--accent)}
+.r-lv{font-family:var(--mono); font-size:10px; font-weight:600; letter-spacing:.1em; color:var(--rc); padding-top:4px; white-space:nowrap}
+.r-body{display:flex; flex-direction:column; gap:4px}
+.r-title{font-weight:700; font-size:14.5px}
+.r-text{font-size:13px; color:var(--ink-2)}
+.r-text b{font-family:var(--mono); font-size:11px; letter-spacing:.06em; color:var(--rc); font-weight:600}
+
+/* ── misc ───────────────────────────────────────────────── */
+.split{display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:14px}
+.card{background:var(--surface); border:1px solid var(--line); border-radius:3px; padding:18px 20px; display:flex; flex-direction:column; gap:10px}
+.card h3{font-size:14.5px}
+.card ul{display:flex; flex-direction:column; gap:6px; font-size:13px; color:var(--ink-2)}
+.card li{padding-left:15px; position:relative}
+.card li::before{content:""; position:absolute; left:0; top:.62em; width:6px; height:1px; background:var(--accent)}
+.foot{font-family:var(--mono); font-size:11px; color:var(--muted); border-top:1px solid var(--line); padding-top:16px; letter-spacing:.03em}
+
+/* ── focus dimming ──────────────────────────────────────── */
+:root[data-focus="g1"] .team:not([data-team="g1"]),
+:root[data-focus="g2"] .team:not([data-team="g2"]),
+:root[data-focus="g3"] .team:not([data-team="g3"]),
+:root[data-focus="g1"] .grow:not([data-team="g1"]):not([data-team="all"]),
+:root[data-focus="g2"] .grow:not([data-team="g2"]):not([data-team="all"]),
+:root[data-focus="g3"] .grow:not([data-team="g3"]):not([data-team="all"]),
+:root[data-focus="g1"] .iface:not([data-team="g1"]),
+:root[data-focus="g2"] .iface:not([data-team="g2"]),
+:root[data-focus="g3"] .iface:not([data-team="g3"]){opacity:.24}
+
+@media (max-width:560px){
+  .wrap{gap:40px; padding-block:28px 56px}
+  .iface{grid-template-columns:1fr; gap:6px}
+  .risk{grid-template-columns:1fr; gap:6px}
+  .r-lv{padding-top:0}
+}
+@media (prefers-reduced-motion:reduce){
+  *{transition:none!important; animation:none!important}
+}
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <div class="eyebrow">课题 12 · 创新实践</div>
+    <h1>机器狗自主侦查计划</h1>
+    <p class="lede">课题 12 实施方案：三组分工、接口契约、十六周排期。先在仿真里跑通，再上真机。</p>
+    <dl class="facts">
+      <div class="fact"><dt>人员</dt><dd>6 人 / 3 组</dd></div>
+      <div class="fact"><dt>周期</dt><dd>16 周</dd></div>
+      <div class="fact"><dt>算力</dt><dd>CPU 为主，不占共享卡</dd></div>
+      <div class="fact"><dt>硬件</dt><dd>宇树 Go2 + 测试场地</dd></div>
+    </dl>
+  </header>
+
+  <section class="sec">
+    <h2>分工</h2>
+    <div class="filter" role="group" aria-label="只看某一组">
+      <span class="lbl">只看</span>
+      <button class="fbtn" data-f="all" aria-pressed="true">全部</button>
+      <button class="fbtn" data-f="g1" aria-pressed="false">建图导航</button>
+      <button class="fbtn" data-f="g2" aria-pressed="false">视觉探索</button>
+      <button class="fbtn" data-f="g3" aria-pressed="false">集成评测</button>
+    </div>
+
+    <div class="teams">
+      <article class="team" data-team="g1">
+        <div class="t-id">GROUP 01</div>
+        <h3>建图导航</h3>
+        <p class="t-tag">仿真环境 · SLAM · Nav2</p>
+        <ul class="t-duties">
+          <li>Gazebo 场景、Go2 模型、传感器配置、批量测试脚本</li>
+          <li>RTAB-Map 集成、IMU 与腿式里程计 EKF 融合、外参标定</li>
+          <li>Nav2 配置、costmap、路径规划、动态避障</li>
+        </ul>
+        <div class="t-out"><b>交付</b>仿真环境 · 地图与定位 · 可执行的导航栈</div>
+        <div class="t-flag">▲ 最先动工；SLAM 与导航同组，别拆</div>
+      </article>
+
+      <article class="team" data-team="g2">
+        <div class="t-id">GROUP 02</div>
+        <h3>视觉探索</h3>
+        <p class="t-tag">目标检测 · 探索决策</p>
+        <ul class="t-duties">
+          <li>YOLO 部署、目标三维坐标解算</li>
+          <li>frontier 探索与信息增益：决定下一个去哪</li>
+          <li>异常识别：人员倒地、设备冒烟</li>
+        </ul>
+        <div class="t-out"><b>交付</b>目标检测消息 · 探索目标点</div>
+        <div class="t-flag">▲ 只决定「去哪」，不碰怎么走</div>
+      </article>
+
+      <article class="team" data-team="g3">
+        <div class="t-id">GROUP 03</div>
+        <h3>集成评测</h3>
+        <p class="t-tag">真机通信 · 系统集成 · 指标评测</p>
+        <ul class="t-duties">
+          <li>unitree_ros2 / unitree_sdk2 打通、DDS 通信、状态机</li>
+          <li>低电量返航、安全策略</li>
+          <li>覆盖率与检出率指标、可视化、演示录制</li>
+        </ul>
+        <div class="t-out"><b>交付</b>真机运行 · 指标报告 · 演示视频</div>
+        <div class="t-flag">▲ 最先动工，DDS 链路风险最高</div>
+      </article>
+    </div>
+  </section>
+
+  <section class="sec">
+    <h2>接口契约</h2>
+    <p class="note">三组能并行的前提是接口先冻结。下面四条在第一周就要定死，之后只加字段不改语义。</p>
+    <div class="ifaces">
+      <div class="iface" data-team="g1">
+        <div class="if-n">01</div>
+        <div class="if-body">
+          <div class="if-flow">建图导航 → 视觉探索 / 集成评测</div>
+          <div class="if-title">地图与定位</div>
+          <div class="if-desc mono">nav_msgs/OccupancyGrid ＋ sensor_msgs/PointCloud2 ＋ TF（map → base_link）</div>
+        </div>
+      </div>
+      <div class="iface" data-team="g2">
+        <div class="if-n">02</div>
+        <div class="if-body">
+          <div class="if-flow">视觉探索 → 建图导航</div>
+          <div class="if-title">探索目标点</div>
+          <div class="if-desc">两组之间只有这一个接口：视觉探索只发「去哪」，路线怎么走、怎么绕障全归建图导航。SLAM 和 Nav2 同组，就没有第二条缝要对接。</div>
+          <div class="if-desc mono">NavigateToPose action（探索目标点与返航共用同一入口）</div>
+        </div>
+      </div>
+      <div class="iface" data-team="g2">
+        <div class="if-n">03</div>
+        <div class="if-body">
+          <div class="if-flow">视觉探索 → 集成评测</div>
+          <div class="if-title">目标消息</div>
+          <div class="if-desc mono">自定义 Detection3D：类别 / 置信度 / 三维坐标 / 时间戳 / 抓拍图</div>
+        </div>
+      </div>
+      <div class="iface" data-team="g3">
+        <div class="if-n">04</div>
+        <div class="if-body">
+          <div class="if-flow">全队约定</div>
+          <div class="if-title">评测数据格式</div>
+          <div class="if-desc mono">统一 rosbag 话题清单 ＋ 指标计算脚本，每次实验自动落盘</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <h2>十六周排期</h2>
+    <div class="gantt-box">
+      <div class="gantt">
+        <div class="ghead">
+          <div></div>
+          <div class="gweeks">
+            <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span>
+          </div>
+        </div>
+
+        <div class="grow" data-team="g1">
+          <div class="glabel"><i>G1</i>仿真与测试环境</div>
+          <div class="gtrack"><div class="gbar" style="--s:1;--e:4"></div></div>
+        </div>
+        <div class="grow" data-team="g1">
+          <div class="glabel"><i>G1</i>SLAM 与定位</div>
+          <div class="gtrack"><div class="gbar" style="--s:3;--e:8"></div></div>
+        </div>
+        <div class="grow" data-team="g1">
+          <div class="glabel"><i>G1</i>Nav2 与避障</div>
+          <div class="gtrack"><div class="gbar" style="--s:7;--e:12"></div></div>
+        </div>
+        <div class="grow" data-team="g1">
+          <div class="glabel"><i>G1</i>真机标定与漂移压制</div>
+          <div class="gtrack"><div class="gbar" style="--s:9;--e:11"></div></div>
+        </div>
+        <div class="ggap"></div>
+        <div class="grow" data-team="g2">
+          <div class="glabel"><i>G2</i>检测与三维定位</div>
+          <div class="gtrack"><div class="gbar" style="--s:6;--e:10"></div></div>
+        </div>
+        <div class="grow" data-team="g2">
+          <div class="glabel"><i>G2</i>探索策略</div>
+          <div class="gtrack"><div class="gbar" style="--s:8;--e:12"></div></div>
+        </div>
+        <div class="ggap"></div>
+        <div class="grow" data-team="g3">
+          <div class="glabel"><i>G3</i>真机链路（DDS）</div>
+          <div class="gtrack"><div class="gbar" style="--s:1;--e:5"></div></div>
+        </div>
+        <div class="grow" data-team="g3">
+          <div class="glabel"><i>G3</i>系统集成</div>
+          <div class="gtrack"><div class="gbar" style="--s:10;--e:14"></div></div>
+        </div>
+        <div class="grow" data-team="g3">
+          <div class="glabel"><i>G3</i>评测与演示</div>
+          <div class="gtrack"><div class="gbar" style="--s:13;--e:16"></div></div>
+        </div>
+        <div class="ggap"></div>
+        <div class="grow" data-team="all">
+          <div class="glabel"><i>ALL</i>里程碑评审</div>
+          <div class="gtrack"><div class="gbar ms" style="--s:6;--e:6"></div><div class="gbar ms" style="--s:10;--e:10"></div><div class="gbar ms" style="--s:14;--e:14"></div></div>
+        </div>
+
+        <div class="gkey">
+          <span><i style="background:var(--t1);opacity:.82"></i>建图导航</span>
+          <span><i style="background:var(--t2);opacity:.82"></i>视觉探索</span>
+          <span><i style="background:var(--t3);opacity:.82"></i>集成评测</span>
+          <span><i class="gbar ms" style="background:repeating-linear-gradient(135deg,var(--accent) 0 4px,transparent 4px 8px);border:1px solid var(--accent)"></i>评审节点</span>
+        </div>
+      </div>
+    </div>
+    <p class="note"><strong>第 6 周是关键关卡</strong>：真机遥控建图必须跑通。这一关过不去，后面全部要退回仿真路线——所以里程碑评审定在这里，早发现早改道。</p>
+  </section>
+
+  <section class="sec">
+    <h2>评测指标</h2>
+    <div class="tbox">
+      <table>
+        <thead>
+          <tr><th>指标</th><th>定义</th><th>建议目标</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><b>探索覆盖率</b></td><td>已建图面积 ÷ 可通行总面积</td><td class="mono">&gt; 90%</td></tr>
+          <tr><td><b>建图精度</b></td><td>与激光扫描对比的绝对轨迹误差 ATE</td><td class="mono">&lt; 0.15 m</td></tr>
+          <tr><td><b>目标检出率</b></td><td>正确检出数 ÷ 场景内全部目标数</td><td class="mono">&gt; 85%</td></tr>
+          <tr><td><b>误检率</b></td><td>错误检出数 ÷ 全部检出数</td><td class="mono">&lt; 10%</td></tr>
+          <tr><td><b>单次任务耗时</b></td><td>从出发到完成侦查并返回基站</td><td class="mono">记录基线</td></tr>
+          <tr><td><b>返航成功率</b></td><td>低电量触发后安全返回的比例</td><td class="mono">100%</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">覆盖率随时间的变化曲线是最有说服力的一张图——它同时体现了探索策略和建图稳定性。</p>
+  </section>
+
+  <section class="sec">
+    <h2>风险与预案</h2>
+    <div class="risks">
+      <div class="risk" data-lv="hi">
+        <div class="r-lv">高风险</div>
+        <div class="r-body">
+          <div class="r-title">足式平台建图漂移</div>
+          <div class="r-text">机身晃动导致点云匹配失败、回环误检。<b>预案</b> 降低扫描速度、做足外参标定、调回环参数；兜底是仿真里的完整流程本身即为可交付成果，真机算加分而非必需。</div>
+        </div>
+      </div>
+      <div class="risk" data-lv="hi">
+        <div class="r-lv">高风险</div>
+        <div class="r-body">
+          <div class="r-title">Unitree DDS 通信踩坑</div>
+          <div class="r-text">这是宇树平台最常见的坑，且会阻塞所有人上真机。<b>预案</b> 集成评测组第一周就动手，不等其他模块；先用官方 demo 打通遥控，再谈接管控制。</div>
+        </div>
+      </div>
+      <div class="risk" data-lv="mid">
+        <div class="r-lv">中风险</div>
+        <div class="r-body">
+          <div class="r-title">场地与安全</div>
+          <div class="r-text">需要可封闭的测试场地，狗摔倒的维修成本很高。<b>预案</b> 提前确认场地与责任人，真机实验全程有人监护，初次上场用最保守的速度。</div>
+        </div>
+      </div>
+      <div class="risk" data-lv="mid">
+        <div class="r-lv">中风险</div>
+        <div class="r-body">
+          <div class="r-title">真机机时排期</div>
+          <div class="r-text">档期虽然空，但多组共用一个平台时容易撞车。<b>预案</b> 提前两周订机时；所有模块先在仿真里验收通过再上真机，避免占着狗调代码。</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <h2>技术选型修正</h2>
+    <p class="note">调研文档里给出的三处选型已经过时或写错了，按下面这份来。</p>
+    <div class="tbox">
+      <table>
+        <thead>
+          <tr><th>模块</th><th>文档写的</th><th>改用</th><th>原因</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>SLAM</td><td class="mono">Cartographer</td><td><b>RTAB-Map</b></td><td>Cartographer 2024 年初已停更；RTAB-Map 支持外观回环与三维点云，更适合足式平台</td></tr>
+          <tr><td>ROS 驱动</td><td class="mono">unitree_ros</td><td><b>unitree_ros2 / sdk2</b></td><td>前者是 ROS1 时代的老仓库，Go2 的 ROS2 支持在新仓库</td></tr>
+          <tr><td>目标检测</td><td class="mono">YOLOv10</td><td><b>ultralytics 最新版</b></td><td>别再纠结版本号，直接安装即用，预训练 80 类零成本起步</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="sec">
+    <h2>加分项</h2>
+    <div class="split">
+      <div class="card">
+        <h3>多机协同侦查</h3>
+        <ul>
+          <li>在仿真里跑单个 Go2 的多个实例，不需要第二台真狗</li>
+          <li>能给出「覆盖时间 vs 机器人数」曲线</li>
+          <li>把分布式任务分配借过来，正好补上课题 6 的内容</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>异常行为识别</h3>
+        <ul>
+          <li>用姿态估计代替标注：人体长宽比与躯干朝向判倒地</li>
+          <li>无需额外标注数据，零训练成本</li>
+          <li>让「侦查」从找人升级到判断异常</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <div class="foot">课题 12 · 机器狗自主侦查 — 六人三组实施方案 · 16 周</div>
+</div>
+
+<script>
+(function(){
+  var root = document.documentElement;
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.fbtn'));
+  function set(f){
+    btns.forEach(function(b){ b.setAttribute('aria-pressed', String(b.dataset.f === f)); });
+    if (f === 'all') { root.removeAttribute('data-focus'); }
+    else { root.setAttribute('data-focus', f); }
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ set(b.dataset.f); }); });
+  set('all');
+})();
+</script>
