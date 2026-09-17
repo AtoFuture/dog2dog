@@ -1,0 +1,35 @@
+# G2 感知链路参数。默认值是**起点**，需按实机/仿真实测调整。
+/**:
+  ros__parameters:
+    # ---- 话题 ----
+    # ⚠️ 这几项必须**第一周与 G1/G3 对齐**，以实际发布者为准。
+    #    下面写的是 RealSense 的常见命名，不是契约。
+    color_topic: /camera/color/image_raw
+    depth_topic: /camera/aligned_depth_to_color/image_raw   # 注意：只有 align_depth:=true 才发布
+    camera_info_topic: /camera/color/camera_info
+    detections_topic: /detections_3d
+    snapshots_topic: /detections_snapshot
+
+    # ---- 检测 ----
+    weights: yolo26n.pt
+    conf: 0.25
+    imgsz: 640
+    device: cpu          # 实测 640 下 CPU 有 25 FPS，远超 5 Hz 需求，不必占 GPU
+    detect_hz: 5.0
+    sync_slop_s: 0.05    # 50 ms ≈ Go2 行走 5 cm；跑得快时应调小
+
+    # ---- 三维解算 ----
+    anchor: center       # center | bottom（倒地检测推荐 bottom）
+    max_dispersion_m: 3.0   # 实测：真实目标中位 1.58 m，0.5 会全灭。见 projector 的说明
+    min_valid_pixels: 10
+
+    # ---- 坐标变换 ----
+    map_frame: map
+    tf_timeout_s: 0.05
+    tf_fallback_to_latest: true   # 查不到图像时刻的 TF 时降级用最新，并计数告警
+
+    # ---- 去重与抓拍 ----
+    min_publish_interval_s: 2.0   # 同一 track_id 的节流间隔
+    publish_snapshot: true
+    snapshot_quality: 80
+    snapshot_margin_px: 8

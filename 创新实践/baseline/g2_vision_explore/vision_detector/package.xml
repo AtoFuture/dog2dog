@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>vision_detector</name>
+  <version>0.1.0</version>
+  <description>
+    G2 感知链路：订阅图像+深度，跑 YOLO 检测，解算三维坐标，
+    发布接口 03（Detection3D）与 03b（DetectionSnapshot）。
+    算法主体在 g2_core 里，本包只做 ROS2 侧的胶水。
+  </description>
+  <maintainer email="240923267+AtoFuture@users.noreply.github.com">AtoFuture</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>g2_core</depend>
+  <depend>vision_interfaces</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>message_filters</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

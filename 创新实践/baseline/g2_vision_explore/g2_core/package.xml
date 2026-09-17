@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>g2_core</name>
+  <version>0.1.0</version>
+  <description>
+    G2 的算法内核：栅格/frontier/测地/探索决策/三维反投影/倒地判据/状态机/检测器封装。
+    纯 Python，不依赖 ROS2 —— 所以它的单元测试不需要装 ROS2 就能跑。
+    这里把它打成 ament_python 包，只为让 ROS2 节点能 import 它。
+  </description>
+  <maintainer email="240923267+AtoFuture@users.noreply.github.com">AtoFuture</maintainer>
+  <license>Apache-2.0</license>
+
+  <!-- 运行期只需要 numpy / opencv。
+       torch / ultralytics 是**可选**的：detector.py 里惰性导入，
+       其余模块完全不碰它。所以这里不声明 torch 依赖 —— -->
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
