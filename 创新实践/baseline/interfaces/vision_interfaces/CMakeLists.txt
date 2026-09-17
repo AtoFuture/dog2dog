@@ -20,6 +20,7 @@ find_package(builtin_interfaces REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Detection3D.msg"
+  "msg/DetectionSnapshot.msg"
   DEPENDENCIES
     std_msgs
     geometry_msgs

@@ -67,6 +67,31 @@ class ProjectionResult:
     dispersion: float
     """三维点的离散度（各轴 IQR 的模），米。用于判断这次解算可不可信。"""
 
+    spread_per_axis: np.ndarray
+    """逐轴 IQR，形状 ``(3,)``，米。是 ``dispersion`` 的构成分量。
+
+    单列出来是为了换算协方差 —— 从「模」反推单轴需要假设各向同性，
+    而深度方向的离散通常**远大于**横向（同一个物体表面在深度上铺得开），
+    那个假设明显不成立。
+    """
+
+    @property
+    def covariance(self) -> np.ndarray:
+        """位置协方差 3x3（米²），可直接填进 ``Detection3D.pose.covariance``。
+
+        由逐轴 IQR 换算：正态分布下 IQR ≈ 1.349 sigma，故 sigma ≈ IQR / 1.349。
+
+        ⚠️ **两个刻意的简化**，用的时候心里有数：
+
+        * **只填对角线**，即假设三轴独立、互不相关。真实误差里 x 与 z 是耦合的
+          （深度方向的不确定度会同时影响横向坐标），完整做法是估计整个矩阵。
+          对角近似够用于「这个点可不可信」的粗筛，不适合精细误差传播。
+        * **不含外参误差、TF 误差、时间同步误差** —— 只反映深度像素自身的离散。
+          也就是说这是个**下界**，真实不确定度只会更大。
+        """
+        sigma = np.asarray(self.spread_per_axis, dtype=np.float64) / 1.349
+        return np.diag(sigma ** 2)
+
 
 # ----------------------------------------------------------------------
 # 深度图编码
@@ -225,6 +250,7 @@ def project_depth_bbox(
         point=center.astype(np.float64),
         valid_pixels=int(valid.sum()),
         dispersion=dispersion,
+        spread_per_axis=(q75 - q25).astype(np.float64),
     )
 
 
@@ -337,6 +363,7 @@ def project_lidar_cluster(
         point=center,
         valid_pixels=int(sel.shape[0]),
         dispersion=float(np.linalg.norm(q75 - q25)),
+        spread_per_axis=(q75 - q25).astype(np.float64),
     )
 
 
