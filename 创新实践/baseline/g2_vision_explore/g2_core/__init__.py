@@ -15,6 +15,13 @@ from .anomaly import (
     midpoints_from_keypoints_2d,
     torso_tilt_from_vertical,
 )
+from .detector import (
+    DEFAULT_CLASSES,
+    Detection2D,
+    Detector,
+    DetectorConfig,
+    DetectorUnavailableError,
+)
 from .explorer import ExplorerParams, Goal, GoalSelector
 from .frontier import FrontierCluster, detect_frontiers
 from .geodesic import geodesic_distance, geodesic_nearest_cell
@@ -49,4 +56,7 @@ __all__ = [
     "bbox_aspect_is_fallen", "midpoints_from_keypoints_2d",
     # state machine
     "ExplorerStateMachine", "Phase", "Command",
+    # detector
+    "Detector", "DetectorConfig", "Detection2D", "DetectorUnavailableError",
+    "DEFAULT_CLASSES",
 ]

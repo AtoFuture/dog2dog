@@ -1,0 +1,210 @@
+"""目标检测的封装层。
+
+把 ``ultralytics`` 的输出转成本项目自己的 ``Detection2D``，让上层代码不必
+到处出现 ``results[0].boxes.xyxy.cpu().numpy()`` 这类东西。
+
+设计要点：
+
+* **惰性导入 ultralytics** —— 这个包只在本模块被真正用到时才 import。
+  于是 ``g2_core`` 的其余模块（frontier / projector / 状态机…）的单元测试
+  不需要装 torch 就能跑。torch 是几 GB 的依赖，不该成为跑一个几何测试的门槛。
+* **不做任何坐标系变换** —— 本模块只管像素。三维解算在 ``projector`` 里，
+  坐标系变换在 ROS2 节点里用 tf2 做。三层分开，各自可测。
+* **类别白名单可配** —— 侦查场景只关心人、车、以及随身物品，
+  其余 COCO 类别默认过滤。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import numpy as np
+
+# 侦查场景关心的 COCO 类别（名字，不是索引 —— 索引在不同权重版本间可能变）
+DEFAULT_CLASSES = (
+    "person",
+    "bicycle", "car", "motorcycle", "bus", "truck",
+    "backpack", "handbag", "suitcase",
+)
+
+
+@dataclass
+class Detection2D:
+    """一次二维检测的结果。
+
+    纯数据，不含任何 ROS2 类型 —— 这样它能在没有 ROS2 的地方被构造和断言。
+    """
+
+    class_name: str
+    class_id: int
+    confidence: float
+    bbox_xyxy: tuple[float, float, float, float]
+    """像素坐标 ``(x1, y1, x2, y2)``。"""
+
+    track_id: int | None = None
+    """跟踪 ID（调用 ``track()`` 时才有）。用于去重。"""
+
+    mask: np.ndarray | None = None
+    """实例分割掩膜（bool，与原图同形状）。用 ``-seg`` 权重时才非空。"""
+
+    keypoints: np.ndarray | None = None
+    """``(17, 3)`` 的 COCO 关键点 ``(x, y, conf)``。用 ``-pose`` 权重时才非空。"""
+
+    @property
+    def width(self) -> float:
+        x1, _, x2, _ = self.bbox_xyxy
+        return abs(x2 - x1)
+
+    @property
+    def height(self) -> float:
+        _, y1, _, y2 = self.bbox_xyxy
+        return abs(y2 - y1)
+
+    @property
+    def aspect_ratio(self) -> float:
+        """高 / 宽。倒地检测的方法 A 用它做粗筛。"""
+        w = self.width
+        return self.height / w if w > 1e-6 else 0.0
+
+
+class DetectorUnavailableError(RuntimeError):
+    """ultralytics 不可用。"""
+
+
+def _load_ultralytics():
+    """惰性导入。失败时给一条能直接照做的提示，而不是一个裸的 ImportError。"""
+    try:
+        from ultralytics import YOLO  # noqa: PLC0415
+    except ImportError as exc:  # pragma: no cover - 取决于环境
+        raise DetectorUnavailableError(
+            "需要 ultralytics：pip install ultralytics。\n"
+            "注意它依赖 torch（数 GB），装之前先确认磁盘余量。"
+        ) from exc
+    return YOLO
+
+
+@dataclass
+class DetectorConfig:
+    """检测器配置。默认值都是**起点**，需按实测调整。"""
+
+    weights: str = "yolo11n.pt"
+    """权重文件。首次使用时 ultralytics 会自动下载到当前目录。"""
+
+    conf: float = 0.25
+    """置信度阈值。"""
+
+    iou: float = 0.5
+    """NMS 的 IoU 阈值。"""
+
+    imgsz: int = 640
+    """推理分辨率。
+
+    ⚠️ 这个值直接决定**能看多远**：640x480 输入下，20 m 外的人可能只有 20-30 px 高。
+    定「检出率 > 85%」这类指标时，必须同时说明是在什么距离、什么 imgsz 下测的。
+    """
+
+    classes: tuple[str, ...] | None = field(default_factory=lambda: DEFAULT_CLASSES)
+    """关注的类别名白名单。``None`` 表示不过滤。"""
+
+    device: str | None = None
+    """``"cpu"`` / ``"0"`` / ``None``（自动）。"""
+
+
+class Detector:
+    """YOLO 检测器的薄封装。
+
+    用法::
+
+        det = Detector(DetectorConfig(weights="yolo11n.pt"))
+        for d in det.detect(image_bgr):
+            print(d.class_name, d.confidence, d.bbox_xyxy)
+    """
+
+    def __init__(self, config: DetectorConfig | None = None):
+        self.config = config or DetectorConfig()
+        YOLO = _load_ultralytics()
+        self._model = YOLO(self.config.weights)
+        self._names = self._model.names  # {id: name}
+
+        # 把类别名白名单解析成索引。放在这里做一次，而不是每帧做。
+        if self.config.classes is None:
+            self._class_filter = None
+        else:
+            wanted = set(self.config.classes)
+            self._class_filter = [i for i, n in self._names.items() if n in wanted]
+            missing = wanted - set(self._names.values())
+            if missing:
+                # 不抛异常：权重换版本时类别名可能有出入，报警即可。
+                print(f"[Detector] 权重里没有这些类别，已忽略：{sorted(missing)}")
+
+    # ------------------------------------------------------------------
+    def detect(self, image_bgr: np.ndarray):
+        """单帧检测，无跟踪。"""
+        return self._run(image_bgr, track=False)
+
+    def track(self, image_bgr: np.ndarray):
+        """单帧检测 + 跟踪，带 ``track_id``。
+
+        ``persist=True`` 让跟踪器在连续调用之间保持状态 —— 抽帧推理时这是必须的，
+        否则每帧都被当成新序列，ID 会乱跳。
+        """
+        return self._run(image_bgr, track=True)
+
+    # ------------------------------------------------------------------
+    def _run(self, image_bgr: np.ndarray, track: bool) -> list[Detection2D]:
+        kwargs = dict(
+            conf=self.config.conf,
+            iou=self.config.iou,
+            imgsz=self.config.imgsz,
+            verbose=False,
+        )
+        if self.config.device is not None:
+            kwargs["device"] = self.config.device
+        if self._class_filter is not None:
+            kwargs["classes"] = self._class_filter
+
+        if track:
+            results = self._model.track(image_bgr, persist=True, **kwargs)
+        else:
+            results = self._model.predict(image_bgr, **kwargs)
+
+        if not results:
+            return []
+
+        r = results[0]
+        if r.boxes is None or len(r.boxes) == 0:
+            return []
+
+        boxes = r.boxes
+        xyxy = boxes.xyxy.cpu().numpy()
+        confs = boxes.conf.cpu().numpy()
+        clss = boxes.cls.cpu().numpy().astype(int)
+
+        ids = None
+        if track and boxes.id is not None:
+            ids = boxes.id.cpu().numpy().astype(int)
+
+        # 分割掩膜
+        masks = None
+        if getattr(r, "masks", None) is not None and r.masks is not None:
+            masks = r.masks.data.cpu().numpy()  # (N, H, W)，值域 0/1
+
+        # 姿态关键点
+        kpts = None
+        if getattr(r, "keypoints", None) is not None and r.keypoints is not None:
+            kpts = r.keypoints.data.cpu().numpy()  # (N, 17, 3)
+
+        out: list[Detection2D] = []
+        for i in range(len(xyxy)):
+            out.append(
+                Detection2D(
+                    class_name=self._names.get(int(clss[i]), str(clss[i])),
+                    class_id=int(clss[i]),
+                    confidence=float(confs[i]),
+                    bbox_xyxy=tuple(float(v) for v in xyxy[i]),
+                    track_id=int(ids[i]) if ids is not None else None,
+                    mask=(masks[i] > 0.5) if masks is not None else None,
+                    keypoints=kpts[i] if kpts is not None else None,
+                )
+            )
+        return out
