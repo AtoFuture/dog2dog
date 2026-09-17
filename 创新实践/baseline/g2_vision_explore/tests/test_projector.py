@@ -19,7 +19,7 @@ from g2_core.projector import (
     CameraIntrinsics,
     DepthEncodingError,
     depth_to_meters,
-    magnitude_of_ground_range,
+    optical_axis_ground_distance,
     project_depth_bbox,
     project_ground_plane,
     project_lidar_cluster,
@@ -223,7 +223,7 @@ def test_ground_plane_centre_pixel_geometry():
     assert pt is not None
     assert pt[2] == pytest.approx(h / math.sin(pitch), rel=1e-3)
     assert pt[2] * math.cos(pitch) == pytest.approx(
-        magnitude_of_ground_range(pitch, h), rel=1e-3
+        optical_axis_ground_distance(pitch, h), rel=1e-3
     )
 
 
@@ -236,16 +236,16 @@ def test_ground_plane_rejects_rays_pointing_up():
 
 def test_ground_plane_enforces_max_range():
     h, pitch = 0.35, math.radians(5.0)
-    theoretical = magnitude_of_ground_range(pitch, h)  # 约 4.0 m
+    theoretical = optical_axis_ground_distance(pitch, h)  # 约 4.0 m
 
     assert project_ground_plane(K.cx, K.cy - 10, K, h, pitch, max_range_m=theoretical * 0.5) is None
 
 
 def test_ground_range_grows_as_pitch_flattens():
     """下俯角越小上限越远 —— 这是评估路线 B 是否可用的关键数字。"""
-    assert magnitude_of_ground_range(math.radians(10), 0.35) == pytest.approx(2.0, abs=0.1)
-    assert magnitude_of_ground_range(math.radians(5), 0.35) == pytest.approx(4.0, abs=0.2)
-    assert magnitude_of_ground_range(math.radians(3), 0.35) == pytest.approx(6.7, abs=0.4)
+    assert optical_axis_ground_distance(math.radians(10), 0.35) == pytest.approx(2.0, abs=0.1)
+    assert optical_axis_ground_distance(math.radians(5), 0.35) == pytest.approx(4.0, abs=0.2)
+    assert optical_axis_ground_distance(math.radians(3), 0.35) == pytest.approx(6.7, abs=0.4)
 
 
 # ----------------------------------------------------------------------

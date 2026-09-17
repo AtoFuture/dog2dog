@@ -289,11 +289,3 @@ def midpoints_from_keypoints_2d(
     confs = (float(sl[2]), float(sr[2]), float(hl[2]), float(hr[2]))
 
     return shoulder_mid, hip_mid, confs
-
-
-def estimate_ground_range_for_pitch(pitch_rad: float, camera_height_m: float) -> float:
-    """见 ``projector.magnitude_of_ground_range`` —— 此处在 anomaly 语境下重导出，
-    方便评估「近场判据是否覆盖得到倒地目标」。"""
-    if pitch_rad <= 1e-9:
-        return float("inf")
-    return camera_height_m / math.tan(pitch_rad)

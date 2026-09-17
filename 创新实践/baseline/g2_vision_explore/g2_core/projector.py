@@ -409,11 +409,23 @@ def project_lidar_cluster(
     )
 
 
-def magnitude_of_ground_range(pitch_rad: float, camera_height_m: float) -> float:
-    """路线 B 在给定安装角下的**理论最远可视地面距离**（米）。
+def optical_axis_ground_distance(pitch_rad: float, camera_height_m: float) -> float:
+    """**光轴与地面的交点**到相机的水平距离（米）= ``h / tan(theta)``。
 
-    用来回答「无深度相机时，这条路线的覆盖范围够不够」——
-    应当在决定实现路线 B 之前先算一下这个数。
+    ⚠️ 这个函数原先叫 ``magnitude_of_ground_range``，docstring 说它是
+    「理论最远可视地面距离」—— **两个都不对**（2026-09-17 修正）：
+
+    * 它不是「最远可视距离」。真正的上限取决于地平线落在画面内还是画面外：
+      - 下俯角大于竖直半视场角时，地平线在画面外，上限就是**画面最下缘**
+        那条射线打到地面的位置；
+      - 下俯角小于竖直半视场角时，**地平线本身就在画面里**，
+        理论上可以看无限远，实际受限于角分辨率与标定误差。
+    * 它也不叫「range」—— 它是**沿光轴**那条射线落点的水平距离。
+
+    这个值仍然有用：它是路线 B 的一个自然参考点（画面中心能看到多远），
+    也是「这条路线的覆盖够不够」的粗估起点。但**不要**把它当成硬上限，
+    更不要拿它去校验别的量 —— 校验距离请用
+    ``project_ground_plane(..., max_range_m=...)``，那里是按真实欧氏距离算的。
     """
     if pitch_rad <= 1e-9:
         return float("inf")

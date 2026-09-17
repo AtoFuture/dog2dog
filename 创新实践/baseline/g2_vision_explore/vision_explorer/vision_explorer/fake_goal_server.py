@@ -40,7 +40,12 @@ rclpy 的 ``ActionServer`` 用 ``ReentrantCallbackGroup`` 时，**多个 goal �
 ``outcome``                  ``success`` | ``abort`` | ``hang``；目标终态
 ``travel_time``              模拟“走过去”的耗时（秒）
 ``fail_every_n``             每 N 个目标失败一个（0 = 关闭），用来测重试与黑名单
+``hang_max_s``               ``hang`` 的最长持续秒数，0 = 不限（默认）
 ===========================  ==================================================
+
+⚠️ 跑 ``outcome:=hang`` 时建议设 ``hang_max_s``：挂起会**一直占住一个
+executor 线程**，多个挂起叠加会耗尽线程池，届时连 goal_callback 都排不上，
+抢占彻底失效 —— 那之后得出的测试结论不再可信。超过 3 个并发挂起时会打 ERROR 日志。
 """
 
 from __future__ import annotations
@@ -64,6 +69,12 @@ class FakeGoalServer(Node):
         self.declare_parameter("outcome", "success")
         self.declare_parameter("travel_time", 2.0)
         self.declare_parameter("fail_every_n", 0)
+        self.declare_parameter("hang_max_s", 0.0)
+        """``outcome:=hang`` 时的最长挂起秒数。0（默认）= 不设上限。
+
+        ⚠️ 挂起会一直占住一个 executor 线程，多个挂起叠加会耗尽线程池、
+        让抢占失效（测试结果就不再可信）。跑 `outcome:=hang` 的实验时建议设一个上限。
+        """
 
         # ⚠️ 编号必须在 _execute 里分配，不能在 _on_goal 里分配。
         #
@@ -86,6 +97,13 @@ class FakeGoalServer(Node):
         self._active_handle: ServerGoalHandle | None = None
         self._active_seq: int | None = None
 
+        # 正在被抢占的句柄（按 id 认领），防止两个并发的 goal_callback
+        # 对同一个 victim 各 abort 一次。见 _on_goal 的说明。
+        self._preempting: set[int] = set()
+        # 当前处于 hang 的目标数。hang 会**一直占住一个 executor 线程**，
+        # 所以要有计数并在超阈值时告警。
+        self._active_hangs = 0
+
         self._action_server = ActionServer(
             self,
             NavigateToPose,
@@ -107,29 +125,48 @@ class FakeGoalServer(Node):
     def _on_goal(self, goal_request) -> GoalResponse:
         p = goal_request.pose.pose.position
 
+        # ⚠️ 抢占的「检查 + 认领」必须在**同一个锁临界区**里完成。
+        #
+        # 原先的写法是 check-then-act：在锁内读 victim，在锁外判断 is_active
+        # 再 abort()。但 ReentrantCallbackGroup 下两个 goal_callback 可以并发，
+        # 于是两者可能同时判定「victim 还活着」并各调用一次 abort()。
+        # 重复 abort 会抛异常，然后被 except 吞掉并记成「终止旧目标时出错（可忽略）」
+        # —— **日志措辞把一个真实的竞态伪装成了噪音**。
+        #
+        # 现在用一个「正在抢占」的集合做原子认领：只有第一个看到它的
+        # callback 会去 abort，第二个直接跳过。
+        # 注意 abort() 本身仍然放在锁**外**调用 —— 避免在持自己的锁时
+        # 进入 rclpy 的 per-handle 锁（那是锁序反转的经典来源）。
         with self._lock:
             self._accept_count += 1
             my_accept = self._accept_count
             victim = self._active_handle
             victim_seq = self._active_seq
 
-        if victim is not None and victim.is_active:
-            # ★ 模拟 Nav2 的抢占：停掉在飞的目标，而不是让它继续跑。
-            with self._lock:
+            claimed = (
+                victim is not None
+                and victim.is_active
+                and id(victim) not in self._preempting
+            )
+            if claimed:
+                self._preempting.add(id(victim))
                 self._preempt_count += 1
-                n = self._preempt_count
+            n = self._preempt_count
+
+        if claimed:
+            # ★ 模拟 Nav2 的抢占：停掉在飞的目标，而不是让它继续跑。
             self.get_logger().warn(
                 f"⚠️ 抢占：目标 #{victim_seq} 被新目标顶掉（累计 {n} 次）"
             )
-            # check-then-act 不在锁内：两个 goal_callback 可并发，
-            # victim 可能已被另一个 callback 或它自己终结。
-            # 这里只能靠 is_active 判断 + 兜住异常；重复 abort 会被吞掉并记日志。
             try:
                 victim.abort()
                 # abort() 会让 victim.is_active 变 False，
                 # 它的 _execute 循环据此自行退出 —— 不需要额外的停止信号。
             except Exception as exc:  # pragma: no cover - 防御性
-                self.get_logger().warn(f"终止旧目标时出错（很可能已被并发终结）：{exc}")
+                self.get_logger().warn(f"终止旧目标时出错：{exc}")
+            finally:
+                with self._lock:
+                    self._preempting.discard(id(victim))
 
         self.get_logger().info(
             f"收到目标（accept #{my_accept}）: ({p.x:.2f}, {p.y:.2f})"
@@ -187,12 +224,34 @@ class FakeGoalServer(Node):
         if outcome == "hang":
             # 既不成功也不失败 —— 用来测 G2 的超时判据
             self.get_logger().warn(f"目标 #{my_seq} 进入挂起状态（模拟无进展）")
-            # ⚠️ 这个循环只能靠取消/抢占/shutdown 退出。它**会一直占着
-            # 一个 executor 线程** —— 这是 hang 语义的应有之义，但要意识到
-            # 它是「线程占用」而不是「阻塞一个目标」：多个 hang 目标叠加
-            # 会耗尽线程池，届时连 goal_callback 都排不上，抢占彻底不可能。
-            while rclpy.ok() and goal_handle.is_active and not goal_handle.is_cancel_requested:
-                time.sleep(0.1)
+            max_hang = float(self.get_parameter("hang_max_s").value)
+
+            with self._lock:
+                self._active_hangs += 1
+                n_hangs = self._active_hangs
+            if n_hangs >= 3:
+                # ⚠️ hang 会**一直占住一个 executor 线程**（这是 hang 语义的应有之义），
+                # 但多个 hang 叠加会耗尽线程池 —— 届时连 goal_callback 都排不上，
+                # 抢占彻底不可能，这个测试工具就失去意义了。所以到这里要吼一声。
+                self.get_logger().error(
+                    f"已有 {n_hangs} 个目标处于挂起状态，每个都占着一个 executor 线程。"
+                    f"线程池耗尽后 goal_callback 将排不上队，抢占会失效 —— "
+                    f"这时的测试结果不可信。可用 -p hang_max_s:=<秒> 给挂起加个上限。"
+                )
+
+            try:
+                deadline = (time.monotonic() + max_hang) if max_hang > 0 else None
+                while rclpy.ok() and goal_handle.is_active and not goal_handle.is_cancel_requested:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        self.get_logger().warn(
+                            f"目标 #{my_seq} 挂起超过 hang_max_s={max_hang}s，自动收尾"
+                        )
+                        break
+                    time.sleep(0.1)
+            finally:
+                with self._lock:
+                    self._active_hangs -= 1
+
             self._terminate(goal_handle, "canceled", my_seq, "挂起后被终止")
             return NavigateToPose.Result()
 

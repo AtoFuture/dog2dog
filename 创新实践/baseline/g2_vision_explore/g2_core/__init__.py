@@ -32,7 +32,7 @@ from .projector import (
     DepthEncodingError,
     ProjectionResult,
     depth_to_meters,
-    magnitude_of_ground_range,
+    optical_axis_ground_distance,
     project_depth_bbox,
     project_ground_plane,
     project_lidar_cluster,
@@ -50,7 +50,7 @@ __all__ = [
     # projector
     "CameraIntrinsics", "ProjectionResult", "DepthEncodingError",
     "depth_to_meters", "project_depth_bbox", "project_ground_plane",
-    "project_lidar_cluster", "magnitude_of_ground_range",
+    "project_lidar_cluster", "optical_axis_ground_distance",
     # anomaly
     "FallAssessment", "torso_tilt_from_vertical", "assess_fall_from_keypoints_3d",
     "bbox_aspect_is_fallen", "midpoints_from_keypoints_2d",
