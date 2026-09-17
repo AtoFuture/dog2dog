@@ -14,19 +14,27 @@
 * 如果两者都是 ``ABORTED`` —— 那 G2 **无法从 action 层分辨**，
   必须靠 G3 显式广播任务状态（见 docs/议题-接口02返航抢占.md）。
 
-这个探针就是拿来把这件事**实测钉死**的，而不是靠猜。
+--------------------------------------------------------------------------------
+⚠️ 这个探针能证明什么、不能证明什么（2026-09-17 经审查后补充）
+
+**不能：** 对着 ``fake_goal_server`` 跑时，结论是被**假服务器的实现**决定的 ——
+它只有 ``abort()`` 这一条终止在飞目标的路径，所以「A 看到 ABORTED」是构造使然。
+**不要把它读成「对 Nav2 的实测」。**
+
+**能：** 验证「一个 goal 被服务器 abort 时，客户端确实看到 ABORTED」这条链路，
+并给出一个**命令行可复跑的探针** —— 等 G1 的 Nav2 起来后原地复跑，
+那一次的结果才是对 Nav2 的实测。
+
+**真正支撑设计决策的证据是定义层面的**（可靠、不依赖本探针）：
+``NavigateToPose`` 的 result 是 ``std_msgs/Empty``，没有任何 error_code。
+只要真 Nav2 的「被抢占」与「导航失败」共用同一个终态，G2 就无法从 action 层分辨。
 
 用法（先起一个 ``fake_goal_server``）::
 
     ros2 run vision_explorer fake_goal_server --ros-args -p travel_time:=5.0
     ros2 run vision_explorer preemption_probe
 
-输出形如::
-
-    A 发出 -> ACCEPTED
-    B 发出（模拟返航抢占）
-    A 终态 = ABORTED        <- 关键结论
-    B 终态 = SUCCEEDED
+对真 Nav2 复跑时，把上面第一条换成 Nav2 的 bringup 即可，命令其余不变。
 """
 
 from __future__ import annotations
@@ -38,7 +46,7 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from nav2_msgs.action import NavigateToPose
 from rclpy.action import ActionClient
-from rclpy.executors import MultiThreadedExecutor
+
 from rclpy.node import Node
 
 STATUS_NAME = {
@@ -109,29 +117,52 @@ class Probe(Node):
         print(f"  B 终态 = {STATUS_NAME[b_status]}", flush=True)
         print("", flush=True)
 
+        # ------------------------------------------------------------------
+        # ⚠️ 关于这条「结论」的证明力 —— 2026-09-17 经审查后重写
+        #
+        # 必须说清楚：**这个探针本身不能证明 Nav2 的行为。**
+        #
+        # 拿它对着 fake_goal_server 跑时，结论是被**假服务器的实现**决定的：
+        # 假服务器里唯一能让在飞目标终止的路径就是 `victim.abort()`
+        # （能让客户端看到 CANCELED 的只有"客户端自己取消"）。
+        # 所以 A 必然、也只能看到 ABORTED —— 这是**重言式**，不是发现。
+        #
+        # 它真正验证的是另一件事，且这件事有价值：
+        #   **「一个 goal 被服务器 abort 时，客户端确实看到 ABORTED」**这条链路。
+        # 有了这条，才能做下面的推理。
+        # ------------------------------------------------------------------
         if a_status == GoalStatus.STATUS_CANCELED:
             print(
-                "结论：被抢占表现为 CANCELED —— 与导航失败(ABORTED)可区分。",
+                "A 被终止时看到 CANCELED。\n"
+                "  → 若真 Nav2 也如此，且「导航失败」是 ABORTED，则两者**可区分**。",
                 flush=True,
             )
         elif a_status == GoalStatus.STATUS_ABORTED:
             print(
-                "结论：被抢占表现为 ABORTED —— **与导航失败无法区分**。\n"
-                "      G2 不能靠 action 状态码判断自己是不是被抢占了，\n"
-                "      必须靠 G3 显式广播任务状态。",
+                "A 被终止时看到 ABORTED。\n"
+                "  → 结合 `ros2 interface show nav2_msgs/action/NavigateToPose`\n"
+                "    查到的「result 是 std_msgs/Empty、无 error_code」，\n"
+                "    说明**若真 Nav2 也走 abort 路径**，客户端就无法区分\n"
+                "    「被抢占」与「导航失败」。",
                 flush=True,
             )
         else:
-            print(f"结论：被抢占表现为 {STATUS_NAME[a_status]}（非预期，需进一步分析）", flush=True)
+            print(f"A 被终止时看到 {STATUS_NAME[a_status]}（非预期，需进一步分析）", flush=True)
 
         print(
-            "\n⚠️ 边界说明：本次结论是在 fake_goal_server 上得出的，"
-            "而它的抢占行为（abort 旧目标）是**我们对 Nav2 的建模**。\n"
-            "   这验证了「被 abort 的客户端看到 ABORTED」这条链路，"
-            "但**不能替代对真 Nav2 的验证**。\n"
-            "   等 G1 的 Nav2 起来后，把这个探针对着真服务器再跑一次即可（命令不变）。\n"
-            "   无论结果是 ABORTED 还是 CANCELED，只要「导航失败」也是 ABORTED，"
-            "G2 就无法靠 action 层区分 —— 这时必须走 G3 广播任务状态的方案。",
+            "\n⚠️ **这条结论的边界，别当成对真 Nav2 的实测：**\n"
+            "   本次是在 fake_goal_server 上跑的，而它的抢占行为（abort 旧目标）\n"
+            "   是**我们对 Nav2 的建模**，不是 Nav2 本身。\n"
+            "   而假服务器只有 abort 这一条终止路径，所以「看到 ABORTED」是\n"
+            "   构造使然，不是观察结果。\n"
+            "\n"
+            "   真正支撑设计决策的是**定义层面的证据**（可靠）：\n"
+            "   `NavigateToPose` 的 result 是 `std_msgs/Empty`，没有任何 error_code。\n"
+            "   只要真 Nav2 的「被抢占」与「导航失败」共用同一个终态，\n"
+            "   G2 就无法从 action 层分辨 —— 这一个推理不依赖本探针。\n"
+            "\n"
+            "   等 G1 的 Nav2 起来后，**把这个探针对着真服务器再跑一次**（命令不变），\n"
+            "   那一次的结果才是对 Nav2 的实测。",
             flush=True,
         )
 
@@ -141,8 +172,10 @@ class Probe(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = Probe()
-    executor = MultiThreadedExecutor()
-    executor.add_node(node)
+    # 注意：这里**不要**再构造 MultiThreadedExecutor 而不 spin ——
+    # 那只是死代码，会让人误以为探针跑在多线程下。
+    # 本探针的并发发生在**服务端**（fake_goal_server / 真 Nav2），
+    # 客户端这边用 `spin_until_future_complete` 的单线程驱动就够了。
     rc = 1
     try:
         rc = node.run()

@@ -134,8 +134,28 @@ class Detector:
             self._class_filter = [i for i, n in self._names.items() if n in wanted]
             missing = wanted - set(self._names.values())
             if missing:
-                # 不抛异常：权重换版本时类别名可能有出入，报警即可。
+                # 部分不匹配只报警 —— 权重换版本时类别名有出入是正常的。
                 print(f"[Detector] 权重里没有这些类别，已忽略：{sorted(missing)}")
+
+            # ⚠️ **一个都没匹配上必须报错，不能静默继续。**
+            #
+            # ultralytics 的类别过滤是 `filt = (x[:,5:6] == classes).any(1)`：
+            # 传空列表时比较结果全为 False，于是**每帧返回空列表、永远**。
+            # 上层看到的是"这个场景没有人"，而不是"配置错了" ——
+            # 一个静默的、看起来完全正常的零检出。
+            #
+            # 注意空列表与 None 在 ultralytics 里是**两回事**：
+            # None = 不过滤（全要），[] = 一个都不要。这里绝不能混同。
+            if not self._class_filter:
+                raise DetectorUnavailableError(
+                    f"类别白名单 {sorted(wanted)} 在权重 {self.config.weights!r} 里"
+                    f"**一个都没匹配上**。\n"
+                    f"  该权重实际类别：{sorted(set(self._names.values()))[:15]}"
+                    f"{' ...' if len(self._names) > 15 else ''}\n"
+                    f"  继续跑下去会得到「每帧零检出」这种看起来正常的结果，"
+                    f"所以这里直接报错。\n"
+                    f"  改 classes=... 或设 classes=None（不过滤）。"
+                )
 
     # ------------------------------------------------------------------
     def detect(self, image_bgr: np.ndarray):

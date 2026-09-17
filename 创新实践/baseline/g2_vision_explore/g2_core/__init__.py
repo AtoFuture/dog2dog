@@ -22,7 +22,7 @@ from .detector import (
     DetectorConfig,
     DetectorUnavailableError,
 )
-from .explorer import ExplorerParams, Goal, GoalSelector
+from .explorer import ExplorerParams, Goal, GoalSelection, GoalSelector, SelectStatus
 from .frontier import FrontierCluster, detect_frontiers
 from .geodesic import geodesic_distance, geodesic_nearest_cell
 from .grid import FREE, OCCUPIED, UNKNOWN, GridMap
@@ -46,7 +46,7 @@ __all__ = [
     # geodesic
     "geodesic_distance", "geodesic_nearest_cell",
     # explorer
-    "GoalSelector", "ExplorerParams", "Goal",
+    "GoalSelector", "ExplorerParams", "Goal", "GoalSelection", "SelectStatus",
     # projector
     "CameraIntrinsics", "ProjectionResult", "DepthEncodingError",
     "depth_to_meters", "project_depth_bbox", "project_ground_plane",

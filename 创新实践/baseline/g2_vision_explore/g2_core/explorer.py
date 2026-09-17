@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import enum
 import math
 from dataclasses import dataclass
 
@@ -45,6 +46,60 @@ class Goal:
     gain: float
     geodesic_dist_m: float
     unknown_fraction: float
+
+    used_full_map_search: bool = False
+    """这个目标是靠**全图**测地搜索（而不是限定半径的窗口）选出来的。
+
+    为 True 说明目标超出了 ``max_geodesic_radius_cells``，窗口内没找到候选。
+    正常情况应为 False；频繁为 True 说明该半径参数设小了。
+    """
+
+
+class SelectStatus(enum.Enum):
+    """``select()`` 的结果状态。
+
+    🔴 **为什么需要这个枚举**（2026-09-17 经对抗性审查后加入）：
+
+    原先 ``select()`` 在**四种完全不同的情形**下都返回 ``None``：
+
+    1. 地图上真的没有 frontier 了      -> 探索完成
+    2. 地图还没到 / 还是全未知         -> 稍等就会好
+    3. 唯一可用的 frontier 超出测地搜索半径 -> 参数问题，不是没得探
+    4. 候选点全被黑名单滤掉            -> TTL 过后就会好
+
+    而调用方（``ExplorerStateMachine.on_exhausted``）把 ``None`` 一律当成
+    「探索完成」，并把状态机推进 **不可逆的 DONE**。
+    后果：地图还没加载完、或者某个目标点刚失败进了 30 秒黑名单，
+    都会让探索**永久停机**，且没有任何日志说明原因。
+
+    现在只有 ``NO_FRONTIER`` 才算完成；其余三种都应该稍后再试。
+    """
+
+    GOAL = "GOAL"
+    """选到了目标点。"""
+
+    NO_FRONTIER = "NO_FRONTIER"
+    """地图上没有任何 frontier —— 这才是真正的「探索完成」。"""
+
+    NO_CANDIDATE = "NO_CANDIDATE"
+    """有 frontier，但当前没有可用候选（黑名单未过期 / 安全半径不过 / 测地半径外）。
+    **这是瞬时的**，稍后重试即可。"""
+
+    NO_ROBOT_POSE = "NO_ROBOT_POSE"
+    """找不到机器人所在的可通行格（地图还没到、或机器人被围住了）。稍后再试。"""
+
+
+@dataclass
+class GoalSelection:
+    """``select()`` 的返回值。"""
+
+    status: SelectStatus
+    goal: Goal | None = None
+
+    @property
+    def is_complete(self) -> bool:
+        """是否应当判定为「探索完成」。**只有 NO_FRONTIER 算。**"""
+        return self.status is SelectStatus.NO_FRONTIER
 
 
 @dataclass
@@ -164,6 +219,42 @@ class GoalSelector:
         self._visits.append(_Visit(x, y, now))
 
     # ------------------------------------------------------------------
+    # 参数校验
+    # ------------------------------------------------------------------
+    def _check_params(self) -> None:
+        """校验参数之间的隐式不变量。
+
+        ⚠️ 这些约束原先只写在注释里，没有人检查 —— 而违反它们的后果是
+        **静默的**：``goal_pullback_m < safety_radius_m`` 时，候选点退回的距离
+        不足以让 clearance 达标，于是 ``select()`` 永远选不出点 →
+        在旧接口下返回 None → 状态机判 DONE → **开机即永久停机**，无任何日志。
+
+        这种「配置错了但表现成『探索已结束』」的失败模式不值得留任何余地，
+        所以直接抛。
+        """
+        p = self.params
+        if p.goal_pullback_m < p.safety_radius_m:
+            raise ValueError(
+                f"goal_pullback_m ({p.goal_pullback_m}) 必须 >= safety_radius_m "
+                f"({p.safety_radius_m})。\n"
+                f"  原因：frontier 格紧贴未知区，clearance 天然只有一格；"
+                f"候选点要靠 pullback 退回自由空间才能满足安全半径。\n"
+                f"  退回距离小于安全半径时，**任何候选都过不了校验**，"
+                f"选择器会永远返回「无候选」。"
+            )
+        if p.blacklist_radius_m <= 0 or p.visit_penalty_radius_m <= 0:
+            raise ValueError("blacklist_radius_m 与 visit_penalty_radius_m 必须为正")
+        if not 0.0 < p.visit_penalty_factor <= 1.0:
+            raise ValueError(
+                f"visit_penalty_factor 必须在 (0, 1]，得到 {p.visit_penalty_factor}。"
+                f"  0 会让任何被访问过的区域增益归零，可能让选择器选不出点。"
+            )
+        if p.lambda_decay < 0:
+            raise ValueError("lambda_decay 不能为负（负值会让远处反而更优先）")
+        if p.max_geodesic_radius_cells is not None and p.max_geodesic_radius_cells <= 0:
+            raise ValueError("max_geodesic_radius_cells 必须为正，或 None（不限）")
+
+    # ------------------------------------------------------------------
     # 辅助
     # ------------------------------------------------------------------
     def _filter_blacklisted(self, grid: GridMap, candidates: np.ndarray) -> np.ndarray:
@@ -260,14 +351,20 @@ class GoalSelector:
         grid: GridMap,
         robot_xy: tuple[float, float],
         now: float,
-    ) -> Goal | None:
-        """选出一个目标点；没有可用的 frontier 时返回 ``None``（= 探索完成）。"""
+    ) -> GoalSelection:
+        """选出一个目标点。
+
+        返回 ``GoalSelection`` 而不是 ``Goal | None`` —— 见 ``SelectStatus`` 的说明：
+        原先的 ``None`` 把四种完全不同的情形混成了一种，其中三种**都不该**
+        被当成「探索完成」（否则地图没加载完就会让探索永久停机）。
+        """
         p = self.params
+        self._check_params()
         self._expire(now)
 
         start = grid.nearest_traversable_index(robot_xy[0], robot_xy[1])
         if start is None:
-            return None
+            return GoalSelection(SelectStatus.NO_ROBOT_POSE)
 
         clusters = detect_frontiers(
             grid,
@@ -275,7 +372,7 @@ class GoalSelector:
             merge_gap_cells=p.merge_gap_cells,
         )
         if not clusters:
-            return None
+            return GoalSelection(SelectStatus.NO_FRONTIER)
 
         dist = geodesic_distance(grid.traversable, start, p.max_geodesic_radius_cells)
 
@@ -288,6 +385,46 @@ class GoalSelector:
         pullback_cells = max(0, int(round(p.goal_pullback_m / grid.resolution)))
         kernel = np.ones((2 * pullback_cells + 1, 2 * pullback_cells + 1), np.uint8)
 
+        # ⚠️ 测地半径是**性能参数**，不该变成静默的终止条件。
+        #
+        # 踩过的坑：`geodesic_distance` 把「搜索窗口外」和「真实不可达」
+        # 共用同一个 -1，而候选过滤是 `dist >= 0`。于是当所有 frontier
+        # 都在窗口外时，select 会返回「没有候选」—— 在旧接口下就是 None，
+        # 被状态机当成探索完成，**永久停机**。
+        # 实测：42 m 长走廊、默认半径 400 格（0.1 m/格 = 40 m）时，
+        # 走廊尽头的唯一 frontier 会被判成「不可达」。
+        #
+        # 兜底：窗口内选不出时，用全图再算一次。代价是慢（一次全图 BFS），
+        # 但只在罕见的「目标特别远」时才触发，换来的是不会静默停机。
+        best = self._best_in_clusters(
+            grid, clusters, dist, valid_goal, uf_map, pullback_cells, kernel, now
+        )
+        if best is None and p.max_geodesic_radius_cells is not None:
+            dist_full = geodesic_distance(grid.traversable, start, None)
+            best = self._best_in_clusters(
+                grid, clusters, dist_full, valid_goal, uf_map, pullback_cells, kernel, now
+            )
+            if best is not None:
+                best.used_full_map_search = True
+            else:
+                dist = dist_full
+
+        if best is None:
+            return GoalSelection(SelectStatus.NO_CANDIDATE)
+        return GoalSelection(SelectStatus.GOAL, best)
+
+    def _best_in_clusters(
+        self,
+        grid: GridMap,
+        clusters,
+        dist: np.ndarray,
+        valid_goal: np.ndarray,
+        uf_map: np.ndarray,
+        pullback_cells: int,
+        kernel: np.ndarray,
+        now: float,
+    ) -> Goal | None:
+        p = self.params
         best: Goal | None = None
         for cluster in clusters:
             # frontier 格紧贴未知区，clearance 天然只有一格 —— 直接校验必然全灭。

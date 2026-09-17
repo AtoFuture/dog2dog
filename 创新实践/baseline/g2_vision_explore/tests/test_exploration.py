@@ -16,12 +16,32 @@ import math
 import numpy as np
 import pytest
 
-from g2_core.explorer import ExplorerParams, GoalSelector
+from g2_core.explorer import ExplorerParams, GoalSelector, SelectStatus
 from g2_core.frontier import detect_frontiers
 from g2_core.geodesic import geodesic_distance, geodesic_nearest_cell
 from g2_core.grid import FREE, OCCUPIED, UNKNOWN, GridMap
 
 RES = 0.1
+
+ROOM_CENTRE_XY = (2.0, 2.0)
+"""room_map() 里机器人常站的位置。"""
+
+
+def must_pick(selector, grid, robot_xy=ROOM_CENTRE_XY, now=0.0):
+    """断言「确实选到了目标」并返回它。
+
+    大多数测试只关心「选出来的那个点对不对」，不关心状态枚举，
+    所以用这个把 `GoalSelection` 拆包，避免每处都写两行断言。
+    """
+    sel = selector.select(grid, robot_xy=robot_xy, now=now)
+    assert sel.status is SelectStatus.GOAL, f"预期选到目标，实际得到 {sel.status}"
+    assert sel.goal is not None
+    return sel.goal
+
+
+def pick_status(selector, grid, robot_xy=ROOM_CENTRE_XY, now=0.0):
+    """只取状态，不假设结果。"""
+    return selector.select(grid, robot_xy=robot_xy, now=now).status
 
 
 def room_map(size=60, lo=10, hi=50, res=RES) -> GridMap:
@@ -231,18 +251,14 @@ def test_goal_is_selected_despite_frontier_clearance():
     """有了 pullback，房间场景必须能选出目标点（否则探索根本起不来）。"""
     grid = room_map()
     selector = GoalSelector()
-    goal = selector.select(grid, robot_xy=(2.0, 2.0), now=0.0)
-
-    assert goal is not None, "房间场景必须能选出目标点"
+    goal = must_pick(selector, grid)
 
 
 def test_goal_satisfies_safety_radius():
     grid = room_map()
     params = ExplorerParams()
     selector = GoalSelector(params)
-    goal = selector.select(grid, robot_xy=(2.0, 2.0), now=0.0)
-
-    assert goal is not None
+    goal = must_pick(selector, grid)
     assert goal.geodesic_dist_m > 0
 
     # 目标格本身必须是自由格，且 clearance 达标
@@ -256,8 +272,7 @@ def test_goal_is_reachable():
     """选出的目标点必须真的能走到 —— 用测地距离验证。"""
     grid = room_map()
     selector = GoalSelector()
-    goal = selector.select(grid, robot_xy=(2.0, 2.0), now=0.0)
-    assert goal is not None
+    goal = must_pick(selector, grid)
 
     start = grid.nearest_traversable_index(2.0, 2.0)
     dist = geodesic_distance(grid.traversable, start)
@@ -276,8 +291,7 @@ def test_goal_yaw_faces_the_unknown_region():
     centre_x, centre_y = grid.grid_to_world(29.5, 29.5)
 
     selector = GoalSelector()
-    goal = selector.select(grid, robot_xy=(centre_x, centre_y), now=0.0)
-    assert goal is not None
+    goal = must_pick(selector, grid, robot_xy=(centre_x, centre_y))
 
     # 目标点相对房间中心的方向（即「向外」）
     ox, oy = goal.x - centre_x, goal.y - centre_y
@@ -291,13 +305,10 @@ def test_goal_avoids_blacklisted_area():
     grid = room_map()
     selector = GoalSelector()
 
-    first = selector.select(grid, robot_xy=(2.0, 2.0), now=0.0)
-    assert first is not None
+    first = must_pick(selector, grid)
 
     selector.on_result(first, success=False, now=0.0)
-    second = selector.select(grid, robot_xy=(2.0, 2.0), now=1.0)
-
-    assert second is not None
+    second = must_pick(selector, grid, now=1.0)
     gap = math.hypot(second.x - first.x, second.y - first.y)
     assert gap >= ExplorerParams().blacklist_radius_m, "失败点应被避开"
 
@@ -308,12 +319,11 @@ def test_blacklist_expires():
     grid = room_map()
     selector = GoalSelector(p)
 
-    first = selector.select(grid, robot_xy=(2.0, 2.0), now=0.0)
+    first = must_pick(selector, grid)
     selector.on_result(first, success=False, now=0.0)
 
     # 过期之后应当允许重新选择同一个点
-    later = selector.select(grid, robot_xy=(2.0, 2.0), now=100.0)
-    assert later is not None
+    assert pick_status(selector, grid, now=100.0) is SelectStatus.GOAL
 
 
 def test_visit_penalty_discourages_revisiting():
@@ -322,14 +332,16 @@ def test_visit_penalty_discourages_revisiting():
     grid = room_map()
     selector = GoalSelector(p)
 
-    first = selector.select(grid, robot_xy=(2.0, 2.0), now=0.0)
-    assert first is not None
+    first = must_pick(selector, grid)
     selector.on_result(first, success=True, now=0.0)
 
-    second = selector.select(grid, robot_xy=(2.0, 2.0), now=1.0)
-    if second is not None:
-        gap = math.hypot(second.x - first.x, second.y - first.y)
-        assert gap > 0.5, "成功访问后不应立刻回到同一点"
+    sel2 = selector.select(grid, robot_xy=(2.0, 2.0), now=1.0)
+    # ⚠️ 这里**不再**用 `if sel2.goal is not None` 包住断言 ——
+    # 条件断言会让整条测试在最该报警的时候静默通过
+    # （审查的变异测试证实：把访问惩罚恒置 0 时这条测试本来会空过）。
+    assert sel2.status is SelectStatus.GOAL, "访问惩罚不该让选择器选不出点"
+    gap = math.hypot(sel2.goal.x - first.x, sel2.goal.y - first.y)
+    assert gap > 0.5, "成功访问后不应立刻回到同一点"
 
 
 def test_gain_actually_influences_selection():
@@ -353,9 +365,7 @@ def test_gain_actually_influences_selection():
     grid = GridMap(data, RES, origin=(0, 0))
     centre_x, centre_y = grid.grid_to_world(29.5, 29.5)
 
-    goal = GoalSelector().select(grid, robot_xy=(centre_x, centre_y), now=0.0)
-
-    assert goal is not None
+    goal = must_pick(GoalSelector(), grid, robot_xy=(centre_x, centre_y))
     assert goal.x > centre_x + 0.5, "应选右侧开阔区，而不是左侧被实心块挡住的边界"
     assert goal.unknown_fraction > 0.15, "选中的目标点周围应当确实有未知区可探"
 
@@ -364,14 +374,14 @@ def test_no_goal_when_fully_explored():
     """地图上没有未知区 -> 探索完成，返回 None。"""
     data = np.full((30, 30), FREE, dtype=np.int8)
     grid = GridMap(data, RES, origin=(0, 0))
-    assert GoalSelector().select(grid, robot_xy=(1.5, 1.5), now=0.0) is None
+    assert pick_status(GoalSelector(), grid, robot_xy=(1.5, 1.5)) is SelectStatus.NO_FRONTIER
 
 
 def test_no_goal_when_robot_trapped():
     """机器人所在格完全被占 -> 没有起点，返回 None 而不是崩溃。"""
     data = np.full((30, 30), OCCUPIED, dtype=np.int8)
     grid = GridMap(data, RES, origin=(0, 0))
-    assert GoalSelector().select(grid, robot_xy=(1.5, 1.5), now=0.0) is None
+    assert pick_status(GoalSelector(), grid, robot_xy=(1.5, 1.5)) is SelectStatus.NO_ROBOT_POSE
 
 
 def test_wall_separated_frontier_is_not_chosen_as_nearest():
@@ -390,11 +400,118 @@ def test_wall_separated_frontier_is_not_chosen_as_nearest():
     selector = GoalSelector()
 
     # 机器人贴墙站在左半边
-    goal = selector.select(grid, robot_xy=(2.55, 3.0), now=0.0)
-
-    assert goal is not None
+    goal = must_pick(selector, grid, robot_xy=(2.55, 3.0))
     # 无论选中哪边，目标点都必须真实可达
     start = grid.nearest_traversable_index(2.55, 3.0)
     dist = geodesic_distance(grid.traversable, start)
     row, col = grid.world_to_grid(goal.x, goal.y)
     assert dist[int(math.floor(row)), int(math.floor(col))] >= 0
+
+
+# ----------------------------------------------------------------------
+# 增益评分的回归保护
+#
+# ⚠️ 这一节是**补审查发现的一个大洞**：变异测试显示，把
+# `exp(-p.lambda_decay * d_m)` 整个从增益里删掉，原来的 85 个测试
+# **全部照过** —— 增益评分里最核心的距离项当时完全没有约束。
+# visit penalty 的「距离渐变」同样（变异 M9 存活）。
+# ----------------------------------------------------------------------
+def test_gain_includes_the_distance_decay():
+    """增益必须包含 exp(-λd)。删掉它这条测试必须失败。
+
+    做法：用目标自身带的 `unknown_fraction` 与 `geodesic_dist_m` 独立复算期望值。
+    新选择器没有访问记录，所以惩罚为 1，期望值只由「未知占比 × 距离衰减」构成。
+    """
+    grid = room_map()
+    p = ExplorerParams()
+    goal = must_pick(GoalSelector(p), grid)
+
+    assert goal.geodesic_dist_m > 0, "距离必须为正，否则这条测试没有判别力"
+
+    expected = goal.unknown_fraction * math.exp(-p.lambda_decay * goal.geodesic_dist_m)
+    assert goal.gain == pytest.approx(expected, rel=1e-9), "增益里缺少距离衰减项"
+
+    assert goal.gain < goal.unknown_fraction, "λ>0 时衰减项必然小于 1"
+
+
+def test_distance_decay_direction_favours_nearer():
+    """λ 越大越偏好近处 —— 验证衰减方向没写反。"""
+    grid = room_map()
+    far_goal = must_pick(GoalSelector(ExplorerParams(lambda_decay=0.01)), grid)
+    near_goal = must_pick(GoalSelector(ExplorerParams(lambda_decay=1.0)), grid)
+    assert near_goal.geodesic_dist_m <= far_goal.geodesic_dist_m
+
+
+def test_visit_penalty_gradient():
+    """访问惩罚必须**随距离渐变**，不能是「半径内一律乘系数」。
+
+    平坦惩罚在对称场景下把所有邻近候选同比例打折、排序不变 ——
+    惩罚形同虚设，机器人照旧来回震荡。对应变异 M9（原先存活）。
+    """
+    grid = room_map()
+    p = ExplorerParams(visit_penalty_radius_m=2.0, visit_penalty_factor=0.3)
+    sel = GoalSelector(p)
+    sel.mark_visited(2.0, 2.0, now=0.0)
+
+    r0, c0 = grid.world_to_grid(2.0, 2.0)
+    r0, c0 = int(r0), int(c0)
+    # 把访问点放在**格心**上，这样第一个候选到它的距离正好是 0
+    # （放在 cell 角上的话距离是 0.07 m，惩罚就不是满值了）
+    wx0, wy0 = grid.grid_to_world(r0, c0)
+    sel._visits.clear()
+    sel.mark_visited(wx0, wy0, now=0.0)
+    candidates = np.array([[r0, c0], [r0 + 1, c0], [r0 + 30, c0]])
+
+    pen = sel._visit_penalty(grid, candidates)
+
+    assert pen[0] == pytest.approx(p.visit_penalty_factor), "正踩在上面应吃满惩罚"
+    assert pen[0] < pen[1] < 1.0, "稍远一点惩罚应当更轻（渐变）"
+    assert pen[2] == pytest.approx(1.0), "半径外不该受惩罚"
+
+
+def test_param_invariants_are_enforced():
+    """非法参数组合必须报错，不能静默变成「永远选不出点」的选择器。"""
+    grid = room_map()
+
+    bad = ExplorerParams(goal_pullback_m=0.3, safety_radius_m=0.45)
+    with pytest.raises(ValueError, match="goal_pullback_m"):
+        GoalSelector(bad).select(grid, robot_xy=ROOM_CENTRE_XY, now=0.0)
+
+    with pytest.raises(ValueError):
+        GoalSelector(ExplorerParams(visit_penalty_factor=0.0)).select(
+            grid, robot_xy=ROOM_CENTRE_XY, now=0.0
+        )
+
+    with pytest.raises(ValueError):
+        GoalSelector(ExplorerParams(lambda_decay=-1.0)).select(
+            grid, robot_xy=ROOM_CENTRE_XY, now=0.0
+        )
+
+
+def test_radius_limited_search_falls_back_to_full_map():
+    """所有 frontier 都在测地半径外时，必须兜底用全图再搜一次。
+
+    ⚠️ 回归测试：`geodesic_distance` 把「搜索窗口外」与「真实不可达」
+    共用同一个 -1，而候选过滤是 `dist >= 0`。窗口太小时 select 会返回
+    「没有候选」—— 在旧接口下就是 None，被状态机当成探索完成**永久停机**。
+
+    构造：42 m 长走廊（0.1 m/格），机器人在一端，唯一 frontier 在另一端，
+    远超故意设小的 50 格窗口。
+    """
+    size = 460
+    # 关键：走廊上下都填**占用**（不是未知），否则整条走廊的上下边缘
+    # 全都是 frontier，最近的那个就在机器人旁边，窗口再小也够得着。
+    # 只有远端之外留未知，frontier 才会唯一且很远。
+    data = np.full((30, size), OCCUPIED, dtype=np.int8)
+    data[10:20, 5:452] = FREE
+    data[:, 452:] = UNKNOWN
+    grid = GridMap(data, 0.1, origin=(0.0, 0.0))
+
+    # min_area 要调小：远端开口只有 10 格（0.1 m²），默认的 0.25 m² 会把它滤掉
+    sel = GoalSelector(
+        ExplorerParams(max_geodesic_radius_cells=50, min_frontier_area_m2=0.05)
+    )
+    result = sel.select(grid, robot_xy=(0.6, 1.5), now=0.0)
+
+    assert result.status is SelectStatus.GOAL, "窗口太小时应兜底全图搜索，而不是判「选不出点」"
+    assert result.goal.used_full_map_search is True, "应标记走了全图兜底"

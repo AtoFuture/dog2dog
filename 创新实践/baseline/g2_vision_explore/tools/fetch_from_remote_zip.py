@@ -80,6 +80,15 @@ class HttpRangeFile(io.RawIOBase):
             self.url, headers={"Range": f"bytes={self.pos}-{end}"}
         )
         with urllib.request.urlopen(req, timeout=120) as resp:
+            # 必须校验服务端真的支持 Range。若某个镜像忽略 Range 头、
+            # 直接返回 200 + 整个文件，那么拿到的 data 是**从 0 开始**的内容，
+            # 却被当成 self.pos 处的数据 —— 会静默产出错位的数据。
+            # （zipfile 的 CRC 能兜住一部分，但那是"响亮失败"，不如这里直接挡。）
+            if resp.status != 206:
+                raise RuntimeError(
+                    f"服务端未按 Range 返回（HTTP {resp.status}）—— "
+                    f"该源不支持分段读取，本工具的结果不可信"
+                )
             data = resp.read()
         self.pos += len(data)
         return data
@@ -132,19 +141,46 @@ def main() -> int:
     outdir = Path(args.out)
     outdir.mkdir(parents=True, exist_ok=True)
 
+    # ⚠️ 这里必须数**成功落盘**的，不能数尝试数。
+    #
+    # 踩过的坑：第一版打印 `len(targets)`（尝试数）。实跑时请求 190 个、
+    # 磁盘上只有 138 个 —— 尾部 47 个静默没下成，而汇总行仍然报"共取 190 个"。
+    # 结果是一份评估报告建立在一个缺了 26% 录像（含 2 个倒地事件）的子集上，
+    # 而所有人都以为数据是完整的。
+    #
+    # 静默少给数据是最危险的一类 bug：程序不崩，只是结论错。
+    ok = 0
+    failed: list[str] = []
     total = 0
     for n in targets:
+        dest = outdir / Path(n).name
         try:
             data = zf.read(n)
+            dest.write_bytes(data)
         except Exception as exc:
-            print(f"  ✗ {n}: {exc}")
+            failed.append(f"{Path(n).name}: {exc}")
+            dest.unlink(missing_ok=True)   # 不留残文件
             continue
-        dest = outdir / Path(n).name
-        dest.write_bytes(data)
-        total += len(data)
-        print(f"  ✓ {Path(n).name}  ({len(data) / 1024:.0f} KB)")
 
-    print(f"\n共取 {len(targets)} 个文件，{total / 1048576:.1f} MB -> {outdir}")
+        # 写后校验：写盘环节可能静默失败（磁盘满、中断），产生 0 字节文件。
+        if not dest.exists() or dest.stat().st_size != len(data):
+            got = dest.stat().st_size if dest.exists() else -1
+            failed.append(f"{Path(n).name}: 落盘大小不符（期望 {len(data)}，实得 {got}）")
+            dest.unlink(missing_ok=True)
+            continue
+
+        ok += 1
+        total += len(data)
+
+    print(f"\n成功取回 {ok}/{len(targets)} 个文件，{total / 1048576:.1f} MB -> {outdir}")
+    if failed:
+        print(f"⚠️ **{len(failed)} 个失败**（这份数据是不完整的，别直接拿去评估）：")
+        for f in failed[:10]:
+            print(f"    ✗ {f}")
+        if len(failed) > 10:
+            print(f"    ...（共 {len(failed)} 个）")
+        return 1
+
     return 0
 
 

@@ -76,21 +76,32 @@ class ProjectionResult:
     """
 
     @property
-    def covariance(self) -> np.ndarray:
-        """位置协方差 3x3（米²），可直接填进 ``Detection3D.pose.covariance``。
+    def apparent_extent(self) -> np.ndarray:
+        """该目标像素簇的**表观尺寸**（各轴 IQR，米）。**不是测量不确定度。**
 
-        由逐轴 IQR 换算：正态分布下 IQR ≈ 1.349 sigma，故 sigma ≈ IQR / 1.349。
+        🔴 **不要把它当协方差填进消息**（2026-09-17 修正）。
 
-        ⚠️ **两个刻意的简化**，用的时候心里有数：
+        这里原先有个叫 ``covariance`` 的属性，把 ``spread_per_axis / 1.349``
+        当成位置协方差。那是错的：``spread_per_axis`` 衡量的是
+        **物体自身的空间展布**，不是测量误差。
 
-        * **只填对角线**，即假设三轴独立、互不相关。真实误差里 x 与 z 是耦合的
-          （深度方向的不确定度会同时影响横向坐标），完整做法是估计整个矩阵。
-          对角近似够用于「这个点可不可信」的粗筛，不适合精细误差传播。
-        * **不含外参误差、TF 误差、时间同步误差** —— 只反映深度像素自身的离散。
-          也就是说这是个**下界**，真实不确定度只会更大。
+        举个能看出问题的例子：一辆 4 m 长的车，深度方向 IQR 可能有 1.5 m，
+        换算出的 sigma_z ≈ 1.1 m —— 而真实的测量误差可能是 5 cm 量级。
+        填进 ``Detection3D.pose.covariance`` 会让 G3 的数据关联与加权完全失真。
+
+        更微妙的是：原先的 docstring 把它描述成「不含外参/TF/同步误差，
+        所以是个**下界**」—— 对**测量误差**而言确实是下界，
+        但对**这个数值想表达的东西**而言恰好相反：它是**上界**，
+        因为里面混进了大量与测量无关的物体尺寸。
+
+        这个量本身有用（大而分散的像素簇确实说明"这一团不太像单一物体表面"），
+        所以保留，但改成诚实的名字，并且**不再**拿它填协方差。
+
+        G2 目前**无法**给出有意义的测量协方差 —— 见
+        ``docs/框架规划.md`` 接口 03 的说明：``pose.covariance`` 一律置零
+        （按 ROS 惯例，全零表示「协方差未知」），而不是填一个唬人的数。
         """
-        sigma = np.asarray(self.spread_per_axis, dtype=np.float64) / 1.349
-        return np.diag(sigma ** 2)
+        return np.asarray(self.spread_per_axis, dtype=np.float64)
 
 
 # ----------------------------------------------------------------------
@@ -197,6 +208,25 @@ def project_depth_bbox(
     # 一个落在相机原点上的「目标」，看起来像正常结果，实则完全错误。
     valid = np.isfinite(sub) & (sub > 0)
     if mask is not None:
+        # ⚠️ 掩膜形状必须与深度图一致，否则**静默采错像素**。
+        #
+        # 掩膜来自 ultralytics，它的 `masks.data` 在某些配置下（rect /
+        # retina_masks 关闭 + 非正方形输入 letterbox 补边）**不是原图尺寸**，
+        # 而是补边后的推理尺寸。此时 `mask[y1:y2, x1:x2]` 用原图坐标去切，
+        # 要么切成完全不相干的区域（不报错），要么在极端宽高比下抛
+        # broadcast 错误。
+        #
+        # 本仓库实测（ultralytics 8.4.154、640×480 与 1024×1024 输入）掩膜尺寸是对的，
+        # 但那是**当前版本的行为**，不是契约。这里断言一次，把潜在的静默错误
+        # 变成一条明确的报错。
+        if mask.shape != depth_m.shape:
+            raise ValueError(
+                f"分割掩膜形状 {mask.shape} 与深度图 {depth_m.shape} 不一致。\n"
+                f"  掩膜必须与原图同尺寸；若它来自 ultralytics 的 masks.data，\n"
+                f"  说明该版本的输出尺寸与输入不同（letterbox / retina_masks 设置相关），\n"
+                f"  直接在 DetectorConfig 里开 retina_masks=True，或先把掩膜 resize 回原图。\n"
+                f"  继续跑下去会用原图坐标切到错误的像素，而且不报错。"
+            )
         valid &= mask[y1:y2, x1:x2].astype(bool)
 
     if valid.sum() < min_valid_pixels:

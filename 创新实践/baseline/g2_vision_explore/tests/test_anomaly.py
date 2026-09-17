@@ -156,19 +156,40 @@ def test_bbox_ratio_standing_vs_lying():
     assert bbox_aspect_is_fallen(lying)[0] is True
 
 
-def test_bbox_ratio_pitch_normalisation_makes_standing_harder_to_judge():
-    """俯角会让站立的人看起来变扁 —— 归一化后应恢复成不倒地。
+def test_pitch_normalisation_moves_toward_the_unpitched_baseline():
+    """俯角归一化必须把比例往「无俯角基准」**拉**，而不是推远。
 
-    这正说明长宽比方法为什么只能当粗筛：换个机位结论就变。
+    ⚠️ 本测试原先断言的是反方向（`fixed_ratio > raw_ratio`），
+    把实现里那处方向错误钉成了期望行为，2026-09-17 修正。
+
+    数值实测（针孔模型，D=5m、人高 1.7m、相机 0.35m、f=500）：
+
+        下俯角   h/w原始   ×cos     ÷cos
+          0°     3.778    3.778    3.778   ← 基准
+         30°     5.735    4.967    6.623
+
+    关键物理事实：相机下俯时，远处竖直目标的**像高会变大**（透视拉长），
+    所以观测到的 h/w 随俯角单调**增大**，归一化应当**乘** cos。
+    除以 cos 会把它推得更远 —— 让倒地的人显得更像站着，漏检更多。
     """
-    bbox = (0.0, 0.0, 40.0, 22.0)  # 俯视 55 度下站立的人，投影被压扁
+    BASE_RATIO = 3.778        # θ=0 时的比例（数值实测定标）
+    RAW_AT_30DEG = 5.735      # 下俯 30° 时观测到的比例
 
-    raw_fallen, raw_ratio = bbox_aspect_is_fallen(bbox, camera_pitch_rad=0.0)
-    fixed_fallen, fixed_ratio = bbox_aspect_is_fallen(bbox, camera_pitch_rad=math.radians(55))
+    # 用 w=100、h=573.5 构造出 raw ratio 5.735 的框
+    w = 100.0
+    bbox = (0.0, 0.0, w, RAW_AT_30DEG * w)
 
-    assert raw_fallen is True, "不做归一化会误判成倒地"
-    assert fixed_fallen is False, "归一化后应恢复为站立"
-    assert fixed_ratio > raw_ratio
+    _, raw_ratio = bbox_aspect_is_fallen(bbox, camera_pitch_rad=0.0)
+    _, fixed_ratio = bbox_aspect_is_fallen(bbox, camera_pitch_rad=math.radians(30))
+
+    assert raw_ratio == pytest.approx(RAW_AT_30DEG, rel=1e-6)
+
+    # 核心断言：归一化后**离基准更近**，而不是更远
+    assert abs(fixed_ratio - BASE_RATIO) < abs(raw_ratio - BASE_RATIO), (
+        f"归一化把比例从 {raw_ratio:.3f} 变成 {fixed_ratio:.3f}，"
+        f"而基准是 {BASE_RATIO:.3f} —— 方向反了"
+    )
+    assert fixed_ratio < raw_ratio, "下俯 30° 的修正应当减小比例"
 
 
 def test_midpoints_from_keypoints_2d():

@@ -65,7 +65,19 @@ class FakeGoalServer(Node):
         self.declare_parameter("travel_time", 2.0)
         self.declare_parameter("fail_every_n", 0)
 
-        self._goal_seq = 0
+        # ⚠️ 编号必须在 _execute 里分配，不能在 _on_goal 里分配。
+        #
+        # 踩过的坑：第一版在 _on_goal 里分配 my_seq，但那个局部变量传不到
+        # _execute（goal_callback 收到的是 goal REQUEST，拿不到 goal_id），
+        # 于是 _execute 里重读了**全局计数器** —— 只要 accept 与 execute 之间
+        # 又来了一个目标，_execute 就会读到别人的编号，随后收尾时按编号
+        # 把**新目标**的台账抹掉，抢占从此静默失效（_preempt_count 不动、
+        # 日志一个字不打）。
+        #
+        # 修法：编号只在 _execute 里分配（执行顺序，唯一）；台账清理改用
+        # **句柄身份比较**（`is`），编号再也不参与正确性，只用于日志。
+        self._exec_seq = 0
+        self._accept_count = 0      # 仅用于日志
         self._preempt_count = 0
 
         # 当前在飞的目标。用锁保护：_on_goal 在 executor 线程里跑，
@@ -96,26 +108,32 @@ class FakeGoalServer(Node):
         p = goal_request.pose.pose.position
 
         with self._lock:
-            self._goal_seq += 1
-            my_seq = self._goal_seq
+            self._accept_count += 1
+            my_accept = self._accept_count
             victim = self._active_handle
             victim_seq = self._active_seq
 
         if victim is not None and victim.is_active:
             # ★ 模拟 Nav2 的抢占：停掉在飞的目标，而不是让它继续跑。
-            self._preempt_count += 1
+            with self._lock:
+                self._preempt_count += 1
+                n = self._preempt_count
             self.get_logger().warn(
-                f"⚠️ 抢占：目标 #{victim_seq} 被 #{my_seq} 顶掉 "
-                f"（累计 {self._preempt_count} 次）"
+                f"⚠️ 抢占：目标 #{victim_seq} 被新目标顶掉（累计 {n} 次）"
             )
+            # check-then-act 不在锁内：两个 goal_callback 可并发，
+            # victim 可能已被另一个 callback 或它自己终结。
+            # 这里只能靠 is_active 判断 + 兜住异常；重复 abort 会被吞掉并记日志。
             try:
                 victim.abort()
                 # abort() 会让 victim.is_active 变 False，
                 # 它的 _execute 循环据此自行退出 —— 不需要额外的停止信号。
             except Exception as exc:  # pragma: no cover - 防御性
-                self.get_logger().warn(f"终止旧目标时出错（可忽略）：{exc}")
+                self.get_logger().warn(f"终止旧目标时出错（很可能已被并发终结）：{exc}")
 
-        self.get_logger().info(f"收到目标 #{my_seq}: ({p.x:.2f}, {p.y:.2f})")
+        self.get_logger().info(
+            f"收到目标（accept #{my_accept}）: ({p.x:.2f}, {p.y:.2f})"
+        )
         return GoalResponse.ACCEPT
 
     def _on_cancel(self, goal_handle) -> CancelResponse:
@@ -123,8 +141,11 @@ class FakeGoalServer(Node):
         return CancelResponse.ACCEPT
 
     def _execute(self, goal_handle):
+        # 编号在这里分配（执行顺序，唯一）。见 __init__ 里的说明：
+        # 不能在 _on_goal 里分配，那个编号传不过来。
         with self._lock:
-            my_seq = self._goal_seq
+            self._exec_seq += 1
+            my_seq = self._exec_seq
             self._active_handle = goal_handle
             self._active_seq = my_seq
 
@@ -148,7 +169,10 @@ class FakeGoalServer(Node):
             time.sleep(0.05)
 
         with self._lock:
-            if self._active_seq == my_seq:
+            # 用**句柄身份**比较，不用编号 —— 编号在并发下可能撞车，
+            # 而身份比较不可能误判。这就是「旧目标收尾把新目标台账抹掉」
+            # 那个 bug 的根治办法。
+            if self._active_handle is goal_handle:
                 self._active_handle = None
                 self._active_seq = None
 
@@ -157,30 +181,52 @@ class FakeGoalServer(Node):
             self.get_logger().info(f"目标 #{my_seq} 被抢占终止")
             return NavigateToPose.Result()
         if goal_handle.is_cancel_requested:
-            goal_handle.canceled()
-            self.get_logger().info(f"目标 #{my_seq} 已取消")
+            self._terminate(goal_handle, "canceled", my_seq, "已取消")
             return NavigateToPose.Result()
 
         if outcome == "hang":
             # 既不成功也不失败 —— 用来测 G2 的超时判据
             self.get_logger().warn(f"目标 #{my_seq} 进入挂起状态（模拟无进展）")
+            # ⚠️ 这个循环只能靠取消/抢占/shutdown 退出。它**会一直占着
+            # 一个 executor 线程** —— 这是 hang 语义的应有之义，但要意识到
+            # 它是「线程占用」而不是「阻塞一个目标」：多个 hang 目标叠加
+            # 会耗尽线程池，届时连 goal_callback 都排不上，抢占彻底不可能。
             while rclpy.ok() and goal_handle.is_active and not goal_handle.is_cancel_requested:
                 time.sleep(0.1)
-            if goal_handle.is_active:
-                goal_handle.canceled()
+            self._terminate(goal_handle, "canceled", my_seq, "挂起后被终止")
             return NavigateToPose.Result()
 
         if fail_every > 0 and my_seq % fail_every == 0:
             outcome = "abort"
 
         if outcome == "abort":
-            goal_handle.abort()
-            self.get_logger().info(f"目标 #{my_seq} -> 失败(ABORTED)")
+            self._terminate(goal_handle, "abort", my_seq, "失败(ABORTED)")
         else:
-            goal_handle.succeed()
-            self.get_logger().info(f"目标 #{my_seq} -> 到达(SUCCEEDED)")
+            self._terminate(goal_handle, "succeed", my_seq, "到达(SUCCEEDED)")
 
         return NavigateToPose.Result()
+
+    # ------------------------------------------------------------------
+    def _terminate(self, goal_handle, action: str, seq: int, label: str) -> None:
+        """统一的落终态入口，兜住竞态。
+
+        ⚠️ 为什么必须兜：`if not goal_handle.is_active` 这类检查与真正落终态之间
+        **不是原子区间**（中间还有参数读取、取模、日志等）。抢占完全可能插进这个窗口，
+        于是 succeed() 落在一个已被 abort 的句柄上，抛出
+        "invalid transition from state ABORTED with event SUCCEED" 且无人接管、
+        直接冒到 executor。
+
+        `is_active` 是典型的 check-then-use，**关不掉这个窗口**，
+        只能把落终态包起来、把异常降级成一条日志。
+        """
+        try:
+            getattr(goal_handle, action)()
+        except Exception as exc:  # pragma: no cover - 竞态，难以稳定复现
+            self.get_logger().warn(
+                f"目标 #{seq} 落终态({action})失败，很可能刚被抢占（属正常竞态）：{exc}"
+            )
+            return
+        self.get_logger().info(f"目标 #{seq} -> {label}")
 
 
 def main(args=None) -> None:
