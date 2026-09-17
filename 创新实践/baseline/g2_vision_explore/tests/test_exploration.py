@@ -99,7 +99,7 @@ def test_clearance_rejects_bad_resolution():
 # ----------------------------------------------------------------------
 def test_frontier_is_the_ring_around_the_room():
     grid = room_map()
-    clusters = detect_frontiers(grid, min_area_m2=0.0, merge_gap_cells=0)
+    clusters = detect_frontiers(grid, min_area_m2=0.0, merge_within_cells=0)
 
     assert len(clusters) == 1, "四周未知，房间边缘 8 连通成一个闭环"
 
@@ -120,7 +120,7 @@ def test_ring_centroid_is_the_room_centre():
     而且不会有任何报错。
     """
     grid = room_map()
-    cluster = detect_frontiers(grid, min_area_m2=0.0, merge_gap_cells=0)[0]
+    cluster = detect_frontiers(grid, min_area_m2=0.0, merge_within_cells=0)[0]
 
     cx, cy = cluster.centroid_world
     room_centre_x, room_centre_y = grid.grid_to_world(29.5, 29.5)
@@ -134,31 +134,83 @@ def test_min_area_filters_noise_clusters():
     data[10:30, 10:30] = FREE
 
     grid = GridMap(data, RES, origin=(0, 0))
-    assert len(detect_frontiers(grid, min_area_m2=0.0, merge_gap_cells=0)) == 1
+    assert len(detect_frontiers(grid, min_area_m2=0.0, merge_within_cells=0)) == 1
 
     # 环的面积 = 20x20 - 18x18 = 76 格 = 0.76 m²；门槛抬到 1.0 m² 应全部过滤
     ring_area_m2 = (20 * 20 - 18 * 18) * RES ** 2
     assert ring_area_m2 == pytest.approx(0.76)
 
-    assert detect_frontiers(grid, min_area_m2=1.0, merge_gap_cells=0) == []
+    assert detect_frontiers(grid, min_area_m2=1.0, merge_within_cells=0) == []
 
 
-def test_merge_gap_expands_the_cluster_geometry():
-    """merge_gap_cells 会把 frontier 区域向内扩张 —— 所以默认关掉。
+def test_merge_preserves_cluster_geometry():
+    """⚠️ 这条测试原先断言的是**错误行为**（「合并会让面积变大」），
+    2026-09-17 重写。
 
-    这里把它的副作用钉下来：开启后簇面积变大、且会侵入房间内部，
-    在闭环 frontier 场景下会让「内部无 frontier 格」不再成立。
+    原先合并用形态学膨胀实现，副作用是**改变 frontier 本身的几何**：
+    区域被向内扩张、面积被放大、质心偏移。那条测试把副作用当成了规格 ——
+    于是按 `frontier.py` 自己 docstring 推荐的「按质心距离合并」去修，
+    测试反而会失败（一个挡住正确修法的枷锁）。
+
+    现在合并只改「分组」，不动几何。这条测试断言的正是**这个契约**。
     """
     grid = room_map()
-    raw = detect_frontiers(grid, min_area_m2=0.0, merge_gap_cells=0)[0]
-    merged = detect_frontiers(grid, min_area_m2=0.0, merge_gap_cells=1)[0]
+    raw = detect_frontiers(grid, min_area_m2=0.0, merge_within_cells=0)[0]
 
-    assert merged.area_m2 > raw.area_m2
+    # 阈值很小 -> 只有一个簇，合并应当**完全不变**
+    same = detect_frontiers(grid, min_area_m2=0.0, merge_within_cells=1)[0]
+
+    assert same.area_m2 == pytest.approx(raw.area_m2), "合并不该改变面积"
+    assert same.centroid_world == pytest.approx(raw.centroid_world), "合并不该移动质心"
+    assert same.cells.shape == raw.cells.shape, "合并不该增删格点"
 
 
-def test_frontier_requires_unknown_neighbour():
-    """地图里没有未知区时，不应产生任何 frontier。"""
+def test_merge_joins_only_nearby_clusters():
+    """合并的**唯一**效果是把靠得近的簇归为一组 —— 不碰任何簇的内部几何。"""
+    size = 60
+    data = np.full((size, size), UNKNOWN, dtype=np.int8)
+    # 两个相距较远的自由岛，各带一圈 frontier
+    data[10:20, 10:20] = FREE
+    data[40:50, 40:50] = FREE
+    grid = GridMap(data, RES, origin=(0.0, 0.0))
+
+    raw = detect_frontiers(grid, min_area_m2=0.0, merge_within_cells=0)
+    assert len(raw) == 2, "两个岛应当是两个独立的 frontier 环"
+
+    total_area = sum(c.area_m2 for c in raw)
+
+    # 阈值远大于两岛间距 -> 应当并成一个
+    merged = detect_frontiers(grid, min_area_m2=0.0, merge_within_cells=1000)
+    assert len(merged) == 1
+    assert merged[0].area_m2 == pytest.approx(total_area), "合并后面积应当是两者之和"
+    assert len(merged[0].cells) == sum(len(c.cells) for c in raw), "格点应当是并集"
+
+
+def test_map_border_counts_as_unknown():
+    """⭐ 语义统一后的行为：**地图外 = 未知**，所以全自由图的边界就是 frontier。
+
+    原先 cv2.dilate 用默认边界值 0（图外当作「非未知」），于是全自由图
+    检测不到任何 frontier。但 SLAM 的占据栅格通常是**裁到已探明区**的 ——
+    地图边界正是「已知与未知的交界」，也就是 frontier 的定义本身。
+    漏掉它会让探索提前判完成。
+
+    见 grid.clearance_m / explorer._unknown_fraction_map —— 三处统一为同一语义。
+    """
     data = np.full((20, 20), FREE, dtype=np.int8)
+    grid = GridMap(data, RES, origin=(0, 0))
+    clusters = detect_frontiers(grid, min_area_m2=0.0)
+
+    assert len(clusters) == 1, "全自由图的边界应当构成一整圈 frontier"
+    cells = clusters[0].cells
+    rows, cols = cells[:, 0], cells[:, 1]
+    assert rows.min() == 0 and rows.max() == 19, "应当是外圈"
+    assert cols.min() == 0 and cols.max() == 19
+
+
+def test_no_frontier_when_map_is_fully_enclosed():
+    """真正探完的情形：自由区被占用区**完全包住**，边界不再是未知。"""
+    data = np.full((24, 24), OCCUPIED, dtype=np.int8)
+    data[2:22, 2:22] = FREE
     grid = GridMap(data, RES, origin=(0, 0))
     assert detect_frontiers(grid, min_area_m2=0.0) == []
 
@@ -371,10 +423,15 @@ def test_gain_actually_influences_selection():
 
 
 def test_no_goal_when_fully_explored():
-    """地图上没有未知区 -> 探索完成，返回 None。"""
-    data = np.full((30, 30), FREE, dtype=np.int8)
+    """自由区被占用区完全包住 -> 没有 frontier -> 探索完成。
+
+    注意不能再用「整张图全自由」来构造这个场景了：
+    统一语义之后图外算未知，全自由图的边界本身就是 frontier。
+    """
+    data = np.full((40, 40), OCCUPIED, dtype=np.int8)
+    data[5:35, 5:35] = FREE
     grid = GridMap(data, RES, origin=(0, 0))
-    assert pick_status(GoalSelector(), grid, robot_xy=(1.5, 1.5)) is SelectStatus.NO_FRONTIER
+    assert pick_status(GoalSelector(), grid, robot_xy=(2.0, 2.0)) is SelectStatus.NO_FRONTIER
 
 
 def test_no_goal_when_robot_trapped():

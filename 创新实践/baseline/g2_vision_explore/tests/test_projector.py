@@ -172,14 +172,31 @@ def test_mask_restricts_sampling():
     assert res.valid_pixels == 21 * 5
 
 
-def test_bottom_anchor_is_lower_than_center():
-    """bottom 锚点应当比 center 更靠下（光学系 y 向下即更大）。"""
-    depth = _flat_depth()
+def test_bottom_anchor_is_strictly_lower_than_center():
+    """bottom 锚点必须**严格**比 center 靠下（光学系 y 向下即更大）。
+
+    ⚠️ 这条测试原先用的是**平深度图** —— 那时所有三维点的 y 完全相同，
+    bottom 与 center 恒等，断言 `>=` 空洞地成立。变异测试证实：
+    把 bottom 分支改成等价于 center 的空操作，测试照样通过（M21 存活）。
+
+    现在构造一个**沿竖直方向递增的深度梯度**：远处（图像下方）的点更深，
+    于是 y = (v-cy)*d/fy 的分布右偏，90 分位严格大于中位数 ——
+    这条断言才有判别力。
+    """
+    depth = np.full((480, 640), 2.0, dtype=np.float32)
+    # 框内深度自上而下由 2.0 缓升到 2.5（梯度要平缓，否则触发离散度门限）
+    depth[230:251, 310:331] = np.linspace(2.0, 2.5, 21)[:, None]
+
     center = project_depth_bbox(depth, K, (310, 230, 331, 251), anchor="center")
     bottom = project_depth_bbox(depth, K, (310, 230, 331, 251), anchor="bottom")
 
     assert center is not None and bottom is not None
-    assert bottom.point[1] >= center.point[1]
+    assert bottom.point[1] > center.point[1] + 1e-3, (
+        f"bottom 锚点({bottom.point[1]:.4f}) 必须严格低于 center({center.point[1]:.4f})；"
+        f"相等说明 bottom 分支没有真正生效"
+    )
+    # x / z 取自底面点，但不应跳到另一个量级
+    assert bottom.point[2] == pytest.approx(center.point[2], rel=0.5)
 
 
 def test_bad_anchor_raises():
@@ -269,3 +286,31 @@ def test_camera_intrinsics_from_k():
 def test_camera_intrinsics_rejects_bad_k():
     with pytest.raises(ValueError):
         CameraIntrinsics.from_camera_info([1.0, 2.0, 3.0])
+
+
+def test_ground_plane_max_range_uses_euclidean_distance():
+    """`max_range_m` 必须按**欧氏距离**校验，不是沿光轴深度。
+
+    ⚠️ 回归测试：原先校验的是 ``t``（沿光轴深度），而 ``t`` 与真实距离
+    差一个 ``sqrt(1 + dx² + dy²)``。对 120° 广角这个因子最大约 2.4 ——
+    也就是说参数名叫「距离上限」，实际却可能返回它 2 倍多远的点。
+
+    构造一个**远离光轴**的像素：它的 ``t`` 很小（射线很快打到地面），
+    但真实距离并不小。用一个小上限，按距离算应当被拦下。
+    """
+    h, pitch = 0.35, math.radians(5.0)
+    # 画面右下角：dx、dy 都很大
+    u, v = K.cx + 300, K.cy + 200
+
+    p = project_ground_plane(u, v, K, h, pitch, max_range_m=1e9)
+    assert p is not None, "先确认这个像素确实能落到地面上"
+    real_dist = float(np.linalg.norm(p))
+    t_axis = float(p[2])
+
+    assert real_dist > t_axis, "离轴越远，欧氏距离与沿轴深度的差越大"
+
+    # 上限卡在两者之间：按距离算应当拒绝，按沿轴深度算会放行
+    limit = (real_dist + t_axis) / 2
+    assert project_ground_plane(u, v, K, h, pitch, max_range_m=limit) is None, (
+        "上限用的应当是欧氏距离；这里返回了点说明还在按沿轴深度校验"
+    )

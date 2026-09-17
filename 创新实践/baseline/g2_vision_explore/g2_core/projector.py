@@ -316,8 +316,14 @@ def project_ground_plane(
     pitch_rad : float
         相机**向下**的俯仰角（弧度）。地平线在图像中的位置由它决定。
     max_range_m : float
-        距离上限。光线越接近与地面平行，t 越大 —— 没有这个上限会返回
-        反方向或无穷远的假坐标。
+        返回点到相机的**欧氏距离**上限（米）。光线越接近与地面平行，
+        交点是越远 —— 没有这个上限会返回反方向或无穷远的假坐标。
+
+        ⚠️ 这里校验的是 ``|p|`` 而**不是**沿光轴的深度 ``t``（2026-09-17 修正）。
+        原先校验的是 ``t``，但 ``t`` 与真实距离差一个
+        ``sqrt(1 + dx² + dy²)``：对 120° 广角（fx≈185@640 宽）这个因子最大约 2.4，
+        也就是说参数名叫「距离上限」、实际却可能返回**它 2 倍多**远的点。
+        既然名字写的是距离，就按距离校验。
 
     Returns
     -------
@@ -335,10 +341,16 @@ def project_ground_plane(
         return None
 
     t = camera_height_m / denom
-    if not math.isfinite(t) or t <= 0 or t > max_range_m:
+    if not math.isfinite(t) or t <= 0:
         return None
 
-    return np.array([t * dx, t * dy, t * dz], dtype=np.float64)
+    point = np.array([t * dx, t * dy, t * dz], dtype=np.float64)
+
+    # 按**欧氏距离**校验上限，而不是按沿光轴深度 t —— 见 docstring。
+    if float(np.linalg.norm(point)) > max_range_m:
+        return None
+
+    return point
 
 
 # ----------------------------------------------------------------------

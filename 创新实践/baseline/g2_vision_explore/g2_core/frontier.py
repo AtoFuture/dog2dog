@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import cv2
@@ -47,7 +48,7 @@ class FrontierCluster:
 def detect_frontiers(
     grid: GridMap,
     min_area_m2: float = 0.25,
-    merge_gap_cells: int = 0,
+    merge_within_cells: int = 0,
 ) -> list[FrontierCluster]:
     """检测全部 frontier 簇。
 
@@ -58,17 +59,20 @@ def detect_frontiers(
         最小簇面积（米²）。小于此值的簇被丢弃。
         默认 0.25 m² 是个偏保守的起点 —— 在 0.05 m/格 的地图上等于 100 格。
         太小会引入噪声簇，太大会漏掉真实的小门洞，**需按实际地图分辨率实测调整**。
-    merge_gap_cells : int
-        先对 frontier 掩膜做一次膨胀再连通，把相隔很近的碎片并成一个簇。
-        **默认 0（不合并）**。
+    merge_within_cells : int
+        把质心距离小于这么多格的簇**并成一个**。**默认 0（不合并）**。
 
-        ⚠️ 慎用：合并用的是「膨胀后再与自由区求交」，它**会把 frontier 区域本身
-        向内扩张**，于是 (a) 簇的面积被放大、几何被改变；(b) 在「一个房间、四周未知」
-        这种最常见场景下，整个环会被并成**一个**簇 —— 于是探索决策退化成
-        「只有一个候选目标点」，而且该簇的质心是**房间中心**，
-        据此算出的抵达朝向会**指向房间内部**，完全反了。
+        ⚠️ 这里刻意**不用形态学膨胀**来实现合并（2026-09-17 重写）。
 
-        如果确实需要合并碎片，更稳妥的做法是按簇质心距离合并，而不是形态学膨胀。
+        膨胀的做法是「把 frontier 掩膜膨胀后再与自由区求交」，它有两个副作用：
+
+        1. **改变 frontier 本身的几何** —— 区域被向内扩张、面积被放大，
+           而簇的 `cells` / `centroid_world` / `area_m2` 就不再是真实的 frontier 了。
+        2. 在「一个房间、四周未知」这种最常见场景下，整个环会被并成**一个**簇，
+           其质心恰好是**房间中心** —— 据此算出的抵达朝向会指向房间内部，完全反了。
+
+        现在的做法是：先按连通域得到真实簇，再**按质心距离合并**。
+        合并只改变「哪些簇算一个」，不改变任何簇的几何。
 
     Returns
     -------
@@ -77,15 +81,19 @@ def detect_frontiers(
     free = grid.free
     unknown = grid.unknown
 
-    # 未知区膨胀 1 格，与自由区求交 = 与未知相邻的自由格
-    dil = cv2.dilate(unknown.astype(np.uint8), np.ones((3, 3), np.uint8))
+    # 未知区膨胀 1 格，与自由区求交 = 与未知相邻的自由格。
+    #
+    # ⚠️ borderValue=1：把**地图外**当作未知（2026-09-17 统一语义）。
+    # cv2.dilate 默认的边界值是 0，等于把图外当成「非未知」——
+    # 于是地图被裁剪到已探明区时，边界上的真实 frontier **检测不到**，
+    # 探索会提前判完成。SLAM 的图通常正是裁到已探明区的，所以这不是边角情况。
+    dil = cv2.dilate(
+        unknown.astype(np.uint8),
+        np.ones((3, 3), np.uint8),
+        borderType=cv2.BORDER_CONSTANT,
+        borderValue=1,
+    )
     frontier_mask = (free & (dil > 0)).astype(np.uint8)
-
-    if merge_gap_cells > 0:
-        k = 2 * merge_gap_cells + 1
-        merged = cv2.dilate(frontier_mask, np.ones((k, k), np.uint8))
-        # 膨胀后再与 free 求交，避免把膨胀出来的非自由格算进簇
-        frontier_mask = (merged > 0).astype(np.uint8) & free.astype(np.uint8)
 
     if not frontier_mask.any():
         return []
@@ -117,5 +125,68 @@ def detect_frontiers(
             )
         )
 
+    if merge_within_cells > 0 and len(clusters) > 1:
+        clusters = _merge_by_centroid(clusters, grid.resolution * merge_within_cells)
+
     clusters.sort(key=lambda c: c.area_m2, reverse=True)
     return clusters
+
+
+def _merge_by_centroid(
+    clusters: list[FrontierCluster], max_dist_m: float
+) -> list[FrontierCluster]:
+    """把质心距离小于 ``max_dist_m`` 的簇并成一个（并查集）。
+
+    合并只动「分组」，**不动任何簇的格点** ——
+    合并后的簇保留各成员的全部 cells，面积是成员之和。
+    """
+    n = len(clusters)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[rj] = ri
+
+    for i in range(n):
+        xi, yi = clusters[i].centroid_world
+        for j in range(i + 1, n):
+            xj, yj = clusters[j].centroid_world
+            if math.hypot(xi - xj, yi - yj) <= max_dist_m:
+                union(i, j)
+
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+
+    merged: list[FrontierCluster] = []
+    for root, members in groups.items():
+        if len(members) == 1:
+            merged.append(clusters[root])
+            continue
+
+        cells = np.vstack([clusters[m].cells for m in members])
+
+        # 合并后的质心 = 成员质心按**格数**加权平均。
+        # 这与「直接对所有格点求均值」等价（各簇质心本就是其格点的均值），
+        # 而按格数加权是必须的 —— 直接平均成员质心会让小簇的权重被高估。
+        weights = np.array([len(clusters[m].cells) for m in members], dtype=np.float64)
+        wsum = weights.sum()
+        cx = sum(w * clusters[m].centroid_world[0] for w, m in zip(weights, members)) / wsum
+        cy = sum(w * clusters[m].centroid_world[1] for w, m in zip(weights, members)) / wsum
+
+        merged.append(
+            FrontierCluster(
+                label=clusters[root].label,
+                cells=cells,
+                centroid_world=(float(cx), float(cy)),
+                area_m2=sum(clusters[m].area_m2 for m in members),
+            )
+        )
+    return merged

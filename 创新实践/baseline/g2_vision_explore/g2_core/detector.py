@@ -71,6 +71,91 @@ class DetectorUnavailableError(RuntimeError):
     """ultralytics 不可用。"""
 
 
+def resolve_class_filter(names: dict, wanted: set[str], weights: str) -> list[int]:
+    """把类别**名字**白名单解析成 ultralytics 要的**索引**列表。
+
+    抽成独立函数同样是为了可测（它原先在 ``Detector.__init__`` 里，
+    而那条路径需要加载 torch）。
+
+    ⚠️ **一个都没匹配上时必须抛错**，不能返回空列表。
+
+    ultralytics 的类别过滤是 ``filt = (x[:,5:6] == classes).any(1)``：
+    传空列表时比较结果全为 False，于是**每帧返回空列表、永远**。
+    上层看到的是「这个场景没有人」，而不是「配置错了」——
+    一个静默的、看起来完全正常的零检出。
+
+    注意空列表与 ``None`` 在 ultralytics 里是**两回事**：
+    ``None`` = 不过滤（全要），``[]`` = 一个都不要。这里绝不能混同。
+    """
+    matched = [i for i, n in names.items() if n in wanted]
+    missing = wanted - set(names.values())
+    if missing:
+        # 部分不匹配只报警 —— 权重换版本时类别名有出入是正常的。
+        print(f"[Detector] 权重里没有这些类别，已忽略：{sorted(missing)}")
+
+    if not matched:
+        raise DetectorUnavailableError(
+            f"类别白名单 {sorted(wanted)} 在权重 {weights!r} 里**一个都没匹配上**。\n"
+            f"  该权重实际类别：{sorted(set(names.values()))[:15]}"
+            f"{' ...' if len(names) > 15 else ''}\n"
+            f"  继续跑下去会得到「每帧零检出」这种看起来正常的结果，所以这里直接报错。\n"
+            f"  改 classes=... 或设 classes=None（不过滤）。"
+        )
+    return matched
+
+
+def results_to_detections(result, names: dict, track: bool) -> list["Detection2D"]:
+    """把一条 ultralytics 的 ``Results`` 映射成 ``Detection2D`` 列表。
+
+    **抽成独立的纯函数是为了可测** —— 原先这段逻辑埋在 ``Detector._run`` 里，
+    而 ``_run`` 需要真的加载 torch 才能跑，于是它成了整个模块里
+    唯一 0 覆盖的部分（审查点名）。现在只要一个鸭子类型的假 result 就能测，
+    不需要 torch、不需要权重文件。
+
+    ``result`` 只需要满足：``boxes.xyxy/conf/cls``、可选的 ``boxes.id``、
+    可选的 ``masks.data``、可选的 ``keypoints.data``，
+    且各字段支持 ``.cpu().numpy()``（ultralytics 的 torch 张量就是这样）。
+    """
+    if result is None:
+        return []
+    boxes = getattr(result, "boxes", None)
+    if boxes is None or len(boxes) == 0:
+        return []
+
+    xyxy = boxes.xyxy.cpu().numpy()
+    confs = boxes.conf.cpu().numpy()
+    clss = boxes.cls.cpu().numpy().astype(int)
+
+    ids = None
+    if track and getattr(boxes, "id", None) is not None:
+        ids = boxes.id.cpu().numpy().astype(int)
+
+    masks = None
+    r_masks = getattr(result, "masks", None)
+    if r_masks is not None and getattr(r_masks, "data", None) is not None:
+        masks = r_masks.data.cpu().numpy()          # (N, H, W)，值域 0/1
+
+    kpts = None
+    r_kpts = getattr(result, "keypoints", None)
+    if r_kpts is not None and getattr(r_kpts, "data", None) is not None:
+        kpts = r_kpts.data.cpu().numpy()            # (N, 17, 3)
+
+    out: list[Detection2D] = []
+    for i in range(len(xyxy)):
+        out.append(
+            Detection2D(
+                class_name=names.get(int(clss[i]), str(clss[i])),
+                class_id=int(clss[i]),
+                confidence=float(confs[i]),
+                bbox_xyxy=tuple(float(v) for v in xyxy[i]),
+                track_id=int(ids[i]) if ids is not None else None,
+                mask=(masks[i] > 0.5) if masks is not None else None,
+                keypoints=kpts[i] if kpts is not None else None,
+            )
+        )
+    return out
+
+
 def _load_ultralytics():
     """惰性导入。失败时给一条能直接照做的提示，而不是一个裸的 ImportError。"""
     try:
@@ -130,32 +215,9 @@ class Detector:
         if self.config.classes is None:
             self._class_filter = None
         else:
-            wanted = set(self.config.classes)
-            self._class_filter = [i for i, n in self._names.items() if n in wanted]
-            missing = wanted - set(self._names.values())
-            if missing:
-                # 部分不匹配只报警 —— 权重换版本时类别名有出入是正常的。
-                print(f"[Detector] 权重里没有这些类别，已忽略：{sorted(missing)}")
-
-            # ⚠️ **一个都没匹配上必须报错，不能静默继续。**
-            #
-            # ultralytics 的类别过滤是 `filt = (x[:,5:6] == classes).any(1)`：
-            # 传空列表时比较结果全为 False，于是**每帧返回空列表、永远**。
-            # 上层看到的是"这个场景没有人"，而不是"配置错了" ——
-            # 一个静默的、看起来完全正常的零检出。
-            #
-            # 注意空列表与 None 在 ultralytics 里是**两回事**：
-            # None = 不过滤（全要），[] = 一个都不要。这里绝不能混同。
-            if not self._class_filter:
-                raise DetectorUnavailableError(
-                    f"类别白名单 {sorted(wanted)} 在权重 {self.config.weights!r} 里"
-                    f"**一个都没匹配上**。\n"
-                    f"  该权重实际类别：{sorted(set(self._names.values()))[:15]}"
-                    f"{' ...' if len(self._names) > 15 else ''}\n"
-                    f"  继续跑下去会得到「每帧零检出」这种看起来正常的结果，"
-                    f"所以这里直接报错。\n"
-                    f"  改 classes=... 或设 classes=None（不过滤）。"
-                )
+            self._class_filter = resolve_class_filter(
+                self._names, set(self.config.classes), self.config.weights
+            )
 
     # ------------------------------------------------------------------
     def detect(self, image_bgr: np.ndarray):
@@ -177,6 +239,12 @@ class Detector:
             iou=self.config.iou,
             imgsz=self.config.imgsz,
             verbose=False,
+            # 让分割掩膜**回到原图分辨率**。
+            # 默认（retina_masks=False）下掩膜是 letterbox 补边后的推理尺寸
+            # （例如 640×640），而调用方拿原图坐标去切它 —— 会静默采错像素。
+            # 这一条是对抗性审查指出的，虽然本仓库实测当前版本掩膜尺寸是对的，
+            # 但那是行为不是契约，显式打开更稳。
+            retina_masks=True,
         )
         if self.config.device is not None:
             kwargs["device"] = self.config.device
@@ -190,41 +258,4 @@ class Detector:
 
         if not results:
             return []
-
-        r = results[0]
-        if r.boxes is None or len(r.boxes) == 0:
-            return []
-
-        boxes = r.boxes
-        xyxy = boxes.xyxy.cpu().numpy()
-        confs = boxes.conf.cpu().numpy()
-        clss = boxes.cls.cpu().numpy().astype(int)
-
-        ids = None
-        if track and boxes.id is not None:
-            ids = boxes.id.cpu().numpy().astype(int)
-
-        # 分割掩膜
-        masks = None
-        if getattr(r, "masks", None) is not None and r.masks is not None:
-            masks = r.masks.data.cpu().numpy()  # (N, H, W)，值域 0/1
-
-        # 姿态关键点
-        kpts = None
-        if getattr(r, "keypoints", None) is not None and r.keypoints is not None:
-            kpts = r.keypoints.data.cpu().numpy()  # (N, 17, 3)
-
-        out: list[Detection2D] = []
-        for i in range(len(xyxy)):
-            out.append(
-                Detection2D(
-                    class_name=self._names.get(int(clss[i]), str(clss[i])),
-                    class_id=int(clss[i]),
-                    confidence=float(confs[i]),
-                    bbox_xyxy=tuple(float(v) for v in xyxy[i]),
-                    track_id=int(ids[i]) if ids is not None else None,
-                    mask=(masks[i] > 0.5) if masks is not None else None,
-                    keypoints=kpts[i] if kpts is not None else None,
-                )
-            )
-        return out
+        return results_to_detections(results[0], self._names, track=track)

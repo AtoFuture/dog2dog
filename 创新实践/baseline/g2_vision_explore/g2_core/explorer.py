@@ -133,9 +133,13 @@ class ExplorerParams:
 
     # --- frontier ---
     min_frontier_area_m2: float = 0.25
-    merge_gap_cells: int = 0
-    """见 ``frontier.detect_frontiers`` —— 默认不合并，合并会把整个 frontier 环
-    并成一个簇且改变其几何。"""
+    merge_within_cells: int = 0
+    """见 ``frontier.detect_frontiers`` —— 把**质心距离**小于这么多格的簇并成一个。
+    默认不合并。
+
+    注意合并**不改变**任何簇的几何（格点、面积、质心都保持真实），
+    只改变「哪些簇算一个」。
+    """
 
     goal_pullback_m: float = 0.8
     """候选点从 frontier 边界**退回自由空间**的距离（米），应对上面第 2 点。
@@ -178,12 +182,15 @@ class GoalSelector:
     用法::
 
         selector = GoalSelector()
-        goal = selector.select(grid, robot_xy=(0.0, 0.0), now=t)
-        if goal is None:
-            ...  # 探索完成
-        else:
-            send_navigate_to_pose(goal.x, goal.y, goal.yaw)
-            selector.on_result(goal, success=True, now=t2)
+        sel = selector.select(grid, robot_xy=(0.0, 0.0), now=t)
+
+        if sel.status is SelectStatus.GOAL:
+            send_navigate_to_pose(sel.goal.x, sel.goal.y, sel.goal.yaw)
+            selector.on_result(sel.goal, success=True, now=t2)
+        elif sel.is_complete:            # 只有 NO_FRONTIER 算探索完成
+            ...                          # -> 状态机 on_exhausted()
+        else:                            # NO_CANDIDATE / NO_ROBOT_POSE
+            ...                          # 瞬时的，稍后重试 -> on_nav_timeout()
     """
 
     def __init__(self, params: ExplorerParams | None = None):
@@ -308,13 +315,24 @@ class GoalSelector:
         """
         r_cells = max(1, int(round(self.params.gain_window_radius_m / grid.resolution)))
         k = 2 * r_cells + 1
-        return cv2.boxFilter(
-            grid.unknown.astype(np.float32),
-            -1,
-            (k, k),
-            normalize=True,
-            borderType=cv2.BORDER_REPLICATE,
+        # ⚠️ 图外当作**未知**，与 frontier / clearance 统一。
+        #
+        # 原先用 BORDER_REPLICATE（把边界格的值复制到图外），于是：
+        #   * 地图边缘是自由格时 -> 边界外真正的未知空间**一分不给**，
+        #     边界附近的候选被系统性低估 —— 而地图边界往往正是该去探的方向；
+        #   * 地图边缘是未知格时 -> 分数被抬高，把机器人往地图边界吸。
+        # 两个方向的偏差都取决于「地图恰好裁在哪儿」，这种依赖没有道理。
+        #
+        # 注意 cv2.boxFilter **不支持 borderValue 参数**（试过，报
+        # "borderValue is an invalid keyword argument"），
+        # 所以显式补边：补上 k//2 圈「未知」，算完再裁回去。
+        pad = r_cells
+        padded = cv2.copyMakeBorder(
+            grid.unknown.astype(np.float32), pad, pad, pad, pad,
+            cv2.BORDER_CONSTANT, value=1.0,
         )
+        filtered = cv2.boxFilter(padded, -1, (k, k), normalize=True)
+        return filtered[pad:-pad, pad:-pad]
 
     def _visit_penalty(self, grid: GridMap, candidates: np.ndarray) -> np.ndarray:
         """每个候选格的访问惩罚系数（向量化）。
@@ -369,7 +387,7 @@ class GoalSelector:
         clusters = detect_frontiers(
             grid,
             min_area_m2=p.min_frontier_area_m2,
-            merge_gap_cells=p.merge_gap_cells,
+            merge_within_cells=p.merge_within_cells,
         )
         if not clusters:
             return GoalSelection(SelectStatus.NO_FRONTIER)

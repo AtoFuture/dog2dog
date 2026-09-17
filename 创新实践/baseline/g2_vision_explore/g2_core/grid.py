@@ -145,9 +145,20 @@ class GridMap:
         3. 默认的 ``DIST_L2`` + 3x3 掩膜是**近似**欧氏距离；
            要精确必须用 ``DIST_MASK_PRECISE``（代价是慢一些）。
         """
+        # ⚠️ 先给掩膜**补一圈 0**（不可通行），把「地图外」纳入距离计算。
+        #
+        # cv2.distanceTransform 只看掩膜内部，图外的像素它不当作障碍 ——
+        # 于是贴着地图边缘的自由格 clearance 会被**高估**，
+        # 而地图外恰恰是未知区，机器人不该往那儿贴。
+        # 与 frontier / 未知占比两处统一为「图外 = 未知」。
         mask = self.traversable.astype(np.uint8)
+        mask = cv2.copyMakeBorder(mask, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
+
         flag = cv2.DIST_MASK_PRECISE if precise else cv2.DIST_MASK_3
         dist_cells = cv2.distanceTransform(mask, cv2.DIST_L2, flag)
+
+        # 去掉补的边，回到原图尺寸
+        dist_cells = dist_cells[1:-1, 1:-1]
         return dist_cells * self.resolution
 
     def unknown_ratio(self) -> float:
