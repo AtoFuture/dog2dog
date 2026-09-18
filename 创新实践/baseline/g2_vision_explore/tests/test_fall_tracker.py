@@ -320,3 +320,42 @@ def test_horizontal_max_is_the_same_value_as_the_anomaly_rule():
     from g2_core.fall_tracker import HORIZONTAL_MAX_DEG
 
     assert HORIZONTAL_MAX_DEG == FALLEN_MAX_DEG
+
+
+# ----------------------------------------------------------------------
+# 阈值边界（P2-③）
+# ----------------------------------------------------------------------
+def test_tilt_exactly_at_upright_max_counts_as_upright():
+    """边界值取闭区间：恰好 ``UPRIGHT_MAX_DEG`` 算直立。
+
+    ⚠️ 这条测试的由来：原先没有任何用例喂**恰好等于**阈值的倾角，
+    于是把 ``<=`` 改成 ``<`` 全量测试照样全过 —— 边界语义完全没被钉住。
+    """
+    tracker = FallTracker()
+    feed(tracker, 1, [UPRIGHT_MAX_DEG] * 5, dt=0.2)
+
+    # 若被判成直立，接下来的水平段能触发事件（有「前状态」）
+    events = feed(tracker, 1, [85.0] * 20, dt=0.2, t0=1.0)
+
+    assert len(events) == 1, "恰好 30° 应当算直立，于是后面的倒地才判得出来"
+
+
+def test_tilt_exactly_at_horizontal_min_counts_as_lying():
+    """恰好 ``HORIZONTAL_MIN_DEG`` 算已躺平（闭区间）。"""
+    tracker = FallTracker()
+    seq = [5.0] * 5 + [HORIZONTAL_MIN_DEG] * 20
+
+    events = feed(tracker, 1, seq, dt=0.2)
+
+    assert len(events) == 1, "恰好 60° 应当算躺平"
+
+
+def test_tilt_exactly_at_horizontal_max_is_out_of_range():
+    """恰好 ``HORIZONTAL_MAX_DEG`` 仍算躺平，超过它才越界（闭区间）。"""
+    from g2_core.fall_tracker import HORIZONTAL_MAX_DEG
+
+    at_max = FallTracker()
+    assert len(feed(at_max, 1, [5.0] * 5 + [HORIZONTAL_MAX_DEG] * 20, dt=0.2)) == 1
+
+    over = FallTracker()
+    assert feed(over, 1, [5.0] * 5 + [HORIZONTAL_MAX_DEG + 1.0] * 20, dt=0.2) == []

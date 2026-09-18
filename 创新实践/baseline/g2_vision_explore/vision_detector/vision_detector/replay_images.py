@@ -54,11 +54,24 @@ TS_RE = re.compile(r"(\d{8})-(\d{6})_(\d{6})")
 
 
 def _ts(name: str) -> float | None:
+    """文件名里的时刻，**含日期**，单位秒。
+
+    ⚠️ 日期必须进时间戳（2026-09-18 审核 P3）。原先写的是
+    ``_, t, us = m.groups()`` —— 把捕获到的日期**丢掉了**，只留「当天秒数」。
+    后果：跨天的目录里，日期 A 的彩色帧会和日期 B 同一时刻的深度帧配上
+    （差 ≤ 0.2 s 就配），三维坐标全错而**没有任何提示**。
+
+    当前三个数据目录都是单一日期，所以没触发 —— 但那是运气，不是保证。
+    这里把 ``YYYYMMDD`` 当**单调的日序号**用（不解析成日历日，没必要），
+    同一天内的差值与原先完全一致。
+    """
     m = TS_RE.search(name)
     if not m:
         return None
-    _, t, us = m.groups()
-    return int(t[:2]) * 3600 + int(t[2:4]) * 60 + int(t[4:6]) + int(us) / 1e6
+    d, t, us = m.groups()
+    return (int(d) * 86400.0
+            + int(t[:2]) * 3600 + int(t[2:4]) * 60 + int(t[4:6])
+            + int(us) / 1e6)
 
 
 class ImageReplayer(Node):
@@ -141,6 +154,7 @@ class ImageReplayer(Node):
         dts = np.array(sorted(depth_by_ts))
 
         pairs = []
+        unmatched = 0
         for f in sorted(glob.glob(os.path.join(cdir, "*.png"))):
             t = _ts(os.path.basename(f))
             if t is None:
@@ -148,6 +162,24 @@ class ImageReplayer(Node):
             i = int(np.argmin(np.abs(dts - t)))
             if abs(dts[i] - t) <= 0.2:      # 两路独立流，容差 0.2 s
                 pairs.append((f, depth_by_ts[float(dts[i])]))
+            else:
+                unmatched += 1
+
+        # ⚠️ 配不上的帧**必须吭声**（2026-09-18 审核 P3）。
+        #
+        # 原先它们是静默 ``continue`` 掉的。后果是回放出来的序列**不是录制的序列**：
+        # 实测某数据集 138 张彩色只有 71 个深度，**67 帧被无声丢掉**，
+        # 有效帧间隔从 ~5 s 变成 ~10 s。任何「用回放验证跟踪连续性/时间判据」
+        # 的结论，都是在这条稀疏一倍的序列上得出的，而日志里只有一行「配到 71 对」。
+        #
+        # 这与同一个文件里对坏文件的处理形成反差：**坏文件会 warn，配不上的不叫**。
+        if unmatched:
+            self.get_logger().warn(
+                f"有 {unmatched} 张彩色图配不上深度（色 {len(pairs) + unmatched} 张，"
+                f"深度 {len(depth_by_ts)} 个）—— 这些帧会被**跳过**，"
+                f"回放出来的序列比原始素材稀疏。"
+                f"若要用它验证时间判据/跟踪连续性，先确认稀疏程度是否可接受。"
+            )
         return pairs
 
     def _broadcast_tf(self) -> None:

@@ -501,3 +501,45 @@ def test_sample_depth_near_returns_nan_for_non_finite_coordinates():
     for u, v in ((float("nan"), 20.0), (20.0, float("nan")),
                  (float("inf"), 20.0), (20.0, float("-inf"))):
         assert math.isnan(sample_depth_near(z, u, v)), f"({u}, {v}) 应当返回 nan 而不是抛"
+
+
+def test_sample_depth_near_default_parameters_take_the_near_end():
+    """⭐ P2-① 回归：**默认参数**必须取近端。
+
+    这条测试的由来：所有测「近端行为」的用例都**显式传了** ``percentile=5.0``，
+    于是默认值从来没被走过。把默认改成 95.0（取背景）之后 **166 个测试全过** ——
+    而生产代码 ``anomaly.keypoints_to_torso_3d`` 正是**依赖这个默认值**
+    （它调 ``sample_depth_near(depth_m, u, v)`` 不传 percentile）。
+
+    也就是说：改坏了默认值，受影响的不是测试，是**现场**。
+
+    所以这里**不传 percentile**，只用默认值跑一个近/远分明的窗口。
+    """
+    z = _scene_with_person()          # 1/4 是 1.5 m 的人，3/4 是 3.0 m 的背景
+
+    got = sample_depth_near(z, 20, 20, radius=9)
+
+    assert got < 2.0, (
+        f"默认参数取到了 {got:.2f} m —— 那是背景（人真值 1.5 m）。"
+        f"checkpoint：默认 percentile 被人从近端改成了远端？"
+    )
+    assert got == pytest.approx(1.5, abs=0.05)
+
+
+def test_keypoints_to_torso_3d_uses_the_near_end_by_default():
+    """同上，但走生产入口 —— 保证那条链路上取的是人不是背景。"""
+    from g2_core.anomaly import keypoints_to_torso_3d
+
+    z = np.full((480, 640), 3.0, dtype=np.float32)
+    z[150:330, 250:390] = 1.5         # 人的那一小块，四个关键点都落在里面
+    kp = np.zeros((17, 3))
+    for i, (u, v) in ((5, (280.0, 180.0)), (6, (360.0, 180.0)),
+                      (11, (290.0, 300.0)), (12, (350.0, 300.0))):
+        kp[i] = (u, v, 0.9)
+
+    torso, why = keypoints_to_torso_3d(
+        kp, z, CameraIntrinsics(fx=615.0, fy=615.0, cx=320.0, cy=240.0))
+
+    assert torso is not None, f"应当能取到躯干，实际失败：{why}"
+    assert torso.shoulder_mid[2] == pytest.approx(1.5, abs=0.05), \
+        "肩中点深度应当是人的 1.5 m，而不是背景的 3.0 m"

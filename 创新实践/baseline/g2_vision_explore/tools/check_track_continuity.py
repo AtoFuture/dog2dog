@@ -56,6 +56,8 @@ def main() -> int:
     ap.add_argument("--fps-for-persist", type=float, default=0.0,
                     help="判据需要的 fps（默认取视频自身 fps），用来算 persist 帧数")
     ap.add_argument("--persist-s", type=float, default=2.0)
+    ap.add_argument("--transition-s", type=float, default=3.0,
+                    help="判据允许的「直立 → 水平」最长时间（fall_tracker.TRANSITION_MAX_S）")
     args = ap.parse_args()
 
     from ultralytics import YOLO
@@ -69,12 +71,16 @@ def main() -> int:
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     fps = args.fps_for_persist or src_fps
     eff_fps = fps / max(1, args.stride)
-    need_frames = int(round(args.persist_s * eff_fps))
+    # ⚠️ 判据要求 id **跨越整个倒地过程**：最后一次见到直立 ->（≤transition_s）
+    # 转为水平 -> 保持 ≥persist_s。所以下限是**两者之和**，不是只有 persist。
+    # （原先只算 persist，把「判据的最低要求」说小了 —— 审核 P3 指出。）
+    need_frames = int(round((args.transition_s + args.persist_s) * eff_fps))
 
     print(f"视频 {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
           f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} @ {src_fps:.1f} fps ｜ "
           f"stride={args.stride} -> 有效 {eff_fps:.1f} fps")
-    print(f"判据需要 id 连续存活 ≥ {args.persist_s}s = **{need_frames} 帧**\n")
+    print(f"判据要求 id 跨越「直立→水平（≤{args.transition_s}s）→保持（≥{args.persist_s}s）」，"
+          f"即至少连续存活 **{need_frames} 帧**\n")
 
     det = Detector(DetectorConfig(weights=args.weights, conf=args.conf,
                                   imgsz=640, device="cpu"))
@@ -86,6 +92,7 @@ def main() -> int:
     # 该 id 上一次出现的帧号（判连续性用）
     last_seen: dict[int, int] = {}
     n_frames = n_with_person = n_unconfirmed = n_person_total = 0
+    max_concurrent = 0          # 单帧里最多同时有几个人（指标③用）
 
     fi = 0
     while True:
@@ -103,6 +110,7 @@ def main() -> int:
         if dets:
             n_with_person += 1
         n_person_total += len(dets)
+        max_concurrent = max(max_concurrent, len(dets))
 
         seen = set()
         for d in dets:
@@ -124,11 +132,13 @@ def main() -> int:
 
         fi += 1
 
-    report(n_frames, n_with_person, n_person_total, n_unconfirmed, best_run, need_frames)
+    report(n_frames, n_with_person, n_person_total, n_unconfirmed, best_run,
+           need_frames, max_concurrent)
     return 0
 
 
-def report(n_frames, n_with_person, n_person_total, n_unconfirmed, best_run, need_frames):
+def report(n_frames, n_with_person, n_person_total, n_unconfirmed, best_run,
+           need_frames, max_concurrent):
     print("\n" + "=" * 70)
     print("跟踪 ID 连续性结果")
     print("=" * 70)
@@ -149,6 +159,18 @@ def report(n_frames, n_with_person, n_person_total, n_unconfirmed, best_run, nee
     print("   这些帧进不了倒地判据。占比高 = 判据大部分时间在闭眼。")
 
     runs = sorted(best_run.values(), reverse=True)
+
+    if max_concurrent:
+        ratio = len(best_run) / max_concurrent
+        print(f"\n[③ id switch 的下界估计] 同时最多 {max_concurrent} 个人，"
+              f"却分了 **{len(best_run)}** 个 id（{ratio:.1f} 倍）")
+        print("   没有标注，所以这不是精确的 switch 计数，只是个下界信号 ——")
+        print("   同一个人被反复分配新 id 时，这个倍数会明显大于 1。")
+        short = sum(1 for r in runs if r < need_frames // 4) if runs else 0
+        if runs:
+            print(f"   另外：存活不到 {max(1, need_frames // 4)} 帧的短命轨迹有 {short} 条"
+                  f"（{100*short/len(runs):.0f}%）—— 多半是 switch 或误检留下的。")
+
     print(f"\n[② id 连续存活] 共 {len(runs)} 条轨迹")
     if runs:
         ok_n = sum(1 for r in runs if r >= need_frames)
@@ -163,6 +185,15 @@ def report(n_frames, n_with_person, n_person_total, n_unconfirmed, best_run, nee
             print(f"     {lo:>4}~{hi_s:<4} 帧: {n:>4}  {bar}")
 
     print("\n" + "-" * 70)
+    if n_frames < need_frames:
+        # ⚠️ 样本本身就不够长时**不能**下结论。这一段是实跑时发现的：
+        # 用 --max-frames 100 跑，判据需要 150 帧，工具却打了 ❌ ——
+        # 那会被读成「跟踪不行」，而真相是「还没跑到能判断的地方」。
+        print(f"⚠️ **判不了**：只处理了 {n_frames} 帧，而判据要求 id 连续存活 "
+              f"{need_frames} 帧 —— 样本比要求还短，❌ 和 ✅ 都没有意义。")
+        print("   请把整段视频跑完（去掉 --max-frames），或用 --stride 提高有效帧率。")
+        return
+
     ok = n_person_total and pct < 20 and runs and sum(
         1 for r in runs if r >= need_frames) > 0
     if ok:

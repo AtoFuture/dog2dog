@@ -181,8 +181,19 @@ class VisionDetector(Node):
         )
 
         # ---- 订阅 ----
-        # YOLO 推理是**同步阻塞**的，所以把它放进独立的 callback group，
-        # 并用 MultiThreadedExecutor —— 否则推理期间 TF 回调、参数回调全被饿死。
+        # ⚠️ 关于 callback group，注释一度与实际不符（2026-09-18 审核 P3）。
+        #
+        # 原注释写「把 YOLO 推理放进独立 callback group …… 否则推理期间 TF 回调
+        # 会被饿死」。实情是：
+        #
+        #   * 真正阻塞的**图像同步订阅**用的是节点**默认**的 MutuallyExclusive 组，
+        #     只有下面的 CameraInfo 订阅进了 _vision_group；
+        #   * 而 **tf2_ros 自带 ReentrantCallbackGroup**，所以 TF 不会被饿死 ——
+        #     原注释担心的那件事并不会发生。
+        #
+        # 实际后果只有两条，都不严重：推理期间**统计定时器**和 set_parameters
+        # 服务请求会被挡住。留着这个组是因为它确实把 CameraInfo 的回调隔开了，
+        # 但**不要**照着旧注释去理解这里的行为。
         self._vision_group = MutuallyExclusiveCallbackGroup()
 
         self.create_subscription(

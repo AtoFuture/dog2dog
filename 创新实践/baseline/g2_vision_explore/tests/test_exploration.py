@@ -655,3 +655,44 @@ def test_has_frontier_cells_is_false_when_unknown_is_fully_enclosed():
     grid = GridMap(data, 0.1, origin=(0.0, 0.0))
 
     assert has_frontier_cells(grid) is False
+
+
+def test_world_to_grid_maps_x_to_col_and_y_to_row():
+    """⭐ P2-② 回归：**x 进 col、y 进 row**，两者不能对调。
+
+    ⚠️ 这条测试的由来：原先唯一带非零 origin 的用例用的是
+    ``world_to_grid(1.0 + 2.5, 2.0 + 1.5)`` —— **wx 和 wy 恰好都是 3.5**，
+    对这条轴是**退化的**。把 ``row = (wy - origin[1])/res`` 改成用 wx 算，
+    全量测试照样全过。
+
+    后果是「把目标点选进墙里」那一类：所有世界坐标都映射到转置过的栅格。
+
+    所以这里刻意让 **wx ≠ wy，且 origin 非零、地图非方阵**。
+    """
+    grid = GridMap(np.zeros((10, 20), dtype=np.int8), 0.5, origin=(1.0, 2.0))
+
+    row, col = grid.world_to_grid(4.0, 2.5)      # wx=4.0, wy=2.5
+
+    assert col == pytest.approx((4.0 - 1.0) / 0.5) == pytest.approx(6.0), "col 应当由 wx 算"
+    assert row == pytest.approx((2.5 - 2.0) / 0.5) == pytest.approx(1.0), "row 应当由 wy 算"
+    assert (row, col) == pytest.approx((1.0, 6.0)), "两者对调了就得到 (4.0, 6.0)"
+
+
+def test_grid_to_world_maps_row_to_y_and_col_to_x():
+    """反过来的那一半，同样不能对调。"""
+    grid = GridMap(np.zeros((10, 20), dtype=np.int8), 0.5, origin=(1.0, 2.0))
+
+    wx, wy = grid.grid_to_world(1.0, 6.0)
+
+    assert wx == pytest.approx(1.0 + 6.5 * 0.5), "wx 应当由 col 算"
+    assert wy == pytest.approx(2.0 + 1.5 * 0.5), "wy 应当由 row 算"
+
+
+def test_world_grid_roundtrip_with_asymmetric_coordinates():
+    """往返一致 —— 用 wx ≠ wy 的坐标。"""
+    grid = GridMap(np.zeros((30, 50), dtype=np.int8), 0.25, origin=(-3.0, 7.0))
+
+    for wx, wy in ((1.5, -2.0), (8.0, 3.25), (-2.9, 9.0)):
+        row, col = grid.world_to_grid(wx, wy)
+        bx, by = grid.grid_to_world(row - 0.5, col - 0.5)   # 回到格的外角
+        assert (bx, by) == pytest.approx((wx, wy), abs=1e-9)
