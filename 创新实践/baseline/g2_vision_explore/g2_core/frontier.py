@@ -45,6 +45,45 @@ class FrontierCluster:
     _cell_array: np.ndarray = field(default=None, repr=False)
 
 
+def frontier_mask(grid: GridMap) -> np.ndarray:
+    """frontier 格掩膜（uint8，0/1）：**与未知区相邻的自由格**。
+
+    抽成独立函数是为了让「有没有 frontier 格」这个判据
+    （``has_frontier_cells``）与真正的簇检测**共用同一份定义** ——
+    各写一遍迟早会漂移，而漂移的后果是「有 frontier 却说没有」这种静默错误。
+
+    语义边界（2026-09-17 统一）：**地图外当作未知**。
+    """
+    # 未知区膨胀 1 格，与自由区求交 = 与未知相邻的自由格。
+    #
+    # ⚠️ borderValue=1：把**地图外**当作未知。
+    # cv2.dilate 默认的边界值是 0，等于把图外当成「非未知」——
+    # 于是地图被裁剪到已探明区时，边界上的真实 frontier **检测不到**，
+    # 探索会提前判完成。SLAM 的图通常正是裁到已探明区的，所以这不是边角情况。
+    dil = cv2.dilate(
+        grid.unknown.astype(np.uint8),
+        np.ones((3, 3), np.uint8),
+        borderType=cv2.BORDER_CONSTANT,
+        borderValue=1,
+    )
+    return (grid.free & (dil > 0)).astype(np.uint8)
+
+
+def has_frontier_cells(grid: GridMap) -> bool:
+    """地图上**有没有** frontier 格（不管簇多小）。
+
+    用来把两种情况分开 —— 它们原先都被 ``detect_frontiers`` 的**空列表**表示
+    （见 ``explorer.SelectStatus.SMALL_FRONTIERS``）：
+
+        没有 frontier 格        -> 真的探完了
+        有格、但每簇都太小      -> 只是小而已（真实门洞就长这样），**没探完**
+
+    不分开的后果不是「漏了一个点」，而是**把没探完说成探完了**，
+    状态机据此进入不可逆的 ``DONE``。
+    """
+    return bool(frontier_mask(grid).any())
+
+
 def detect_frontiers(
     grid: GridMap,
     min_area_m2: float = 0.25,
@@ -78,27 +117,11 @@ def detect_frontiers(
     -------
     list[FrontierCluster]，按面积从大到小排序。
     """
-    free = grid.free
-    unknown = grid.unknown
-
-    # 未知区膨胀 1 格，与自由区求交 = 与未知相邻的自由格。
-    #
-    # ⚠️ borderValue=1：把**地图外**当作未知（2026-09-17 统一语义）。
-    # cv2.dilate 默认的边界值是 0，等于把图外当成「非未知」——
-    # 于是地图被裁剪到已探明区时，边界上的真实 frontier **检测不到**，
-    # 探索会提前判完成。SLAM 的图通常正是裁到已探明区的，所以这不是边角情况。
-    dil = cv2.dilate(
-        unknown.astype(np.uint8),
-        np.ones((3, 3), np.uint8),
-        borderType=cv2.BORDER_CONSTANT,
-        borderValue=1,
-    )
-    frontier_mask = (free & (dil > 0)).astype(np.uint8)
-
-    if not frontier_mask.any():
+    fmask = frontier_mask(grid)
+    if not fmask.any():
         return []
 
-    n_labels, labels = cv2.connectedComponents(frontier_mask, connectivity=8)
+    n_labels, labels = cv2.connectedComponents(fmask, connectivity=8)
 
     # 用 bincount 一次性统计各标号的格数，避免逐簇布尔索引
     counts = np.bincount(labels.ravel(), minlength=n_labels)

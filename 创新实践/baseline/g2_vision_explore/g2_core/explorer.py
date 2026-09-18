@@ -30,7 +30,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from .frontier import FrontierCluster, detect_frontiers
+from .frontier import FrontierCluster, detect_frontiers, has_frontier_cells
 from .geodesic import geodesic_distance
 from .grid import GridMap
 
@@ -72,14 +72,41 @@ class SelectStatus(enum.Enum):
     后果：地图还没加载完、或者某个目标点刚失败进了 30 秒黑名单，
     都会让探索**永久停机**，且没有任何日志说明原因。
 
-    现在只有 ``NO_FRONTIER`` 才算完成；其余三种都应该稍后再试。
+    现在只有 ``NO_FRONTIER`` 才算完成；其余四种都应该稍后再试。
+    （``SMALL_FRONTIERS`` 是 2026-09-18 补的第五种，见它自己的说明。）
     """
 
     GOAL = "GOAL"
     """选到了目标点。"""
 
     NO_FRONTIER = "NO_FRONTIER"
-    """地图上没有任何 frontier —— 这才是真正的「探索完成」。"""
+    """地图上**一个 frontier 格都没有** —— 这才是真正的「探索完成」。"""
+
+    SMALL_FRONTIERS = "SMALL_FRONTIERS"
+    """**有** frontier 格，但每一簇都小于 ``min_frontier_area_m2``。
+
+    ⚠️ 这个状态是 2026-09-18 审核 P1-⑤ 之后加的，加它的理由值得记下来：
+
+    ``detect_frontiers`` 返回的**空列表**把两件完全不同的事混成了一个 ——
+    「一块 frontier 格都没有」和「有格、但每簇都太小」。
+    ``select()`` 原先把空列表一律映射成 ``NO_FRONTIER``，
+    于是调用方把它当成「探索完成」，推进**不可逆的** ``DONE``。
+
+    而小簇恰恰是**真实门洞**的样子：``min_frontier_area_m2`` 取 0.25 m²
+    在 0.1 m/格下等于 25 格，而 frontier 条带通常只有 **1 格深** ——
+    一簇要 **2.5 米宽**才算数，1 米宽的门洞（≈10 格 = 0.1 m²）会被静默丢掉。
+
+    后果不是「漏了一个目标点」，是**站在没进去过的门口宣布探索完成**，
+    然后永久停机（``DONE`` 只能 ``revive()`` 复活）—— 直接打覆盖率指标。
+
+    **调用方该怎么处理**：和 ``NO_CANDIDATE`` 一样当作「暂时选不出点」，
+    调 ``on_select_failed(exhausted=False)`` 稍后重试；**不要**调
+    ``on_exhausted()``。
+
+    ⚠️ 但如果这个状态**持续**出现，说明阈值不合实际地图 —— 应当调小
+    ``min_frontier_area_m2`` 而不是永远空转。``is_complete`` 为 False，
+    所以这一条要靠调用方自己的计数/日志去发现（节点侧应当计数并告警）。
+    """
 
     NO_CANDIDATE = "NO_CANDIDATE"
     """有 frontier，但当前没有可用候选（黑名单未过期 / 安全半径不过 / 测地半径外）。
@@ -189,8 +216,8 @@ class GoalSelector:
             selector.on_result(sel.goal, success=True, now=t2)
         elif sel.is_complete:            # 只有 NO_FRONTIER 算探索完成
             ...                          # -> 状态机 on_exhausted()
-        else:                            # NO_CANDIDATE / NO_ROBOT_POSE
-            ...                          # 瞬时的，稍后重试 -> on_nav_timeout()
+        else:                            # NO_CANDIDATE / NO_ROBOT_POSE / SMALL_FRONTIERS
+            ...                          # 都是「暂时选不出点」-> on_select_failed()
     """
 
     def __init__(self, params: ExplorerParams | None = None):
@@ -390,6 +417,12 @@ class GoalSelector:
             merge_within_cells=p.merge_within_cells,
         )
         if not clusters:
+            # ⚠️ 空列表有两种含义，**必须分开**（审核 P1-⑤）：
+            #   「一块 frontier 格都没有」 = 真探完了   -> NO_FRONTIER（终止）
+            #   「有格、但每簇都太小」     = 只是小而已 -> SMALL_FRONTIERS（重试）
+            # 混在一起的后果是把「站在没进去过的门口」说成「探索完成」。
+            if has_frontier_cells(grid):
+                return GoalSelection(SelectStatus.SMALL_FRONTIERS)
             return GoalSelection(SelectStatus.NO_FRONTIER)
 
         dist = geodesic_distance(grid.traversable, start, p.max_geodesic_radius_cells)

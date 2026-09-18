@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from g2_core.explorer import ExplorerParams, GoalSelector, SelectStatus
-from g2_core.frontier import detect_frontiers
+from g2_core.frontier import detect_frontiers, has_frontier_cells
 from g2_core.geodesic import geodesic_distance, geodesic_nearest_cell
 from g2_core.grid import FREE, OCCUPIED, UNKNOWN, GridMap
 
@@ -572,3 +572,86 @@ def test_radius_limited_search_falls_back_to_full_map():
 
     assert result.status is SelectStatus.GOAL, "窗口太小时应兜底全图搜索，而不是判「选不出点」"
     assert result.goal.used_full_map_search is True, "应标记走了全图兜底"
+
+
+# ----------------------------------------------------------------------
+# SMALL_FRONTIERS：把「有格但每簇都太小」与「真探完了」分开（审核 P1-⑤）
+# ----------------------------------------------------------------------
+def narrow_doorway_map(res=0.1, corridor_cells=2):
+    """一个已探明的房间 + 一条**很窄**的开口通向未知区。
+
+    开口宽 ``corridor_cells`` 格。在 0.1 m/格下，2 格 = 0.2 m 宽 ——
+    比真实门洞还窄，但足以把「有 frontier 格」和「没有 frontier 格」分开。
+
+    这就是审核实测的那个场景：真实门洞（1 m 宽 × 1 格深 ≈ 0.1 m²）
+    在 ``min_area_m2=0.25`` 下会被整簇丢掉。
+    """
+    data = np.full((40, 40), OCCUPIED, dtype=np.int8)
+    data[10:30, 10:30] = FREE                       # 已探明的房间
+    data[10:30, 30:32] = UNKNOWN                    # 右边一片未知
+    mid = 20
+    data[mid - corridor_cells // 2: mid + corridor_cells // 2 + 1, 28:30] = FREE   # 窄通道
+    return GridMap(data, res, origin=(0.0, 0.0))
+
+
+def test_narrow_doorway_reports_small_frontiers_not_complete():
+    """⭐ P1-⑤ 回归：有 frontier 格但每簇都太小 —— **不能说成「探索完成」**。
+
+    原先 ``detect_frontiers`` 的**空列表**把两种情况混在一起，
+    ``select()`` 一律映射成 ``NO_FRONTIER``，调用方据此进入不可逆的 ``DONE``。
+    后果是机器人**站在还没进去过的门口宣布探索完成**，然后永久停机 ——
+    直接打覆盖率指标。
+
+    而小簇恰恰是真实门洞的样子：``min_frontier_area_m2=0.25`` 在 0.1 m/格下
+    等于 25 格，而 frontier 条带通常只有 1 格深 —— 一簇要 2.5 米宽才算数。
+    """
+    grid = narrow_doorway_map()
+    sel = GoalSelector(ExplorerParams(min_frontier_area_m2=0.25))
+
+    assert has_frontier_cells(grid), "前置条件：这张图上确实有 frontier 格"
+    status = pick_status(sel, grid, robot_xy=(2.0, 2.0))
+
+    assert status is SelectStatus.SMALL_FRONTIERS, (
+        f"有 frontier 格却报 {status} —— 「有格但太小」不能等于「探完了」"
+    )
+    assert not sel.select(grid, robot_xy=(2.0, 2.0), now=0.0).is_complete, \
+        "SMALL_FRONTIERS 不是探索完成"
+
+
+def test_fully_explored_map_reports_complete():
+    """一块未知都没有（自由区被占用格完整包住）—— 这才是真的探完了。
+
+    ⚠️ 注意不能拿「整张图全是自由格」来构造：``frontier_mask`` 的
+    ``borderValue=1`` 把**地图外当未知**，所以那样构造出来的图在数组边界
+    仍然有 frontier 格（这是刻意的语义，见 frontier_mask 的说明）。
+    要让「一块未知都没有」成立，自由区必须被**占用格**完整包住。
+    """
+    data = np.full((40, 40), OCCUPIED, dtype=np.int8)
+    data[10:30, 10:30] = FREE
+    grid = GridMap(data, 0.1, origin=(0.0, 0.0))
+    sel = GoalSelector(ExplorerParams())
+
+    assert not has_frontier_cells(grid), "占用格包住的自由区不产生 frontier"
+    assert pick_status(sel, grid, robot_xy=(2.0, 2.0)) is SelectStatus.NO_FRONTIER
+    assert sel.select(grid, robot_xy=(2.0, 2.0), now=0.0).is_complete
+
+
+def test_small_frontiers_disappears_once_the_threshold_fits():
+    """把阈值调到装得下那簇，就应当正常选出目标 —— 状态是真的可恢复的。
+
+    （这一条同时说明：``SMALL_FRONTIERS`` **持续**出现时该调 ``min_frontier_area_m2``，
+    而不是永远空转重试。文档里写明了这一点。）
+    """
+    grid = narrow_doorway_map()
+    sel = GoalSelector(ExplorerParams(min_frontier_area_m2=0.01))   # 1 格 = 0.01 m²
+
+    assert pick_status(sel, grid, robot_xy=(2.0, 2.0)) is SelectStatus.GOAL
+
+
+def test_has_frontier_cells_is_false_when_unknown_is_fully_enclosed():
+    """未知区被占用格完全包住时，没有「与未知相邻的自由格」= 没有 frontier。"""
+    data = np.full((20, 20), OCCUPIED, dtype=np.int8)
+    data[8:12, 8:12] = UNKNOWN          # 一块未知，但四周都是占用
+    grid = GridMap(data, 0.1, origin=(0.0, 0.0))
+
+    assert has_frontier_cells(grid) is False

@@ -114,6 +114,10 @@ class ExplorerStateMachine:
                 sm.on_select_failed(
                     exhausted=(result.status is SelectStatus.NO_FRONTIER)
                 )
+                # ⚠️ 注意 exhausted 只认 NO_FRONTIER。选择器还有一个
+                # SMALL_FRONTIERS（有 frontier 格、但每簇都小于面积阈值，
+                # 真实门洞就长这样）—— 那是**没探完**，要和 NO_CANDIDATE 一样
+                # 稍后重试，绝不能当成探索完成。见 SelectStatus 的说明。
 
         elif cmd is Command.CANCEL_GOAL:
             cancel_goal()
