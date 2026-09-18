@@ -19,6 +19,7 @@ from g2_core.projector import (
     CameraIntrinsics,
     DepthEncodingError,
     depth_to_meters,
+    sample_depth_near,
     optical_axis_ground_distance,
     project_depth_bbox,
     project_ground_plane,
@@ -314,3 +315,79 @@ def test_ground_plane_max_range_uses_euclidean_distance():
     assert project_ground_plane(u, v, K, h, pitch, max_range_m=limit) is None, (
         "上限用的应当是欧氏距离；这里返回了点说明还在按沿轴深度校验"
     )
+
+
+# ----------------------------------------------------------------------
+# sample_depth_near —— 关键点取深度必须取「近端」
+# ----------------------------------------------------------------------
+def _scene_with_person():
+    """3x3 米背景在 3.0 m，中间一块 1.5 m 的人（占窗口约 1/4）。"""
+    z = np.full((40, 40), 3.0, dtype=np.float32)
+    z[14:26, 14:26] = 1.5
+    return z
+
+
+def test_sample_depth_near_picks_the_person_over_the_background():
+    """窗口里背景占多数时，中位数会给出背景 —— 近端分位数不会。"""
+    z = _scene_with_person()
+
+    near = sample_depth_near(z, 20, 20, radius=9, percentile=5.0)
+
+    assert near == pytest.approx(1.5, abs=0.01)
+    # 对照：中位数被背景拖走
+    patch = z[11:30, 11:30]
+    assert float(np.median(patch)) == pytest.approx(3.0)
+
+
+def test_sample_depth_near_nan_is_excluded_from_the_percentile():
+    """无效值（NaN）不参与分位数 —— 这是它比 np.percentile 裸调用强的地方。"""
+    z = _scene_with_person()
+    z[14:26, 14:26] = np.nan      # 人那块无效
+
+    # 剩下的全是 3.0 的背景，于是返回 3.0 而不是 NaN
+    assert sample_depth_near(z, 20, 20, radius=9) == pytest.approx(3.0)
+
+
+def test_sample_depth_near_silently_falls_back_to_background():
+    """⚠️ 已知危险行为：人的深度若整体无效，本函数**静默**返回背景深度。
+
+    它没有能力判断「取到的这一层是不是人」。所以它**不能单独使用** ——
+    必须搭配 anomaly.check_body_proportions()：那里的肩宽门就是为
+    这种情况准备的（取到背景 -> 两个肩深度差一大截 -> 肩宽远超 0.65 m -> 丢弃）。
+    """
+    z = _scene_with_person()
+    z[14:26, 14:26] = np.nan
+
+    est = sample_depth_near(z, 20, 20, radius=9)
+
+    assert est == pytest.approx(3.0), "取到的是背景，不是人"
+    assert est > 2.0, "这个值本身看不出问题 —— 必须靠人体尺度门兜住"
+
+
+def test_sample_depth_near_returns_nan_outside_the_image():
+    z = _scene_with_person()
+    assert math.isnan(sample_depth_near(z, -5, 20))
+    assert math.isnan(sample_depth_near(z, 20, 999))
+
+
+def test_sample_depth_near_respects_min_valid():
+    """有效像素太少时宁可返回 nan，也不要凭两三个点下结论。"""
+    z = np.full((40, 40), np.nan, dtype=np.float32)
+    z[20, 20] = 1.5
+
+    assert math.isnan(sample_depth_near(z, 20, 20, radius=9, min_valid=10))
+    assert sample_depth_near(z, 20, 20, radius=9, min_valid=1) == pytest.approx(1.5)
+
+
+def test_sample_depth_near_is_biased_near_on_a_sloped_surface():
+    """已知代价：窗口跨越斜面时低分位数取到近端边缘，深度系统性偏近。
+
+    这不是 bug，是这套方法的固有偏置 —— 所以它必须搭配
+    anomaly.check_body_proportions 那种**区间**质检用，不能单独用。
+    """
+    z = np.tile(np.linspace(2.0, 4.0, 40, dtype=np.float32), (40, 1))
+
+    est = sample_depth_near(z, 20, 20, radius=9, percentile=5.0)
+
+    assert est < z[20, 20], "低分位数应当偏近"
+    assert z[20, 20] - est > 0.3, "偏置量级应当是可见的（这里接近窗口的近端边缘）"

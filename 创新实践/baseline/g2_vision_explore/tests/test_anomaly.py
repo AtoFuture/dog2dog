@@ -18,6 +18,7 @@ from g2_core.anomaly import (
     FALLEN_MIN_DEG,
     assess_fall_from_keypoints_3d,
     bbox_aspect_is_fallen,
+    check_body_proportions,
     midpoints_from_keypoints_2d,
     torso_tilt_from_vertical,
 )
@@ -209,3 +210,69 @@ def test_midpoints_from_keypoints_2d():
 def test_midpoints_rejects_wrong_shape():
     with pytest.raises(ValueError):
         midpoints_from_keypoints_2d(np.zeros((17, 2)))
+
+
+# ----------------------------------------------------------------------
+# 人体尺度门（2026-09-18 加的，替代不生效的离散度门）
+# ----------------------------------------------------------------------
+# frame 185916 的**真实测量值**（坐在床上的人，被 pose 模型把右肩点放到了
+# 身体轮廓之外，深度取到了背景）。原先的离散度门把它放行了，
+# 于是算出一个 88° 的倾角 —— 而人是坐着的。
+REAL_BAD_SHOULDER_LEFT = np.array([0.10, 0.26, 1.64])
+REAL_BAD_SHOULDER_RIGHT = np.array([0.53, 0.24, 3.03])
+REAL_BAD_HIP_LEFT = np.array([0.25, 0.53, 1.51])
+REAL_BAD_HIP_RIGHT = np.array([0.39, 0.49, 1.66])
+
+
+def test_body_proportions_accepts_a_normal_adult():
+    assert check_body_proportions(
+        np.array([-0.2, 0.0, 1.5]), np.array([0.2, 0.0, 1.5]),
+        np.array([-0.15, 0.0, 0.9]), np.array([0.15, 0.0, 0.9]),
+    ) is None
+
+
+def test_body_proportions_rejects_a_shoulder_out_on_the_background():
+    """肩宽 1.45 m —— 一个成年人不可能。这是真实数据里发生过的失败。"""
+    bad = check_body_proportions(
+        REAL_BAD_SHOULDER_LEFT, REAL_BAD_SHOULDER_RIGHT,
+        REAL_BAD_HIP_LEFT, REAL_BAD_HIP_RIGHT,
+    )
+    assert bad is not None
+    assert "肩宽" in bad
+
+
+def test_real_failure_frame_is_now_discarded_not_judged():
+    """回归：这一帧必须被丢弃，不能给出倾角结论。
+
+    修复前它返回 method="pose_3d"、tilt_deg≈88°（判为倒地），
+    而真值是「人坐在床上」。
+    """
+    a = assess_fall_from_keypoints_3d(
+        shoulder_left_3d=REAL_BAD_SHOULDER_LEFT,
+        shoulder_right_3d=REAL_BAD_SHOULDER_RIGHT,
+        hip_left_3d=REAL_BAD_HIP_LEFT,
+        hip_right_3d=REAL_BAD_HIP_RIGHT,
+        keypoint_confs=HIGH_CONF,
+    )
+    assert a.method == "insufficient"
+    assert a.tilt_deg is None
+    assert a.is_fallen is False
+
+
+def test_old_dispersion_gate_alone_would_have_missed_it():
+    """说明为什么非加人体尺度门不可：这一帧的离散度其实很小。"""
+    pts = np.stack([REAL_BAD_SHOULDER_LEFT, REAL_BAD_SHOULDER_RIGHT,
+                    REAL_BAD_HIP_LEFT, REAL_BAD_HIP_RIGHT])
+    dispersion = float(np.linalg.norm(
+        np.percentile(pts, 75, axis=0) - np.percentile(pts, 25, axis=0)))
+
+    assert dispersion < 1.0, "旧门限放行它，所以旧门不够用"
+
+
+def test_body_proportions_rejects_a_too_short_torso():
+    """肩髋挨在一起（关键点塌缩）也要拦。"""
+    bad = check_body_proportions(
+        np.array([-0.2, 0.0, 1.5]), np.array([0.2, 0.0, 1.5]),
+        np.array([-0.15, 0.0, 1.45]), np.array([0.15, 0.0, 1.45]),
+    )
+    assert bad is not None and "躯干长" in bad

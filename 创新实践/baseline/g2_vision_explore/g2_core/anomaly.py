@@ -1,5 +1,34 @@
 """异常识别：人员倒地。
 
+================================================================================
+🔴 判决（2026-09-18 实测）：**方法 B 作为「瞬时倾角判据」不成立，不要拿它做倒地判定。**
+
+在 57 帧真实数据（含 15 条已倒地轨迹）上实测，结论是**正负类严重重叠**：
+
+    已倒地  倾角 [75, 83, 86, 87, 88, 90, 94, 97]°
+    正常活动 倾角 [31, 37, 38, 51, 55, 60, 62, 88]°   ← 注意这个 88
+
+最致命的一条是 185819 帧：人**四肢着地跪趴着**，测出 84°。
+内参、深度、关键点**全都没错**（三维肩宽 0.53 m，在人体尺度内）——
+躯干确实是水平的。但它不是倒地。
+
+**「躯干不水平」和「人倒在地上了」不是一回事。**
+跪、蹲、弯腰捡东西、爬行，几何上与倒地几乎无法区分。
+这不是测量精度问题，**换更好的深度相机、更好的模型、更多的数据都解决不了** ——
+它是判据本身缺少**时间上下文**。
+
+排查过程中已排除的混淆因素（详见 docs/倒地判据实测-方法B.md）：
+  * **内参**：数据集未提供标定。把焦距从 350 扫到 700 逐个找最优工作点，
+    **每一个**焦距下负类最大值都超过正类最小值，重叠始终存在。
+  * **深度精度**：深度图本身是好的（视差量化 ~600 层，与理论值吻合）。
+  * **关键点**：pose 模型在躺姿上可用（检出 12/15，关键点置信度 0.94~0.98）。
+
+**下一步该做什么**：把判据从「瞬时倾角」改成「**时间上的状态转移**」——
+跟踪一个人的三维躯干朝向序列，倒地 = 从竖直转为水平**并保持住**。
+跪/蹲/弯腰是短暂的或可逆的，倒地不是。这正是 state_machine 里
+``anomalies`` 序列该承担的事。
+================================================================================
+
 零训练成本路线，但有两个必须说清的前提（见 docs/框架规划.md §4.4）：
 
 **前提一：预训练检测器在躺姿上的召回是存疑的。**
@@ -177,6 +206,80 @@ def torso_tilt_from_vertical(
     return math.acos(cos_a)
 
 
+# 成年人体的三维尺度（米）。用于**反投影质检**，见 check_body_proportions()。
+SHOULDER_WIDTH_M = (0.25, 0.65)
+HIP_WIDTH_M = (0.10, 0.55)
+TORSO_LENGTH_M = (0.25, 0.95)
+
+
+def check_body_proportions(
+    shoulder_left_3d: np.ndarray,
+    shoulder_right_3d: np.ndarray,
+    hip_left_3d: np.ndarray,
+    hip_right_3d: np.ndarray,
+    shoulder_width_m: tuple[float, float] = SHOULDER_WIDTH_M,
+    hip_width_m: tuple[float, float] = HIP_WIDTH_M,
+    torso_length_m: tuple[float, float] = TORSO_LENGTH_M,
+) -> str | None:
+    """检查四个关键点在三维里是否构成一个**人体尺度**的躯干。
+
+    返回 ``None`` 表示合格，否则返回不合格的原因字符串。
+
+    ---------------------------------------------------------------------------
+    为什么需要这道门（2026-09-18，实测驱动）
+
+    原先只有 ``max_3d_dispersion_m`` 一道门，**实测证明它挡不住真正的错误**。
+    真实数据里出现过这样的反投影（frame 185916，坐姿）：
+
+        左肩深度 1.64 m，右肩深度 3.03 m   —— 同一个人的两个肩差 1.39 m
+
+    成因：pose 模型把**被遮挡的远侧关键点放到了身体轮廓之外**，
+    逐像素取深度于是取到了背景。四个点的离散度只有 0.5 m，
+    小于默认门限 1.0 m，**被放行了**，最后算出一个 88° 的倾角
+    （真人坐着，躯干接近竖直）。
+
+    而肩宽是个**自带真值的量**：成年人肩宽就是 0.40 m 上下，
+    跟姿态、视角、远近都无关。所以「三维肩宽必须是 0.40 m」
+    是一道**用解剖学常数做的、不需要标注的**质检。
+
+    实测效果（57 帧真实数据；真值 0.40 m，离散度越小越好）::
+
+        取深度方式          肩宽 中位 / 四分位距
+        5x5 中位（原状）      0.45 / 0.86     ← 一半样本差近 1 米
+        窗口近端 p5          0.24 / 0.13     ← 离散度降 7 倍，但偏小 40%
+
+    ⚠️ 注意近端取深度会把距离**系统性压小**（0.24 < 0.40），
+    于是本门的**下限**会误杀一部分真样本。这个偏置与门限是**互相拉扯**的，
+    本次没有找到两头都好的参数组合 —— 详见 docs/倒地判据实测-方法B.md §4。
+
+    ---------------------------------------------------------------------------
+    ⚠️ 这道门是**绝对尺度**的检查，因此**依赖准确的内参**。
+    焦距估错会让所有三维距离整体缩放，门就可能误杀或放过。
+    内参应当来自 ``CameraInfo``，不要用近似值。
+    本门也**不能**替代时间上下文 —— 它只保证「量出来的是个人」，
+    不保证「躯干水平 = 倒地」，见 docs/倒地判据实测-方法B.md。
+    """
+    sl, sr = np.asarray(shoulder_left_3d), np.asarray(shoulder_right_3d)
+    hl, hr = np.asarray(hip_left_3d), np.asarray(hip_right_3d)
+
+    sw = float(np.linalg.norm(sl - sr))
+    hw = float(np.linalg.norm(hl - hr))
+    tl = float(np.linalg.norm((sl + sr) / 2.0 - (hl + hr) / 2.0))
+
+    for name, val, (lo, hi) in (
+        ("肩宽", sw, shoulder_width_m),
+        ("髋宽", hw, hip_width_m),
+        ("躯干长", tl, torso_length_m),
+    ):
+        if not (lo <= val <= hi):
+            return (
+                f"{name} {val:.2f} m 超出人体尺度 [{lo}, {hi}] —— "
+                "关键点多半落到了身体轮廓之外（被遮挡的远侧关节），"
+                "深度取到了背景"
+            )
+    return None
+
+
 def assess_fall_from_keypoints_3d(
     shoulder_left_3d: np.ndarray,
     shoulder_right_3d: np.ndarray,
@@ -221,7 +324,18 @@ def assess_fall_from_keypoints_3d(
             confidence=0.0, reason="关键点三维坐标含 NaN",
         )
 
-    # 三维离散度：四个关键点应当落在人体尺度内。过大说明反投影有问题
+    # ① 人体尺度门：肩宽/髋宽/躯干长必须是成年人的尺度。
+    #    这是**主质检** —— 它直接用量出来的绝对尺寸对解剖学常数，
+    #    实测能抓住「关键点落到轮廓外、深度取到背景」这类错误，而 ② 抓不住。
+    bad = check_body_proportions(shoulder_left_3d, shoulder_right_3d,
+                                 hip_left_3d, hip_right_3d)
+    if bad is not None:
+        return FallAssessment(
+            is_fallen=False, tilt_deg=None, method="insufficient",
+            confidence=0.0, reason=f"反投影超出人体尺度：{bad}",
+        )
+
+    # ② 离散度门：兜住 ① 漏掉的形态（例如四点各自都对但整体散开）
     dispersion = float(np.linalg.norm(np.percentile(pts, 75, axis=0) - np.percentile(pts, 25, axis=0)))
     if dispersion > max_3d_dispersion_m:
         return FallAssessment(
