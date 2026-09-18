@@ -145,7 +145,8 @@ class VisionDetector(Node):
                       # 「没检出人」「关键点置信度低」「深度取不到」「人体尺度不合格」
                       # 「轨迹还没确认」在日志上全是「没有倒地结论」，分不出是哪一步。
                       "fall_seen": 0, "fall_no_keypoints": 0, "fall_no_track": 0,
-                      "fall_unusable": 0, "fall_events": 0}
+                      "fall_unusable": 0, "fall_events": 0, "fall_tf_fail": 0,
+                      "fall_stamp_regress": 0}
         # TF 降级计数（用不到图像时间戳时 +1）
         self._tf_fallback_count = 0
 
@@ -236,17 +237,46 @@ class VisionDetector(Node):
                 "dedup 高 -> 节流间隔设得太长。"
             )
 
-        if self._fall_enabled and st["fall_seen"]:
+        # ⚠️ 这一行的触发条件**不能只看 fall_seen**。
+        #
+        # 原先写的是 `if ... and st["fall_seen"]`，而 TF 完全查不到时
+        # fall_seen 恒为 0（`_assess_fall` 在喂进 tracker 之前就 return 了）
+        # → **整行都不打印**。运维看到的是「什么都没发生」，
+        # 和「场景里没人」长得一模一样，而这两件事的处理方式完全不同。
+        if self._fall_enabled and any(
+            st[k] for k in ("fall_seen", "fall_no_keypoints", "fall_no_track",
+                            "fall_unusable", "fall_events", "fall_tf_fail",
+                            "fall_stamp_regress")
+        ):
             self.get_logger().info(
                 f"[倒地] 可用躯干 {st['fall_seen']} ｜ 无关键点 {st['fall_no_keypoints']} ｜ "
-                f"轨迹未确认 {st['fall_no_track']} ｜ 躯干不可用 {st['fall_unusable']} ｜ "
+                f"轨迹未确认 {st['fall_no_track']} ｜ TF 失败 {st['fall_tf_fail']} ｜ "
+                f"躯干不可用 {st['fall_unusable']} ｜ "
                 f"**事件 {st['fall_events']}** ｜ 在用轨迹 {self._fall_tracker.n_tracks}"
             )
-            if st["fall_events"] == 0 and st["fall_unusable"] > st["fall_seen"]:
+            # ⚠️ 这里的条件是「不可用占了一半以上」。
+            #
+            # 原先写的是 `fall_unusable > fall_seen` —— 而 unusable 只在
+            # `fall_seen += 1` **之后**才可能自增，所以恒有 unusable <= seen，
+            # **条件永远不成立**：这是一条死代码。
+            # 后果是倒地链路最主流的失效模式（深度取到背景 → 躯干不可用，
+            # 实测占 74%）恰恰没有任何自动提示。
+            if st["fall_events"] == 0 and st["fall_unusable"] * 2 > st["fall_seen"]:
                 self.get_logger().warn(
-                    "躯干大多不可用 —— 看 debug 日志里的原因。"
+                    f"躯干大多不可用（{st['fall_unusable']}/{st['fall_seen']}）"
+                    "—— 看 debug 日志里的原因。"
                     "最常见的是「关键点落到身体轮廓外，深度取到了背景」，"
                     "表现为反投影超出人体尺度。"
+                )
+            if st["fall_stamp_regress"]:
+                self.get_logger().warn(
+                    f"时间戳回退了 {st['fall_stamp_regress']} 次，那些帧的判据输入被丢弃。"
+                )
+            if st["fall_tf_fail"]:
+                self.get_logger().warn(
+                    f"有 {st['fall_tf_fail']} 次因为查不到 TF 而**整帧跳过了倒地判据**。"
+                    "时间判据完全依赖连续观测，丢帧会让它失效 —— "
+                    "查 map 帧是否建好、TF 频率、以及 use_sim_time。"
                 )
 
     # ------------------------------------------------------------------
@@ -458,7 +488,7 @@ class VisionDetector(Node):
             self._stat["fall_no_track"] += 1
             return
         if tf is None:
-            self._stat["fall_tf_fail"] = self._stat.get("fall_tf_fail", 0) + 1
+            self._stat["fall_tf_fail"] += 1
             return
 
         self._stat["fall_seen"] += 1
@@ -493,12 +523,35 @@ class VisionDetector(Node):
             f"轨迹 {det.track_id} 倾角 {tilt:.1f}° 离地 {height:.2f} m"
         )
 
-        ev = self._fall_tracker.update(det.track_id, TorsoObservation(
-            stamp=float(stamp.sec) + float(stamp.nanosec) * 1e-9,
-            tilt_deg=tilt,
-            height_m=height,
-        ))
-        self._prune_fall_tracks(now=float(stamp.sec) + float(stamp.nanosec) * 1e-9)
+        # ⚠️ 这个 try 不是防御性编程，是**必须有的**。
+        #
+        # `FallTracker.update()` 在时间戳回退时会主动抛 ValueError（设计如此，
+        # 因为状态机靠时间差判断，回退的时间戳会给出没有意义的结果）。
+        # 但异常若从这里逃出去，会穿过 `_on_images`（检测循环那段没有 try），
+        # 而 rclpy 的 executor 会在 **spin 线程**上重新抛出回调异常 ——
+        # 倒地和普通检测**一起停**，进程带 traceback 退出。
+        #
+        # 触发条件是现实的：ApproximateTimeSynchronizer **不保证回调的时间戳单调**
+        # （两路 BEST_EFFORT 图像乱序、rosbag --loop、/clock 跳变都会造成）。
+        #
+        # 所以在这一层拦住并计数：丢掉这一帧的**判据**输入，
+        # 但保留这一帧的普通检测 —— 这符合「宁可丢这一帧，也不能静默错，
+        # 更不能带走整条链路」。
+        t_sec = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+        try:
+            ev = self._fall_tracker.update(det.track_id, TorsoObservation(
+                stamp=t_sec, tilt_deg=tilt, height_m=height,
+            ))
+        except ValueError as exc:
+            self._stat["fall_stamp_regress"] += 1
+            if self._stat["fall_stamp_regress"] % 20 == 1:
+                self.get_logger().warn(
+                    f"倒地判据的时间戳回退（第 {self._stat['fall_stamp_regress']} 次）：{exc} "
+                    f"—— 本帧的判据输入被丢弃。频繁出现说明上游时间戳乱序，"
+                    f"查 rosbag --loop / use_sim_time / 相机时间戳来源。"
+                )
+            return
+        self._prune_fall_tracks(now=t_sec)
 
         if ev is not None:
             self._stat["fall_events"] += 1
@@ -617,6 +670,21 @@ class VisionDetector(Node):
         msg.id = int(det.track_id) if det.track_id is not None else 0
         msg.source = "coco"
         msg.has_snapshot = bool(self.get_parameter("publish_snapshot").value)
+
+        # ---- 异常类专属字段：非异常类必须显式填「无」----
+        #
+        # ⚠️ 这三个字段**不能靠消息类型的默认值**。float32 的默认是 0.0，
+        # 而契约要求非异常类填 NaN。尤其 `torso_height_m = 0.0` ——
+        # **那正好是「躺在地上」的值**，等于给 G3 凭空造出一批最像倒地、
+        # 数量又占绝对多数的样本。而两条消息唯一的区别只在 `source` 上，
+        # 不报任何错。
+        #
+        # （G3 按 README 的承诺「在录好的 bag 上重扫阈值」时，
+        #   这些假的 0 会直接污染 `torso_*` 的分布。）
+        msg.onset_stamp.sec = 0            # 契约：非异常类填 0
+        msg.onset_stamp.nanosec = 0
+        msg.torso_tilt_deg = float("nan")
+        msg.torso_height_m = float("nan")
 
         self._det_pub.publish(msg)
 

@@ -278,6 +278,21 @@ def sample_depth_near(
     float
         米。无效时 ``nan``。
     """
+    # ⚠️ 有限性检查必须**在 int(round()) 之前**。
+    #
+    # 原先这两行写在后面，于是 NaN/inf 坐标根本走不到越界检查就被
+    # `int(round(nan))` 抛掉：ValueError / OverflowError。
+    # 而 docstring 承诺的是「取不到返回 nan」。
+    #
+    # 后果不是「静默错」，是**相反方向**：异常从 sample_depth_near 一路穿过
+    # keypoints_to_torso_3d、_assess_fall、_on_images（检测循环那段没有 try），
+    # rclpy 会在 spin 线程上重抛回调异常 —— **一个非有限的关键点坐标
+    # 就把整个视觉节点带走**。
+    #
+    # 本项目的取向是「宁可丢这一帧，也不能静默错」，但也不是「带走整条链路」。
+    if not (np.isfinite(u) and np.isfinite(v)):
+        return float("nan")
+
     h, w = depth_m.shape
     ui, vi = int(round(u)), int(round(v))
     if not (0 <= ui < w and 0 <= vi < h):

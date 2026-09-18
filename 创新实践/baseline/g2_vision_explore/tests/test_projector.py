@@ -482,3 +482,22 @@ def test_pitched_replay_tf_puts_world_up_where_the_physics_says():
     assert up_in_camera == pytest.approx(
         [0.0, -math.cos(theta), -math.sin(theta)], abs=1e-9)
     assert np.linalg.det(R) == pytest.approx(1.0)
+
+
+def test_sample_depth_near_returns_nan_for_non_finite_coordinates():
+    """非有限坐标必须返回 nan，不能抛。
+
+    ⚠️ 回归：越界检查原先写在 `int(round(u))` **之后**，于是 NaN/inf 坐标
+    根本走不到检查就被 `int(round(nan))` 抛掉（ValueError / OverflowError）。
+    而异常会一路穿过 keypoints_to_torso_3d、_assess_fall、_on_images
+    （检测循环那段没有 try），rclpy 又在 spin 线程上重抛回调异常 ——
+    **一个非有限的关键点坐标就能把整个视觉节点带走。**
+
+    代价方向正好搞反了：本项目一贯的取向是「宁可丢这一帧，也不能静默错」，
+    而那是「不静默，直接带走整条链路」。
+    """
+    z = _scene_with_person()
+
+    for u, v in ((float("nan"), 20.0), (20.0, float("nan")),
+                 (float("inf"), 20.0), (20.0, float("-inf"))):
+        assert math.isnan(sample_depth_near(z, u, v)), f"({u}, {v}) 应当返回 nan 而不是抛"
