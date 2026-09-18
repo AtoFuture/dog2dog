@@ -151,6 +151,67 @@ def depth_to_meters(depth: np.ndarray, encoding: str) -> np.ndarray:
     return meters
 
 
+def quaternion_to_matrix(x: float, y: float, z: float, w: float) -> np.ndarray:
+    """四元数 ``(x, y, z, w)`` -> 3x3 旋转矩阵。
+
+    ⚠️ 这里**不假设输入已归一化**，但也不替调用方归一化 —— 传进来的如果是
+    没归一化的四元数，矩阵会带一个整体缩放，而且**不会报错**，只会让所有
+    距离悄悄偏大或偏小。TF 给的四元数一定是归一化的，正常路径没问题。
+
+    本函数单独存在是为了**可测**：手写四元数->矩阵的公式很容易把符号搞反，
+    而搞反的后果是坐标整体转到别的方向 —— 本项目已经栽过一次
+    （``replay_images`` 里手写的 TF 四元数把光学「前」映射到了 map 的「下」，
+    三维点整体转了 90°，全程不报任何错）。
+    """
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ], dtype=np.float64)
+
+
+def quaternion_multiply(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    """Hamilton 积 ``a ⊗ b``。
+
+    在旋转矩阵意义下等于 ``R(a) @ R(b)`` —— 也就是**先施加 b，再施加 a**。
+    顺序反了会得到一个看着很合理的错误姿态，所以这里把顺序写清楚。
+    """
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    )
+
+
+def pitch_axis_angle(axis: np.ndarray, angle_rad: float) -> tuple[float, float, float, float]:
+    """绕任意轴转 ``angle_rad`` 的四元数。"""
+    a = np.asarray(axis, dtype=np.float64)
+    a = a / np.linalg.norm(a)
+    s = math.sin(angle_rad / 2.0)
+    return (float(a[0] * s), float(a[1] * s), float(a[2] * s), float(math.cos(angle_rad / 2.0)))
+
+
+def rotate_translate(
+    point: np.ndarray,
+    quaternion_xyzw: tuple[float, float, float, float],
+    translation: tuple[float, float, float],
+) -> np.ndarray:
+    """用 TF 的旋转 + 平移把点从子系变换到父系。
+
+    等价于 ``tf2_geometry_msgs.do_transform_point``，但**不依赖 ROS**，
+    因此可以脱离 rclpy 单元测试。节点里那 4 个关键点用的是它 ——
+    逐个构造 PointStamped 再调 do_transform_point 要多绕一圈，也没法测。
+    """
+    R = quaternion_to_matrix(*quaternion_xyzw)
+    return R @ np.asarray(point, dtype=np.float64) + np.asarray(translation, dtype=np.float64)
+
+
 def sample_depth_near(
     depth_m: np.ndarray,
     u: float,

@@ -19,6 +19,10 @@ from g2_core.projector import (
     CameraIntrinsics,
     DepthEncodingError,
     depth_to_meters,
+    pitch_axis_angle,
+    quaternion_multiply,
+    quaternion_to_matrix,
+    rotate_translate,
     sample_depth_near,
     optical_axis_ground_distance,
     project_depth_bbox,
@@ -391,3 +395,90 @@ def test_sample_depth_near_is_biased_near_on_a_sloped_surface():
 
     assert est < z[20, 20], "低分位数应当偏近"
     assert z[20, 20] - est > 0.3, "偏置量级应当是可见的（这里接近窗口的近端边缘）"
+
+
+# ----------------------------------------------------------------------
+# 四元数 -> 旋转矩阵（倒地链路用它把关键点从相机系转到 map 系）
+# ----------------------------------------------------------------------
+def test_quaternion_to_matrix_identity():
+    assert quaternion_to_matrix(0.0, 0.0, 0.0, 1.0) == pytest.approx(np.eye(3))
+
+
+def test_quaternion_to_matrix_180_about_z():
+    R = quaternion_to_matrix(0.0, 0.0, 1.0, 0.0)
+    assert R == pytest.approx(np.diag([-1.0, -1.0, 1.0]))
+
+
+def test_quaternion_to_matrix_matches_the_replay_tf():
+    """回归：``replay_images`` 里那个光学系 -> map 系的四元数。
+
+    之前手写成 (0.707,-0.707,0,0)，把光学「前」映射到了 map 的 **-z（朝下）**，
+    三维点整体转了 90° 而**不报任何错**。这里把正确的映射钉死。
+    """
+    R = quaternion_to_matrix(0.5, -0.5, 0.5, -0.5)
+
+    # 光学 z(前) -> map +x ；光学 x(右) -> map -y ；光学 y(下) -> map -z
+    assert R @ np.array([0.0, 0.0, 1.0]) == pytest.approx([1.0, 0.0, 0.0])
+    assert R @ np.array([1.0, 0.0, 0.0]) == pytest.approx([0.0, -1.0, 0.0])
+    assert R @ np.array([0.0, 1.0, 0.0]) == pytest.approx([0.0, 0.0, -1.0])
+    assert np.linalg.det(R) == pytest.approx(1.0), "必须是纯旋转，不能带镜像或缩放"
+
+
+def test_rotate_translate_applies_rotation_then_translation():
+    p = np.array([1.0, 0.0, 0.0])
+    # 绕 z 转 90°：x -> y
+    out = rotate_translate(p, (0.0, 0.0, math.sin(math.pi / 4), math.cos(math.pi / 4)),
+                           (10.0, 20.0, 30.0))
+
+    assert out == pytest.approx([10.0, 21.0, 30.0])
+
+
+def test_rotate_translate_keeps_distances():
+    """纯旋转 + 平移不改变两点间距离 —— 人体尺度质检依赖这一点。"""
+    a = np.array([0.3, -0.2, 2.0])
+    b = np.array([-0.1, 0.4, 2.1])
+    quat = (0.2, -0.3, 0.5, 0.787)      # 未归一化！下面的断言会暴露它
+    trans = (1.0, 2.0, 3.0)
+
+    d_in = float(np.linalg.norm(a - b))
+    d_out = float(np.linalg.norm(rotate_translate(a, quat, trans)
+                                 - rotate_translate(b, quat, trans)))
+
+    # 非归一化四元数会带来整体缩放，距离对不上 —— 这里正是要证明函数**不替调用方**
+    # 归一化。TF 给的四元数一定是归一化的，正常路径不会踩到。
+    assert d_out != pytest.approx(d_in, rel=1e-6), "非归一化四元数应当能看出缩放"
+
+    n = math.sqrt(sum(c * c for c in quat))
+    quat_n = tuple(c / n for c in quat)
+    d_ok = float(np.linalg.norm(rotate_translate(a, quat_n, trans)
+                                - rotate_translate(b, quat_n, trans)))
+    assert d_ok == pytest.approx(d_in, rel=1e-6)
+
+
+def test_quaternion_multiply_order_matches_matrix_order():
+    """``a ⊗ b`` 对应 ``R(a) @ R(b)`` —— 顺序反了会得到一个看着合理的错姿态。"""
+    a = (0.0, 0.0, math.sin(math.pi / 4), math.cos(math.pi / 4))   # 绕 z 90°
+    b = (math.sin(math.pi / 4), 0.0, 0.0, math.cos(math.pi / 4))   # 绕 x 90°
+
+    ab = quaternion_to_matrix(*quaternion_multiply(a, b))
+
+    assert ab == pytest.approx(quaternion_to_matrix(*a) @ quaternion_to_matrix(*b))
+
+
+def test_pitched_replay_tf_puts_world_up_where_the_physics_says():
+    """回放器加俯仰后，map 的「上」在相机系里应当落在 (0,-cosθ,-sinθ)。
+
+    这是倒地判据的**重力来源**：俯仰角填错，所有倾角会整体平移。
+    """
+    q0 = (0.5, -0.5, 0.5, -0.5)                       # 光学 -> map（相机水平）
+    theta = math.radians(20.0)
+
+    q = quaternion_multiply(q0, pitch_axis_angle((1.0, 0.0, 0.0), -theta))
+    R = quaternion_to_matrix(*q)
+
+    # 反解：map 的 +z 在相机系里的方向 = R^T @ (0,0,1)
+    up_in_camera = R.T @ np.array([0.0, 0.0, 1.0])
+
+    assert up_in_camera == pytest.approx(
+        [0.0, -math.cos(theta), -math.sin(theta)], abs=1e-9)
+    assert np.linalg.det(R) == pytest.approx(1.0)

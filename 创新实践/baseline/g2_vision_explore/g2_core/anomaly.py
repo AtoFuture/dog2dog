@@ -64,6 +64,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .projector import sample_depth_near
+
 # COCO 17 关键点索引
 LEFT_SHOULDER, RIGHT_SHOULDER = 5, 6
 LEFT_HIP, RIGHT_HIP = 11, 12
@@ -374,6 +376,107 @@ def assess_fall_from_keypoints_3d(
         confidence=conf,
         reason=reason,
     )
+
+
+@dataclass
+class Torso3D:
+    """一个人四个躯干关键点的**相机系**三维坐标。
+
+    只存四个点而不是直接给倾角 —— 因为转成 map 系（拿重力方向和离地高度）
+    是调用方的事，而这个类不该知道 TF 的存在。
+    """
+
+    shoulder_left: np.ndarray
+    shoulder_right: np.ndarray
+    hip_left: np.ndarray
+    hip_right: np.ndarray
+    keypoint_confs: tuple[float, float, float, float]
+
+    @property
+    def shoulder_mid(self) -> np.ndarray:
+        return (self.shoulder_left + self.shoulder_right) / 2.0
+
+    @property
+    def hip_mid(self) -> np.ndarray:
+        return (self.hip_left + self.hip_right) / 2.0
+
+    def tilt_deg(self, up: np.ndarray) -> float:
+        """躯干与重力方向的夹角（度）。
+
+        ⚠️ ``up`` 是**必填**，故意不给默认值。
+
+        本类存的点一律在**相机光学系**（x 右 / y 下 / z 前）里，
+        而在那个坐标系里「上」是 ``(0, -1, 0)``，**不是** ``(0, 0, 1)``
+        （``(0,0,1)`` 是「前方」）。
+
+        给个 ``(0,0,1)`` 的默认值会让「站着的人」算出 90° —— 看起来像个
+        正经的角度，实际是坐标系搞错了。这类错误在本项目里已经出现过几次
+        （TF 四元数、俯仰归一化方向），所以这里强制调用方写明是哪个系。
+        """
+        return math.degrees(torso_tilt_from_vertical(self.shoulder_mid, self.hip_mid, up=up))
+
+
+#: 四个躯干关键点在 COCO 17 里的下标。顺序与 Torso3D 的字段一致。
+TORSO_KEYPOINT_IDS = (5, 6, 11, 12)
+
+
+def keypoints_to_torso_3d(
+    keypoints: np.ndarray,
+    depth_m: np.ndarray,
+    intrinsics,
+    min_keypoint_conf: float = 0.5,
+) -> tuple[Torso3D | None, str]:
+    """二维关键点 + 深度图 -> ``Torso3D``。返回 ``(结果, 失败原因)``。
+
+    失败时结果是 ``None``，原因是一句能直接进日志的话（**为什么要带原因**：
+    「没检出人」「关键点置信度低」「深度取不到」「反投影超出人体尺度」
+    在日志里长得一模一样，都是「没有倒地结论」，不区分就没法定位）。
+
+    三道检查，缺一不可：
+
+    1. **关键点置信度** —— 人背对相机、被遮挡时肩髋点不可靠。
+    2. **深度可取样** —— 用 ``sample_depth_near``（窗口近端分位数），
+       不是逐像素：关键点可能落在身体轮廓之外，逐像素会取到背景。
+    3. **人体尺度** —— 见 ``check_body_proportions``。这是主质检，
+       实测能抓住「关键点落到轮廓外」这类错误，而离散度门抓不住。
+
+    Parameters
+    ----------
+    keypoints : np.ndarray
+        ``(17, 3)``，每行 ``(x, y, confidence)``（ultralytics 的 ``keypoints.data``）。
+    depth_m : np.ndarray
+        **米制**深度图，无效值为 NaN（见 ``projector.depth_to_meters``）。
+    intrinsics : projector.CameraIntrinsics
+        真实标定值，不要用近似 —— 人体尺度门是绝对尺度的检查，焦距错了它就失准。
+    """
+    kp = np.asarray(keypoints, dtype=np.float64)
+    if kp.shape != (17, 3):
+        return None, f"关键点形状应为 (17, 3)，得到 {kp.shape}"
+
+    confs = tuple(float(kp[i][2]) for i in TORSO_KEYPOINT_IDS)
+    if min(confs) < min_keypoint_conf:
+        return None, f"关键点置信度过低（min={min(confs):.2f}）"
+
+    pts = []
+    for i in TORSO_KEYPOINT_IDS:
+        z = sample_depth_near(depth_m, kp[i][0], kp[i][1])
+        if not np.isfinite(z) or z <= 0:
+            return None, f"关键点 {i} 处取不到有效深度"
+        # 反投影到相机光学系（x 右 / y 下 / z 前）
+        pts.append(np.array([
+            (kp[i][0] - intrinsics.cx) * z / intrinsics.fx,
+            (kp[i][1] - intrinsics.cy) * z / intrinsics.fy,
+            z,
+        ]))
+
+    torso = Torso3D(pts[0], pts[1], pts[2], pts[3], confs)
+
+    bad = check_body_proportions(torso.shoulder_left, torso.shoulder_right,
+                                 torso.hip_left, torso.hip_right)
+    if bad is not None:
+        return None, f"反投影超出人体尺度：{bad}"
+
+    return torso, ""
 
 
 def midpoints_from_keypoints_2d(

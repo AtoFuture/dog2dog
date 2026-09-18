@@ -260,3 +260,19 @@ def test_forget_drops_the_track():
 
     assert tracker.n_tracks == 0
     tracker.forget(1)          # 幂等
+
+
+def test_prune_drops_stale_tracks_but_keeps_fresh_ones():
+    """目标离开画面后跟踪器会分配新 id，旧 id 的状态不清理就是内存泄漏。"""
+    tracker = FallTracker()
+    tracker.update(1, TorsoObservation(stamp=0.0, tilt_deg=5.0))
+    tracker.update(2, TorsoObservation(stamp=100.0, tilt_deg=5.0))
+
+    n = tracker.prune(now=101.0, max_age_s=30.0)
+
+    assert n == 1, "只该清掉 30 秒没出现的那个"
+    assert tracker.n_tracks == 1
+
+
+def test_prune_on_empty_tracker_is_a_no_op():
+    assert FallTracker().prune(now=0.0) == 0

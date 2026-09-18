@@ -43,6 +43,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 
 import cv2
@@ -58,16 +59,68 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from sensor_msgs.msg import CameraInfo, Image
 from tf2_ros import Buffer, TransformException, TransformListener
 
+from g2_core.anomaly import keypoints_to_torso_3d, torso_tilt_from_vertical
 from g2_core.detector import Detector, DetectorConfig, DetectorUnavailableError
+from g2_core.fall_tracker import FallTracker, TorsoObservation
 from g2_core.projector import (
     CameraIntrinsics,
     ProjectionResult,
     depth_to_meters,
     project_depth_bbox,
+    rotate_translate,
 )
 from vision_interfaces.msg import Detection3D, DetectionSnapshot
 
 from .qos import LATCHED_QOS, RESULT_QOS, SENSOR_QOS
+
+#: map 系（REP-103，重力对齐）里的「上」。
+#: 注意这**只对 map 系成立** —— 相机光学系里的「上」是 (0,-1,0)。
+UP_IN_MAP = np.array([0.0, 0.0, 1.0])
+
+
+def build_fall_detection(ev, stamp, map_point, confidence: float, has_snapshot: bool):
+    """由倒地事件构造接口 03 的消息。
+
+    **抽成模块级纯函数是为了可测** —— 它承载的是契约里最容易出错的那几条
+    （边沿触发、onset_stamp 语义、两个原始观测量的单位），
+    而这些既不该靠「跑一整条 ROS 链路」来验证，也不该埋在节点方法里。
+
+    契约要点（见 baseline/README.md 的「异常类三条附加规则」）：
+
+    * ``class_name`` 是异常类，``source="pose"``
+    * ``id`` **不允许为 0** —— 时间判据依赖轨迹连续性，轨迹没确认时宁可不发
+    * ``onset_stamp`` 是**事件起始时刻**，不是发送时刻也不是本帧采集时刻
+    * ``torso_tilt_deg`` / ``torso_height_m`` 是**原始观测量**，供 G3 在录好的
+      bag 上重扫阈值
+    * ``pose`` 填躯干中点（map 系）—— 与普通检测的「代表点」口径**不同**
+    """
+    if ev.track_id == 0:
+        raise ValueError("异常类不允许 id=0：时间判据依赖轨迹连续性，"
+                         "轨迹未确认时不应产生倒地事件")
+
+    msg = Detection3D()
+    msg.class_name = "person_fallen"
+    msg.confidence = float(confidence)
+
+    msg.pose = PoseWithCovariance()
+    msg.pose.pose.position.x = float(map_point[0])
+    msg.pose.pose.position.y = float(map_point[1])
+    msg.pose.pose.position.z = float(map_point[2])
+    msg.pose.pose.orientation.w = 1.0        # 契约：不使用，恒为单位四元数
+
+    msg.stamp = stamp
+    msg.id = int(ev.track_id)
+    msg.source = "pose"
+    msg.has_snapshot = bool(has_snapshot)
+
+    msg.onset_stamp.sec = int(math.floor(ev.onset_stamp))
+    msg.onset_stamp.nanosec = int(round((ev.onset_stamp - math.floor(ev.onset_stamp)) * 1e9))
+    if msg.onset_stamp.nanosec >= 1_000_000_000:      # 浮点误差可能凑到 1e9
+        msg.onset_stamp.sec += 1
+        msg.onset_stamp.nanosec -= 1_000_000_000
+    msg.torso_tilt_deg = float(ev.tilt_deg)
+    msg.torso_height_m = float("nan") if ev.height_m is None else float(ev.height_m)
+    return msg
 
 
 class VisionDetector(Node):
@@ -87,9 +140,34 @@ class VisionDetector(Node):
         # 没有它的话，「检测为 0」「三维解算全失败」「TF 全失败」在日志上
         # 长得一模一样，都是「什么都没发生」。
         self._stat = {"frames": 0, "dets": 0, "proj_fail": 0, "dedup": 0, "tf_fail": 0,
-                      "published": 0}
+                      "published": 0,
+                      # 倒地判据的分解。和上面同理：没有它的话
+                      # 「没检出人」「关键点置信度低」「深度取不到」「人体尺度不合格」
+                      # 「轨迹还没确认」在日志上全是「没有倒地结论」，分不出是哪一步。
+                      "fall_seen": 0, "fall_no_keypoints": 0, "fall_no_track": 0,
+                      "fall_unusable": 0, "fall_events": 0}
         # TF 降级计数（用不到图像时间戳时 +1）
         self._tf_fallback_count = 0
+
+        self._fall_enabled = bool(self.get_parameter("detect_fall").value)
+        _max_h = float(self.get_parameter("fall_max_height_m").value)
+        self._fall_tracker = FallTracker(
+            transition_max_s=float(self.get_parameter("fall_transition_max_s").value),
+            persist_s=float(self.get_parameter("fall_persist_s").value),
+            refire_cooldown_s=float(self.get_parameter("fall_refire_cooldown_s").value),
+            max_height_m=(_max_h if _max_h > 0.0 else None),
+        )
+        if self._fall_enabled:
+            self.get_logger().info(
+                f"倒地识别已启用（时间判据）："
+                f"转水平窗口 {self.get_parameter('fall_transition_max_s').value}s ｜ "
+                f"保持 {self.get_parameter('fall_persist_s').value}s ｜ "
+                f"高度门 {'关闭（未标定）' if _max_h <= 0 else f'{_max_h} m'}"
+            )
+            self.get_logger().info(
+                "⚠️ 倒地识别只在权重为 pose 模型时生效；"
+                "另外它依赖跟踪 ID 跨帧稳定，纯 detect 模式下没有 id 就不会出结论"
+            )
 
         self._load_detector()
 
@@ -158,6 +236,19 @@ class VisionDetector(Node):
                 "dedup 高 -> 节流间隔设得太长。"
             )
 
+        if self._fall_enabled and st["fall_seen"]:
+            self.get_logger().info(
+                f"[倒地] 可用躯干 {st['fall_seen']} ｜ 无关键点 {st['fall_no_keypoints']} ｜ "
+                f"轨迹未确认 {st['fall_no_track']} ｜ 躯干不可用 {st['fall_unusable']} ｜ "
+                f"**事件 {st['fall_events']}** ｜ 在用轨迹 {self._fall_tracker.n_tracks}"
+            )
+            if st["fall_events"] == 0 and st["fall_unusable"] > st["fall_seen"]:
+                self.get_logger().warn(
+                    "躯干大多不可用 —— 看 debug 日志里的原因。"
+                    "最常见的是「关键点落到身体轮廓外，深度取到了背景」，"
+                    "表现为反投影超出人体尺度。"
+                )
+
     # ------------------------------------------------------------------
     def _declare_params(self) -> None:
         d = self.declare_parameter
@@ -192,6 +283,20 @@ class VisionDetector(Node):
         d("publish_snapshot", True)
         d("snapshot_quality", 80)
         d("snapshot_margin_px", 8)
+
+        # --- 倒地识别（时间判据）---
+        # 只有当权重是 **pose 模型**（能出关键点）时才会真正生效；
+        # 纯检测模型下 det.keypoints 是 None，这一段自动跳过。
+        d("detect_fall", True)
+        d("fall_min_keypoint_conf", 0.5)
+        d("fall_transition_max_s", 3.0)
+        d("fall_persist_s", 2.0)
+        d("fall_refire_cooldown_s", 10.0)
+        # 离地高度上限。**0 = 关闭**（当前默认）——
+        # 实测标定不出来：真倒地一侧量出过 1.58 m 这种不可能的值。
+        # 没标定过的门只会误杀真倒地，所以宁可不关。
+        d("fall_max_height_m", 0.0)
+        d("fall_track_max_age_s", 30.0)
 
     def _load_detector(self) -> None:
         """加载检测器。**启动时就加载**，让配置错误立刻暴露。
@@ -292,7 +397,18 @@ class VisionDetector(Node):
 
         # --- 逐目标处理 ---
         stamp = color_msg.header.stamp
+        # TF 每帧查一次就够：同一帧里所有目标用的是同一个变换。
+        # （原先每个目标各查一次，既浪费又让 tf_fail 计数变得难解释。）
+        tf = self._lookup_tf(color_msg.header.frame_id, stamp)
+
         for det in detections:
+            # ⚠️ 倒地判据**每帧都喂**，不受下面的 min_publish_interval_s 节流影响。
+            # 节流是给 Detection3D 去重用的；而时间判据要的是**连续观测序列**，
+            # 按节流间隔（默认 2 s）喂进去的话，3 s 的转水平窗口里只有一两个样本，
+            # 判据直接失效。
+            if self._fall_enabled:
+                self._assess_fall(det, depth_m, tf, stamp)
+
             res = project_depth_bbox(
                 depth_m,
                 self._intrinsics,
@@ -311,13 +427,107 @@ class VisionDetector(Node):
                 self._stat["dedup"] += 1
                 continue
 
-            pose = self._to_map(res, color_msg.header.frame_id, stamp)
-            if pose is None:
+            if tf is None:
                 self._stat["tf_fail"] += 1
                 continue
-            self._stat["published"] += 1
 
-            self._publish_detection(det, pose, stamp)
+            self._stat["published"] += 1
+            self._publish_detection(det, self._to_map(res, tf), stamp)
+
+    # ------------------------------------------------------------------
+    # 倒地识别
+    # ------------------------------------------------------------------
+    def _assess_fall(self, det, depth_m: np.ndarray, tf, stamp) -> None:
+        """把一帧观测喂给时间判据，确认倒地时发一条事件。
+
+        和 ``project_depth_bbox`` 那条路**完全独立**：它只用关键点，
+        不用代表点反投影，所以不会因为 bbox 里混了远近两个面而被丢帧。
+
+        每一道检查失败都单独计数 —— 没有这些计数的话，
+        「没检出人」「置信度低」「深度取不到」「人体尺度不合格」「轨迹没确认」
+        在日志上全是「没有倒地结论」，出问题时无从下手。
+        """
+        if det.keypoints is None:
+            # 权重不是 pose 模型，或者模型没输出关键点
+            self._stat["fall_no_keypoints"] += 1
+            return
+        if det.track_id is None:
+            # 契约：异常类**不允许** id=0（时间判据依赖轨迹连续性）。
+            # 轨迹还没被跟踪器确认时不发结论 —— 宁可晚一点，也不要发一个
+            # G3 无法与其它帧关联的消息。
+            self._stat["fall_no_track"] += 1
+            return
+        if tf is None:
+            self._stat["fall_tf_fail"] = self._stat.get("fall_tf_fail", 0) + 1
+            return
+
+        self._stat["fall_seen"] += 1
+
+        torso, why = keypoints_to_torso_3d(
+            det.keypoints, depth_m, self._intrinsics,
+            min_keypoint_conf=float(self.get_parameter("fall_min_keypoint_conf").value),
+        )
+        if torso is None:
+            self._stat["fall_unusable"] += 1
+            self.get_logger().debug(
+                f"轨迹 {det.track_id} 这一帧的躯干不可用：{why}"
+            )
+            return
+
+        # 相机系 -> map 系。map 系按 REP-103 重力对齐，且约定的地面是 z=0。
+        # ⚠️ 「z=0 是地面」依赖 SLAM 的地图原点建在地面上 —— 真机上要确认这一点，
+        # 否则 torso_height_m 会带一个常数偏置。
+        q, t = tf.transform.rotation, tf.transform.translation
+        quat = (q.x, q.y, q.z, q.w)
+        trans = (t.x, t.y, t.z)
+        pts = [rotate_translate(p, quat, trans) for p in
+               (torso.shoulder_left, torso.shoulder_right,
+                torso.hip_left, torso.hip_right)]
+        s_mid = (pts[0] + pts[1]) / 2.0
+        h_mid = (pts[2] + pts[3]) / 2.0
+
+        tilt = math.degrees(torso_tilt_from_vertical(s_mid, h_mid, UP_IN_MAP))
+        height = float((s_mid[2] + h_mid[2]) / 2.0)
+        # 每帧都记 —— 判据不触发时这是唯一能看出「到底量出了什么」的东西
+        self.get_logger().debug(
+            f"轨迹 {det.track_id} 倾角 {tilt:.1f}° 离地 {height:.2f} m"
+        )
+
+        ev = self._fall_tracker.update(det.track_id, TorsoObservation(
+            stamp=float(stamp.sec) + float(stamp.nanosec) * 1e-9,
+            tilt_deg=tilt,
+            height_m=height,
+        ))
+        self._prune_fall_tracks(now=float(stamp.sec) + float(stamp.nanosec) * 1e-9)
+
+        if ev is not None:
+            self._stat["fall_events"] += 1
+            self.get_logger().warn(
+                f"⚠️ 倒地：轨迹 {ev.track_id} ｜ 倾角 {ev.tilt_deg:.0f}° ｜ "
+                f"离地 {ev.height_m:.2f} m ｜ 起始于 {ev.onset_stamp:.3f}"
+            )
+            self._publish_fall(
+                ev, det, stamp,
+                map_point=(s_mid + h_mid) / 2.0,
+                confidence=float(np.mean(torso.keypoint_confs)),
+            )
+
+    def _publish_fall(self, ev, det, stamp, map_point, confidence: float) -> None:
+        """发一条倒地事件。消息构造见模块级 build_fall_detection（可单测）。"""
+        msg = build_fall_detection(
+            ev, stamp, map_point, confidence,
+            has_snapshot=bool(self.get_parameter("publish_snapshot").value),
+        )
+        self._det_pub.publish(msg)
+        if msg.has_snapshot:
+            self._publish_snapshot(det, msg.id, stamp)
+
+    def _prune_fall_tracks(self, now: float) -> None:
+        """清掉久未出现的轨迹。不清的话跟踪器一换 id 就留一份状态，只涨不跌。"""
+        n = self._fall_tracker.prune(
+            now, max_age_s=float(self.get_parameter("fall_track_max_age_s").value))
+        if n:
+            self.get_logger().debug(f"清理了 {n} 条陈旧轨迹")
 
     # ------------------------------------------------------------------
     def _should_publish(self, track_id: int | None, now: float) -> bool:
@@ -335,34 +545,27 @@ class VisionDetector(Node):
         self._last_published[track_id] = now
         return True
 
-    def _to_map(self, res: ProjectionResult, camera_frame: str, stamp) -> Pose | None:
-        """把相机系三维点变换到 map 系。
+    def _lookup_tf(self, camera_frame: str, stamp):
+        """查 ``map <- camera`` 的变换。查不到返回 ``None``。
 
-        用**图像时间戳**查 TF，而不是 ``Time(0)``（最新）：Go2 在移动，
+        用**图像时间戳**查，而不是 ``Time(0)``（最新）：Go2 在移动，
         用最新的变换去变换几十毫秒前的图会引入系统性偏差。
-        查不到时降级用最新并计数，而不是丢弃整帧检测 —— 丢帧同样会让指标失真。
-        """
-        from tf2_geometry_msgs import do_transform_point  # 局部导入，减少节点启动时间
-        from geometry_msgs.msg import PointStamped
+        查不到时降级用「最新」并计数，而不是丢弃整帧检测 —— 丢帧同样会让指标失真。
 
+        ⚠️ 失败时**不在这里**加 ``tf_fail`` 计数，由调用方加。
+        原先两处都加，同一个失败被记了两次，统计就对不上了。
+        """
         map_frame = self.get_parameter("map_frame").value
         timeout = Duration(seconds=self.get_parameter("tf_timeout_s").value)
 
-        p = PointStamped()
-        p.header.frame_id = camera_frame
-        p.header.stamp = stamp
-        p.point = Point(x=float(res.point[0]), y=float(res.point[1]), z=float(res.point[2]))
-
-        tf = None
         try:
-            tf = self.tf_buffer.lookup_transform(map_frame, camera_frame, stamp, timeout)
+            return self.tf_buffer.lookup_transform(map_frame, camera_frame, stamp, timeout)
         except TransformException as exc:
             if not self.get_parameter("tf_fallback_to_latest").value:
                 self.get_logger().warn(
                     f"在图像时间戳上查不到 {map_frame}<-{camera_frame} 的变换：{exc}",
                     throttle_duration_sec=5.0,
                 )
-                self._stat["tf_fail"] += 1
                 return None
             try:
                 tf = self.tf_buffer.lookup_transform(map_frame, camera_frame, rclpy.time.Time())
@@ -373,12 +576,25 @@ class VisionDetector(Node):
                         f"目标位置会有系统性偏差（Go2 在移动）。"
                         f"若频繁出现，检查 TF 发布频率与 use_sim_time 设置。"
                     )
+                return tf
             except TransformException as exc2:
                 self.get_logger().warn(
                     f"TF 完全查不到 {map_frame}<-{camera_frame}：{exc2}",
                     throttle_duration_sec=5.0,
                 )
                 return None
+
+    def _to_map(self, res: ProjectionResult, tf) -> Pose:
+        """把相机系三维点变换到 map 系。``tf`` 由 ``_lookup_tf`` 得到。"""
+        from tf2_geometry_msgs import do_transform_point  # 局部导入，减少节点启动时间
+        from geometry_msgs.msg import PointStamped
+
+        p = PointStamped()
+        # 源系是 tf 的**子**系（camera），不是 header 里的父系（map）——
+        # 写反了 do_transform_point 在部分版本上会直接抛，而错误信息指向
+        # 「frame_id 不匹配」，很容易被误诊成 TF 树没建好。
+        p.header.frame_id = tf.child_frame_id
+        p.point = Point(x=float(res.point[0]), y=float(res.point[1]), z=float(res.point[2]))
 
         q = do_transform_point(p, tf)
         pose = Pose()

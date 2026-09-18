@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import glob
+import math
 import os
 import re
 import time
@@ -44,6 +45,8 @@ from geometry_msgs.msg import TransformStamped
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
 from tf2_ros import StaticTransformBroadcaster
+
+from g2_core.projector import pitch_axis_angle, quaternion_multiply
 
 from .qos import LATCHED_QOS, SENSOR_QOS
 
@@ -67,6 +70,14 @@ class ImageReplayer(Node):
         d("depth_dir", "")
         d("fps", 5.0)
         d("loop", True)
+        d("start_index", 0)
+        # 每对图**重复发多少次**。默认 1。
+        #
+        # 数据集里帧间隔是 5 秒，人在画面里早移动了 —— 跟踪器因此永远
+        # 停在「未确认」状态，拿不到 track_id，而倒地判据依赖 id 跨帧稳定。
+        # 把同一帧连发 N 次可以造出一段「准静态视频」，让跟踪器确认轨迹，
+        # **用来验证链路通不通**（不能用来验证判据准不准 —— 那不是真实运动）。
+        d("hold_frames", 1)
 
         # RealSense D435i 在 640x480 下的典型值。
         # ⚠️ 这是**近似值**，只够把链路跑通；真实标定请从 CameraInfo 拿。
@@ -83,6 +94,15 @@ class ImageReplayer(Node):
         d("cam_x", 0.0)
         d("cam_y", 0.0)
         d("cam_z", 0.35)
+        # 相机**下俯角**（度）。默认 0 = 相机水平。
+        #
+        # ⚠️ 这个值必须给对，否则倒地判据会整体偏。
+        # 判据算的是「躯干相对**重力**的夹角」，而重力方向是从 TF 推出来的
+        # （map 系的 z 轴）。相机的俯仰角填错 -> 重力方向就错 ->
+        # 所有倾角一起平移。本数据集实测下俯约 20°。
+        #
+        # 正数 = 相机向下看。
+        d("cam_pitch_deg", 0.0)
 
         self._pairs = self._collect_pairs()
         if not self._pairs:
@@ -98,7 +118,9 @@ class ImageReplayer(Node):
             self._tf_bcast = StaticTransformBroadcaster(self)
             self._broadcast_tf()
 
-        self._idx = 0
+        self._idx = min(int(self.get_parameter("start_index").value),
+                        len(self._pairs) - 1)
+        self._hold = 0
         period = 1.0 / max(1e-6, float(self.get_parameter("fps").value))
         self._timer = self.create_timer(period, self._tick)
 
@@ -142,26 +164,37 @@ class ImageReplayer(Node):
         # 光学系：x 右 / y 下 / z 前（沿光轴）
         # map 系（REP-103）：x 前 / y 左 / z 上
         #
-        # 对应关系：
+        # 对应关系（相机**水平**时）：
         #     光学 z(前) → map +x
         #     光学 x(右) → map -y
         #     光学 y(下) → map -z
-        # 即旋转矩阵 R = [[0,0,1],[-1,0,0],[0,-1,0]]，trace=0，
+        # 即旋转矩阵 R0 = [[0,0,1],[-1,0,0],[0,-1,0]]，trace=0，
         # 按标准公式换算得四元数 (x,y,z,w) = (0.5, -0.5, 0.5, -0.5)。
         #
         # ⚠️ 这里原先手写的是 (0.707, -0.707, 0, 0) —— 那是绕 (1,-1,0)/√2
         # 转 180°，会把光学"前"映射到 map 的 **-z（朝下）**。
         # 后果是三维点整体转了 90°，z 变成负的、位置全错，
         # 而且**不会报任何错** —— 看起来只是"坐标有点怪"。
-        t.transform.rotation.x = 0.5
-        t.transform.rotation.y = -0.5
-        t.transform.rotation.z = 0.5
-        t.transform.rotation.w = -0.5
+        q0 = (0.5, -0.5, 0.5, -0.5)
+
+        # 叠加俯仰：相机下俯 θ 时 R = R0 @ Rx(-θ)。
+        #
+        # 推导：下俯 θ 时，「世界向上」在光学系里是 (0, -cosθ, -sinθ)。
+        # 而 Rx(-θ) @ (0,-cosθ,-sinθ) = (0,-1,0)，且 R0 @ (0,-1,0) = (0,0,1)，
+        # 即 map 的 +z。所以 R = R0 @ Rx(-θ) 正是我们要的。
+        pitch = math.radians(float(self.get_parameter("cam_pitch_deg").value))
+        q = quaternion_multiply(q0, pitch_axis_angle((1.0, 0.0, 0.0), -pitch))
+
+        t.transform.rotation.x = q[0]
+        t.transform.rotation.y = q[1]
+        t.transform.rotation.z = q[2]
+        t.transform.rotation.w = q[3]
         self._tf_bcast.sendTransform(t)
         self.get_logger().info(
             f"已广播静态 TF {t.header.frame_id} -> {t.child_frame_id} "
             f"({t.transform.translation.x}, {t.transform.translation.y}, "
-            f"{t.transform.translation.z})"
+            f"{t.transform.translation.z})，下俯 "
+            f"{self.get_parameter('cam_pitch_deg').value}°"
         )
 
     # ------------------------------------------------------------------
@@ -171,9 +204,13 @@ class ImageReplayer(Node):
                 self.get_logger().info("回放完毕")
                 return
             self._idx = 0
+            self._hold = 0
 
         cpath, dpath = self._pairs[self._idx]
-        self._idx += 1
+        self._hold += 1
+        if self._hold >= max(1, int(self.get_parameter("hold_frames").value)):
+            self._hold = 0
+            self._idx += 1
 
         # ⚠️ 单个文件坏掉**不能**让整个回放器崩掉。
         # 踩过的坑：数据集里有一个 0 字节的 .npy（下载中断留下的），

@@ -19,6 +19,7 @@ from g2_core.anomaly import (
     assess_fall_from_keypoints_3d,
     bbox_aspect_is_fallen,
     check_body_proportions,
+    keypoints_to_torso_3d,
     midpoints_from_keypoints_2d,
     torso_tilt_from_vertical,
 )
@@ -276,3 +277,87 @@ def test_body_proportions_rejects_a_too_short_torso():
         np.array([-0.15, 0.0, 1.45]), np.array([0.15, 0.0, 1.45]),
     )
     assert bad is not None and "躯干长" in bad
+
+
+# ----------------------------------------------------------------------
+# 关键点 -> 三维躯干（链路里真正调用的那一层）
+# ----------------------------------------------------------------------
+class _K:
+    """够用的 CameraIntrinsics 替身。"""
+    fx = fy = 615.0
+    cx, cy = 320.0, 240.0
+
+
+def _kp(shoulder_y=200.0, hip_y=320.0, conf=0.9):
+    kp = np.zeros((17, 3))
+    kp[5] = (280.0, shoulder_y, conf)
+    kp[6] = (360.0, shoulder_y, conf)
+    kp[11] = (290.0, hip_y, conf)
+    kp[12] = (350.0, hip_y, conf)
+    return kp
+
+
+def _depth(value=2.0, shape=(480, 640)):
+    return np.full(shape, value, dtype=np.float32)
+
+
+#: 相机光学系里的「上」。x 右 / y 下 / z 前，所以「上」是 -y。
+#: 注意**不是** (0,0,1) —— 那是「前方」。写错会让站着的人算出 90°。
+UP_CAMERA = np.array([0.0, -1.0, 0.0])
+
+
+def test_keypoints_to_torso_3d_happy_path():
+    torso, why = keypoints_to_torso_3d(_kp(), _depth(), _K())
+
+    assert why == ""
+    assert torso is not None
+    # 肩在图像上方(y 小) -> 相机系 y 更小 -> 躯干朝上，倾角接近 0
+    assert abs(torso.tilt_deg(up=UP_CAMERA)) < 5.0
+    assert torso.shoulder_mid[2] == pytest.approx(2.0)
+
+
+def test_tilt_deg_requires_an_explicit_up():
+    """``up`` 必填是刻意的。
+
+    相机系里「上」是 (0,-1,0) 而不是 (0,0,1)；给个 (0,0,1) 的默认值会让
+    站着的人算出 90° —— 看着像个正经角度，实际是坐标系搞错了。
+    """
+    torso, _ = keypoints_to_torso_3d(_kp(), _depth(), _K())
+
+    with pytest.raises(TypeError):
+        torso.tilt_deg()                       # 不给就是不给
+
+    assert torso.tilt_deg(up=np.array([0.0, 0.0, 1.0])) == pytest.approx(90.0), \
+        "用错坐标系会得到 90° —— 这正是为什么要强制写明"
+
+
+def test_keypoints_to_torso_3d_reports_why_on_low_confidence():
+    torso, why = keypoints_to_torso_3d(_kp(conf=0.2), _depth(), _K())
+
+    assert torso is None
+    assert "置信度" in why, "失败原因要能直接进日志定位"
+
+
+def test_keypoints_to_torso_3d_reports_why_on_missing_depth():
+    d = _depth()
+    d[:, :] = np.nan
+
+    torso, why = keypoints_to_torso_3d(_kp(), d, _K())
+
+    assert torso is None
+    assert "深度" in why
+
+
+def test_keypoints_to_torso_3d_catches_the_real_shoulder_failure():
+    """回归：右肩落在身体轮廓外、深度取到背景 —— 必须被人体尺度门拦下。
+
+    这是真实数据里发生过的失败（frame 185916），也是链路里最隐蔽的一种：
+    深度值本身「有效」，只是取的是身后那堵墙。
+    """
+    d = _depth(value=1.6)
+    d[190:215, 350:640] = 3.0        # 右肩那一带是背景
+
+    torso, why = keypoints_to_torso_3d(_kp(), d, _K())
+
+    assert torso is None
+    assert "人体尺度" in why

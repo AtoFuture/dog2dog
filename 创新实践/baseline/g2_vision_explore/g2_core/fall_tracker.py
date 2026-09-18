@@ -232,8 +232,23 @@ class FallTracker:
 
     # ------------------------------------------------------------------
     def forget(self, track_id: int) -> None:
-        """轨迹消失时清掉状态，避免字典无限增长。"""
+        """轨迹消失时清掉状态。"""
         self._tracks.pop(track_id, None)
+
+    def prune(self, now: float, max_age_s: float = 30.0) -> int:
+        """清掉 ``max_age_s`` 没再出现的轨迹，返回清掉几条。
+
+        **不清理的后果**：跟踪器在目标离开画面后会分配新 id，
+        旧 id 的状态永远留在字典里 —— 一次长实验下来是个只涨不跌的内存泄漏。
+
+        用「多久没出现」而不是「跟踪器说它还在不在」：后者需要节点
+        额外维护一套 id 生命周期，而这里只需要一个保守的超时。
+        """
+        stale = [tid for tid, tr in self._tracks.items()
+                 if tr.last_stamp is not None and now - tr.last_stamp > max_age_s]
+        for tid in stale:
+            del self._tracks[tid]
+        return len(stale)
 
     @property
     def n_tracks(self) -> int:
