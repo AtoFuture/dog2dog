@@ -112,7 +112,7 @@ def test_plane_above_the_scene_bottom_is_rejected():
     assert fit.normal is None
     assert fit.above_ratio < 0.5, f"实得 {fit.above_ratio:.2%}"
     # 相机高度是合理的 —— 证明拒它的确实是「不在底部」这条
-    assert 1.0 <= fit.camera_height_m <= 3.0
+    assert 0.2 <= fit.camera_height_m <= 3.0
 
 
 def test_default_above_ratio_is_not_the_naive_high_value():
@@ -133,16 +133,49 @@ def test_default_above_ratio_is_not_the_naive_high_value():
     )
 
 
-def test_camera_height_below_the_lower_bound_is_rejected():
-    """默认下限 1.0 m 是按**手持/固定安装**的素材定的。
+def test_default_camera_height_covers_the_deployment_platform():
+    """⭐ 回归：默认下限必须覆盖**部署平台** —— Go2 的车载相机离地约 0.35 m。
 
-    装在 Go2 上的相机会低得多 —— 那种场景必须显式调小下限，
-    否则**每一帧都会被判不合格**（这条测试同时是这个坑的说明书）。
+    这条测试的由来（2026-09-18）。**它原先的方向是反的**：老版本叫
+    ``test_camera_height_below_the_lower_bound_is_rejected``，
+    断言「0.4 m 会被默认拒绝，真机上得记得显式调小」——
+    把「默认值不适配部署平台」当成了**使用者的责任**记在测试里。
+
+    实测确认之后，这不再是使用者的责任，是**默认值错了**：
+
+        官方 URDF  front_camera_joint 相对 base  z = +0.043 m
+        机器人自报  /sportmodestate 的 body_height   = 0.309 m
+        ────────────────────────────────────────────────────
+        车载相机离地 ≈ 0.35 m
+
+    而默认下限是 1.0 m（按手持/固定安装的 Kinect 素材定的）。
+    按那个默认值上真机，**每一帧都会被判不合格，而且不报错** ——
+    只表现为「永远没有离地高度」，正是本项目反复踩的那类失效。
+
+    ⚠️ 用**全默认参数**调用。生产代码走的就是默认值，
+    「默认值坏了」受影响的是现场而不是测试。
     """
-    pts = _plane_cloud(0.4)
+    pts = _plane_cloud(0.35)          # ← Go2 实测的车载相机高度
+
+    fit = fit_floor_plane(pts)
+
+    assert fit.status is FloorFitStatus.OK, (
+        f"0.35 m（Go2 车载相机的实测高度）被默认参数拒了：{fit.reason}。"
+        f"checkpoint：min_camera_height_m 是不是被调回 1.0 了？"
+    )
+    assert fit.camera_height_m == pytest.approx(0.35, abs=0.02)
+
+
+def test_camera_height_below_the_lower_bound_is_still_rejected():
+    """下限仍要挡得住**离谱**的低值 —— 放宽不等于取消。
+
+    放宽默认值是为了覆盖部署平台，不是把这道校验废掉：
+    实测到的**灾难性错拟合给的是负值**（相机高 −3.3 m，平面跑到相机上方），
+    而 5 cm 这种值任何车载/手持相机都不可能给出。
+    """
+    pts = _plane_cloud(0.05)
 
     assert fit_floor_plane(pts).status is FloorFitStatus.CAMERA_HEIGHT_IMPLAUSIBLE
-    assert fit_floor_plane(pts, min_camera_height_m=0.2).status is FloorFitStatus.OK
 
 
 def test_too_few_points():
