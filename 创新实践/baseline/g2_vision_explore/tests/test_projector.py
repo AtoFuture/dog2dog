@@ -383,6 +383,67 @@ def test_sample_depth_near_respects_min_valid():
     assert sample_depth_near(z, 20, 20, radius=9, min_valid=1) == pytest.approx(1.5)
 
 
+def _scene_with_flying_pixels(fraction=0.08, value=0.25):
+    """2.0 m 的背景上撒 ``fraction`` 比例的飞点（物体边缘的无效读数）。
+
+    两个数字都来自实测（``1378_rgb_depth16.mkv``）：躺姿的关键点窗口里
+    飞点占 **5.87%~9.72%**，飞点值落在 0.001~0.7 m 之间。
+    """
+    z = np.full((40, 40), 2.0, dtype=np.float32)
+    flat = z.ravel()
+    rng = np.random.default_rng(0)
+    flat[rng.choice(flat.size, size=int(flat.size * fraction), replace=False)] = value
+    return z
+
+
+def test_sample_depth_near_rejects_flying_pixels():
+    """⭐ 回归：物体边缘的「飞点」不是测量值，不能参与分位数。
+
+    这是**第四次**同型失效（前三次：跟踪器 ``new_track_thresh``、检测器 ``conf``、
+    质检门），表现都是「倒地事件永远是 0」且不报错。这次的机制最刁钻：
+
+    ``depth_to_meters`` 对 ``16UC1`` 只把 **0** 当无效，而飞点**非零但极小**，
+    于是原样变成 0.001~0.7 m 的「合法深度」。本函数又取的是**近端**分位数 ——
+    飞点恰恰全是极小值，**只要占比超过 percentile 就必定被选中**。
+
+    后果：躺姿离地高度中位量到 **+1.78 m**，比直立的 +1.32 m 还高（物理不可能），
+    而床与地面的真实差距只有 0.4 m —— 双峰因此永远出不来。
+
+    ⚠️ 用**全默认参数**调用。生产代码 ``anomaly.keypoints_to_torso_3d`` 走的就是
+    默认值，所以「默认值坏了」受影响的是现场而不是测试。
+    """
+    z = _scene_with_flying_pixels()
+
+    got = sample_depth_near(z, 20, 20)
+
+    assert got == pytest.approx(2.0, abs=0.01), (
+        f"取到了 {got:.2f} m —— 那是飞点，不是人（真值 2.0 m）。"
+        f"8% > 5 分位，低分位数必定落在飞点堆里。"
+        f"checkpoint：min_depth_m 是不是被改成 0 了？"
+    )
+
+
+def test_sample_depth_near_all_flying_pixels_returns_nan():
+    """窗口里全是飞点时算「没有有效像素」，不能拿飞点凑数。"""
+    z = np.full((40, 40), 0.3, dtype=np.float32)
+
+    assert math.isnan(sample_depth_near(z, 20, 20, radius=9))
+
+
+def test_sample_depth_near_min_depth_is_per_camera():
+    """下限按相机定：近距相机调小之后，近处目标要能取到。
+
+    0.6 m 是针对 Kinect v1 的实测谷底；RealSense D435 最小量程约 0.28 m，
+    那种场景必须显式调小，否则会**静默丢掉近处目标**。
+    """
+    z = np.full((40, 40), 0.35, dtype=np.float32)
+
+    assert math.isnan(sample_depth_near(z, 20, 20, radius=9)), "默认下限该挡下 0.35 m"
+    assert sample_depth_near(
+        z, 20, 20, radius=9, min_depth_m=0.2
+    ) == pytest.approx(0.35, abs=0.01), "调低下限后应当取得到"
+
+
 def test_sample_depth_near_is_biased_near_on_a_sloped_surface():
     """已知代价：窗口跨越斜面时低分位数取到近端边缘，深度系统性偏近。
 
