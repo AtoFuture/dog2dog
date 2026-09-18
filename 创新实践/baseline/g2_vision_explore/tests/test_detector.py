@@ -18,6 +18,7 @@ import pytest
 from g2_core.detector import (
     DEFAULT_CLASSES,
     Detection2D,
+    DetectorConfig,
     DetectorUnavailableError,
     resolve_class_filter,
     results_to_detections,
@@ -240,3 +241,38 @@ def test_track_passes_an_explicit_tracker(monkeypatch):
     # 它的 match_thresh 放宽过（默认 bytetrack.yaml 的 0.8 会让 id 在倒地瞬间断掉）
     assert captured["tracker"].endswith("track_fall.yaml")
     assert captured["persist"] is True
+
+
+def test_track_fall_yaml_only_changes_match_thresh():
+    """回归：``config/track_fall.yaml`` 与内置 ``bytetrack.yaml`` 只许差一个参数。
+
+    ⚠️ 这条测试的由来（2026-09-18）：本文件初版把 ``track_high_thresh`` /
+    ``track_low_thresh`` / ``new_track_thresh`` 写成了 0.6 / 0.25 / 0.6，
+    并标注「保持默认」—— **而 bytetrack 的真实默认是 0.25 / 0.10 / 0.25**，
+    写进去的那三个值其实是 ``tracktrack.yaml``（就是要避开的那份）的。
+    后果实测：人进画面时**已经躺着**的话，20 帧里只有 8 帧拿得到 id
+    （用真默认是 20/20）—— 正是那份配置想修的失效模式，换了个地方又犯一遍。
+
+    这类错误**没有任何报错**，只会表现为「倒地事件永远是 0」。
+    所以钉一条测试：想改别的参数，就得先想清楚并改这里。
+    """
+    import os
+    import yaml
+
+    import ultralytics
+
+    builtin = os.path.join(os.path.dirname(ultralytics.__file__),
+                           "cfg", "trackers", "bytetrack.yaml")
+    ours = DetectorConfig().tracker
+
+    theirs = yaml.safe_load(open(builtin))
+    mine = yaml.safe_load(open(ours))
+
+    diff = {k: (theirs.get(k), mine.get(k)) for k in set(theirs) | set(mine)
+            if theirs.get(k) != mine.get(k)}
+
+    assert set(diff) == {"match_thresh"}, (
+        f"track_fall.yaml 与内置 bytetrack.yaml 的差异不止 match_thresh：{diff}\n"
+        f"（改别的参数前请先确认那不是「凭印象写的默认值」）"
+    )
+    assert mine["match_thresh"] == 0.95

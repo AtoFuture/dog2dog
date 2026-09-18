@@ -1,29 +1,46 @@
 # 倒地感知用的 ByteTrack 配置。
 #
 # ============================================================================
-# 为什么不能直接用 bytetrack.yaml（2026-09-18，真实倒地录像实测）
+# 全部参数**沿用 ultralytics 内置 bytetrack.yaml 的默认值**，只改 match_thresh。
+#
+# ⚠️ 2026-09-18 修正：初版这里把 track_high_thresh/track_low_thresh/
+#    new_track_thresh 写成了 0.6 / 0.25 / 0.6，并标注「保持默认」——
+#    **那是错的**。ultralytics 8.4.154 的 bytetrack.yaml 默认是
+#    0.25 / 0.10 / 0.25。我把 tracktrack.yaml（就是要避开的那份）的值抄了过来，
+#    却当成 bytetrack 默认。后果实测：
+#
+#        配置                                人进画面时**已经躺着**能否建起轨迹
+#        本文件初版 (0.6/0.25/0.6)            8 / 20 帧      ← 大部分帧没有 id
+#        真·bytetrack 默认 (0.25/0.1/0.25)    20 / 20 帧
+#
+#    原因：`track_high_thresh` 和 `new_track_thresh` 共同决定「新建轨迹」的
+#    置信度门限。躺着的人检测置信度只有 0.28~0.74，设成 0.6 就把它挡在门外了
+#    ——**正是本文件想要修的那个失效模式，换了个地方又犯了一遍**。
+#
+#    ⚠️ 教训：改第三方配置前**先读它的默认文件**，不要凭印象写「保持默认」。
+# ============================================================================
+# 为什么必须改 match_thresh
 #
 # 倒地判据要求**同一个 track_id 跨越整个倒地过程**：
 #     「见过他直立」-> 「转为水平」-> 「保持住」-> 才是一次倒地事件
-# 而默认的 bytetrack.yaml 做不到这一点。实测（fall-01-cam0.mp4）：
+# 而默认值做不到。实测（fall-01-cam0.mp4，一段真实倒地录像）：
 #
-#     配置                        id 集合       跨越倒地
-#     bytetrack.yaml（默认）      [1, 3, 8]     ❌
-#     botsort.yaml（默认）        [1, 3, 6]     ❌
-#     **本文件（match_thresh=0.95）** [1]        ✅ id1 帧 0~159
+#     配置                          id 集合       跨越倒地
+#     bytetrack.yaml（默认）        [1, 3, 8]     ❌
+#     botsort.yaml（默认）          [1, 3, 6]     ❌
+#     **本文件（match_thresh=0.95）** [1]          ✅ id1 帧 0~159
 #
-# ----------------------------------------------------------------------------
-# 元凶是 match_thresh，不是 new_track_thresh（消融实验确认，单改一个参数）：
-#
-#     只改 match_thresh 0.8->0.95     ✅ 单独就够
-#     只改 track_buffer 30->90        ❌
-#     只改 new_track_thresh 0.6->0.2  ❌
-#     只改 track_high_thresh 0.6->0.25 ❌
-#
-# 因为 match_thresh 是**关联代价上限**（等价于要求 IoU > 1-match_thresh）：
+# 元凶是 match_thresh —— 它是**关联代价上限**（等价于要求 IoU > 1-match_thresh）。
 # 默认 0.8 要 IoU>0.2，而人一倒地，框从「高瘦」变成「扁宽」，
 # 与倒地前那一帧的 IoU 掉到 0.2 以下 —— 旧轨迹就再也绑不回来了。
 # 放到 0.95（IoU>0.05）才绑得住。
+#
+# 消融（**在真·默认基线上**逐个参数单独改）：
+#
+#     只改 match_thresh 0.8 -> 0.95     ✅ 单独就够
+#     只改 track_buffer 30 -> 90        ❌ 无帮助
+#     只改 new_track_thresh 0.25 -> 0.6 ❌ 无帮助，且**破坏「已躺着」路径**
+#     只改 track_high_thresh 0.25 -> 0.6 ❌ 同上
 #
 # ⚠️ 这个值来自**一段**倒地视频，过拟合的风险是实打实的。
 # 放宽关联的代价是：两个人挨得近时更容易被并成一条轨迹。
@@ -33,11 +50,10 @@
 
 tracker_type: bytetrack
 
-track_high_thresh: 0.6    # 保持默认：第一轮关联用的高置信度门限
-track_low_thresh: 0.25    # 保持默认：第二轮用低置信度框找回来
-new_track_thresh: 0.6     # 保持默认：新建轨迹的门限（实测它不是瓶颈）
-
-track_buffer: 30          # 保持默认：丢失后保留 30 帧。实测加到 90 也没帮助
+track_high_thresh: 0.25   # = bytetrack.yaml 默认（第一轮关联的高置信度门限）
+track_low_thresh: 0.10    # = bytetrack.yaml 默认（第二轮用低置信度框找回来）
+new_track_thresh: 0.25    # = bytetrack.yaml 默认（新建轨迹的门限）
+track_buffer: 30          # = bytetrack.yaml 默认（丢失后保留 30 帧）
 
 # ★ 唯一改动：放宽关联。见上面的说明。
 match_thresh: 0.95
