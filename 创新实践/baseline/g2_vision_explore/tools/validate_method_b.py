@@ -77,7 +77,7 @@ from g2_core.anomaly import (  # noqa: E402
     FALLEN_MAX_DEG,
     FALLEN_MIN_DEG,
     assess_fall_from_keypoints_3d,
-    check_body_proportions,
+    check_reprojection,
     midpoints_from_keypoints_2d,
 )
 from g2_core.projector import depth_to_meters, sample_depth_near  # noqa: E402
@@ -239,7 +239,7 @@ def main() -> int:
                     continue
 
                 # 人体尺度：单独记一份，好统计这道门丢了多少
-                proportions = check_body_proportions(
+                proportions = check_reprojection(
                     pts3d["sh_l"], pts3d["sh_r"], pts3d["hip_l"], pts3d["hip_r"])
 
                 a = assess_fall_from_keypoints_3d(

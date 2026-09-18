@@ -356,7 +356,7 @@ def test_sample_depth_near_silently_falls_back_to_background():
     """⚠️ 已知危险行为：人的深度若整体无效，本函数**静默**返回背景深度。
 
     它没有能力判断「取到的这一层是不是人」。所以它**不能单独使用** ——
-    必须搭配 anomaly.check_body_proportions()：那里的肩宽门就是为
+    必须搭配 anomaly.check_reprojection()：那里的肩宽门就是为
     这种情况准备的（取到背景 -> 两个肩深度差一大截 -> 肩宽远超 0.65 m -> 丢弃）。
     """
     z = _scene_with_person()
@@ -387,7 +387,7 @@ def test_sample_depth_near_is_biased_near_on_a_sloped_surface():
     """已知代价：窗口跨越斜面时低分位数取到近端边缘，深度系统性偏近。
 
     这不是 bug，是这套方法的固有偏置 —— 所以它必须搭配
-    anomaly.check_body_proportions 那种**区间**质检用，不能单独用。
+    anomaly.check_reprojection 那种**区间**质检用，不能单独用。
     """
     z = np.tile(np.linspace(2.0, 4.0, 40, dtype=np.float32), (40, 1))
 

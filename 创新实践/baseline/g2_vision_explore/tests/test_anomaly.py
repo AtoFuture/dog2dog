@@ -18,7 +18,7 @@ from g2_core.anomaly import (
     FALLEN_MIN_DEG,
     assess_fall_from_keypoints_3d,
     bbox_aspect_is_fallen,
-    check_body_proportions,
+    check_reprojection,
     keypoints_to_torso_3d,
     midpoints_from_keypoints_2d,
     torso_tilt_from_vertical,
@@ -226,20 +226,40 @@ REAL_BAD_HIP_RIGHT = np.array([0.39, 0.49, 1.66])
 
 
 def test_body_proportions_accepts_a_normal_adult():
-    assert check_body_proportions(
+    assert check_reprojection(
         np.array([-0.2, 0.0, 1.5]), np.array([0.2, 0.0, 1.5]),
         np.array([-0.15, 0.0, 0.9]), np.array([0.15, 0.0, 0.9]),
     ) is None
 
 
-def test_body_proportions_rejects_a_shoulder_out_on_the_background():
-    """肩宽 1.45 m —— 一个成年人不可能。这是真实数据里发生过的失败。"""
-    bad = check_body_proportions(
+def test_reprojection_rejects_a_shoulder_out_on_the_background():
+    """肩点落到背景 —— 这是真实数据里发生过的失败（frame 185916）。
+
+    ⚠️ 2026-09-18 之后**主质检换成了同侧深度差**，所以拦下它的理由变了：
+    从「肩宽 1.45 m 超出人体尺度」变成「两肩深度差 1.39 m 超过 0.40 m」。
+    后者更好 —— 它直接测那个失效模式，而且**不含焦距**。
+    """
+    bad = check_reprojection(
         REAL_BAD_SHOULDER_LEFT, REAL_BAD_SHOULDER_RIGHT,
         REAL_BAD_HIP_LEFT, REAL_BAD_HIP_RIGHT,
     )
     assert bad is not None
-    assert "肩宽" in bad
+    assert "深度差" in bad, f"应当由深度差门拦下，实际理由：{bad}"
+
+
+def test_reprojection_rejects_a_gross_scale_error():
+    """绝对尺度只做**粗错兜底** —— 拦「量纲整体错了」，不拦精度。
+
+    深度编码搞混（毫米当米）会让所有距离差 1000 倍，这一道专门兜住它。
+    """
+    # 构造：**只有肩宽**超标（髋宽正常、深度差正常），
+    # 这样它只能被肩宽那一条界限拦下 —— 否则测试会靠别的界限「蒙混通过」。
+    bad = check_reprojection(
+        np.array([-30.0, 0.0, 1.5]), np.array([30.0, 0.0, 1.5]),     # 肩宽 60 m
+        np.array([-0.15, 0.0, 0.9]), np.array([0.15, 0.0, 0.9]),     # 髋宽 0.30 m ✓
+    )
+    assert bad is not None
+    assert "肩宽" in bad and "粗错兜底" in bad
 
 
 def test_real_failure_frame_is_now_discarded_not_judged():
@@ -272,7 +292,7 @@ def test_old_dispersion_gate_alone_would_have_missed_it():
 
 def test_body_proportions_rejects_a_too_short_torso():
     """肩髋挨在一起（关键点塌缩）也要拦。"""
-    bad = check_body_proportions(
+    bad = check_reprojection(
         np.array([-0.2, 0.0, 1.5]), np.array([0.2, 0.0, 1.5]),
         np.array([-0.15, 0.0, 1.45]), np.array([0.15, 0.0, 1.45]),
     )
@@ -349,15 +369,23 @@ def test_keypoints_to_torso_3d_reports_why_on_missing_depth():
 
 
 def test_keypoints_to_torso_3d_catches_the_real_shoulder_failure():
-    """回归：右肩落在身体轮廓外、深度取到背景 —— 必须被人体尺度门拦下。
+    """回归：右肩落在身体轮廓外、深度取到背景 —— 必须被深度差门拦下。
 
-    这是真实数据里发生过的失败（frame 185916），也是链路里最隐蔽的一种：
-    深度值本身「有效」，只是取的是身后那堵墙。
+    真实数据里的失败（frame 185916）：被遮挡的右肩点被 pose 模型放到了
+    身体轮廓**之外**，深度取到了身后那堵墙 —— 两肩深度 1.64 / 3.03，差 1.39 m。
+
+    ⚠️ 构造上要注意一件事：``sample_depth_near`` 用的是 **35x35 窗口**，
+    所以关键点离身体**太近**时窗口会「够到」身体、把失效掩盖掉
+    （本用例第一版就是这样，关键点只偏离 10 行，p5 仍取到人身上）。
+    真实失效里关键点偏离得多得多，这里按同样的量级构造。
     """
     d = _depth(value=1.6)
-    d[190:215, 350:640] = 3.0        # 右肩那一带是背景
+    d[:, 320:] = 3.0            # 画面右半边（含右肩像素 x=360）整片是背景
+    kp = _kp()
+    assert kp[6][0] > 320, "右肩必须落在背景那一侧，否则用例无效"
+    assert kp[6][0] - 320 > 17, "且要离身体边界超过一个窗口半径，否则 p5 会够到身体"
 
-    torso, why = keypoints_to_torso_3d(_kp(), d, _K())
+    torso, why = keypoints_to_torso_3d(kp, d, _K())
 
     assert torso is None
-    assert "人体尺度" in why
+    assert "深度差" in why, f"应当由深度差门拦下，实际理由：{why}"
