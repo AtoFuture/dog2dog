@@ -19,6 +19,8 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
+            # 交付物 2 的接线：frontier 选点 → 发 NavigateToPose
+            "explorer_node = vision_explorer.explorer_node:main",
             # 假的 NavigateToPose 服务器 —— 无 G1 / 无 Nav2 / 无真机时调状态机用
             "fake_goal_server = vision_explorer.fake_goal_server:main",
             # 抢占探针 —— 实测「被抢占的 goal 客户端看到什么状态码」
