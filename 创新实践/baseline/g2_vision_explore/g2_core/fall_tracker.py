@@ -34,7 +34,12 @@
 --------------------------------------------------------------------------------
 §高度门的现状（2026-09-18 实测，诚实记录）
 
-在出厂的 57 帧上量了「躯干代表点离地高度」：
+⚠️ **口径警告（审核 P1-③）**：接口字段 ``torso_height_m`` 发的是
+**躯干中点**（肩中点与髋中点的 z 平均）高度，而下面这组标定数字是
+**髋部**高度 —— **两者不是同一个量**。照这组数字去设 ``max_height_m``
+对的是另一个量。启用前必须按躯干中点重新标定。
+
+在出厂的 57 帧上量了「髋部离地高度」：
 
     真倒地（label 2/3）髋部离地  0.28 ~ 1.58 m
     正常活动（label 0）  髋部离地  0.22 ~ 1.51 m
@@ -65,6 +70,22 @@ HORIZONTAL_MIN_DEG = 60.0
 和 ``UPRIGHT_MAX_DEG`` 之间留出 30° 的空档是**迟滞** ——
 没有迟滞的话，一个人躺在 59°/61° 附近抖动会反复重置状态。
 空档内不改变当前状态。
+"""
+
+HORIZONTAL_MAX_DEG = 120.0
+"""「已躺平」的**上界**，超过它不算躺平。
+
+与 ``anomaly.FALLEN_MAX_DEG`` 同值同义 —— 那边早就写了这个上界，
+但节点侧的倒地路径**不走** ``assess_fall_from_keypoints_3d``
+（它自己算倾角喂给本状态机），于是这条规则一度**没传过来**（审核 P1-④）。
+
+挡的是「肩髋关键点被弄反」：把两组点调换会让倾角变成 ``180° - θ``，
+一个站立的人（真值 ~0°）会算出 ~180°。若没有上界，(120°, 180°] 一律算躺平，
+**站着的人被报成倒地**。而 ``check_reprojection`` 抓不到这种错 ——
+肩宽/髋宽/躯干长在两组点调换下**全都不变**。
+
+真正倒立的人（>120°）在侦查场景里不构成有效威胁目标，更可能是关键点出错，
+所以**不作为倒地**是刻意的。
 """
 
 TRANSITION_MAX_S = 3.0
@@ -161,6 +182,7 @@ class FallTracker:
 
     upright_max_deg: float = UPRIGHT_MAX_DEG
     horizontal_min_deg: float = HORIZONTAL_MIN_DEG
+    horizontal_max_deg: float = HORIZONTAL_MAX_DEG
     transition_max_s: float = TRANSITION_MAX_S
     persist_s: float = PERSIST_S
     refire_cooldown_s: float = REFIRE_COOLDOWN_S
@@ -201,7 +223,7 @@ class FallTracker:
             tr.lying_since = None
             return None
 
-        if tilt >= self.horizontal_min_deg:
+        if self.horizontal_min_deg <= tilt <= self.horizontal_max_deg:
             if tr.state is not TorsoState.LYING:
                 tr.state = TorsoState.LYING
                 tr.lying_since = obs.stamp
@@ -227,7 +249,12 @@ class FallTracker:
                 detected_at=obs.stamp,
             )
 
-        # 迟滞区（upright_max < tilt < horizontal_min）：保持当前状态不变
+        # 两种「不给结论」的情形，都保持当前状态不变：
+        #   * 迟滞区（upright_max < tilt < horizontal_min）—— 防止抖动重置
+        #   * **超出上界**（tilt > horizontal_max）—— 多半是肩髋关键点被弄反，
+        #     见 HORIZONTAL_MAX_DEG。当它「没有信息」比硬判一个结论安全：
+        #     若当成不躺平，会把一个正在保持的躺平段打断；
+        #     若当成躺平，站着的人会被报成倒地。
         return None
 
     # ------------------------------------------------------------------

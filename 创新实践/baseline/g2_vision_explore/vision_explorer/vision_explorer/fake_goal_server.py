@@ -205,65 +205,79 @@ class FakeGoalServer(Node):
                 break
             time.sleep(0.05)
 
-        with self._lock:
-            # 用**句柄身份**比较，不用编号 —— 编号在并发下可能撞车，
-            # 而身份比较不可能误判。这就是「旧目标收尾把新目标台账抹掉」
-            # 那个 bug 的根治办法。
-            if self._active_handle is goal_handle:
-                self._active_handle = None
-                self._active_seq = None
 
-        # 已被抢占或取消终止 —— 状态由对方设置，这里不能再去 succeed/abort
-        if not goal_handle.is_active:
-            self.get_logger().info(f"目标 #{my_seq} 被抢占终止")
-            return NavigateToPose.Result()
-        if goal_handle.is_cancel_requested:
-            self._terminate(goal_handle, "canceled", my_seq, "已取消")
-            return NavigateToPose.Result()
+        # ⚠️ 从这里到函数结束整段包在 try/finally 里，**只在目标真正收尾时才**
+        # 把 ``_active_handle`` 摘掉（审核 P1-⑥）。
+        #
+        # 原先摘除写在这个位置 —— 行进循环刚结束、**进 hang 分支之前**。
+        # 后果：整个挂起期间 ``_active_handle`` 都是 None，于是 ``_on_goal`` 里
+        # ``victim = self._active_handle`` 取到 None → ``claimed = False``
+        # → **不 abort、不计数、不告警**。
+        #
+        # 具体危害：用 ``-p outcome:=hang`` 同时测「G2 超时」和「返航抢占」时，
+        # **抢占根本不会发生**，被抢占的客户端看到的是 ``SUCCEEDED``
+        # 而不是真 Nav2 会给的 ``ABORTED`` —— 与这个假服务器自己立的规矩
+        # （「用假服务器测出来的结论，只有在假服务器行为忠实时才可信」）直接冲突。
+        #
+        # 语义上 hang 中的目标**仍然是活跃的**，摘除本来就该等它收尾。
+        try:
+            # 已被抢占或取消终止 —— 状态由对方设置，这里不能再去 succeed/abort
+            if not goal_handle.is_active:
+                self.get_logger().info(f"目标 #{my_seq} 被抢占终止")
+                return NavigateToPose.Result()
+            if goal_handle.is_cancel_requested:
+                self._terminate(goal_handle, "canceled", my_seq, "已取消")
+                return NavigateToPose.Result()
 
-        if outcome == "hang":
-            # 既不成功也不失败 —— 用来测 G2 的超时判据
-            self.get_logger().warn(f"目标 #{my_seq} 进入挂起状态（模拟无进展）")
-            max_hang = float(self.get_parameter("hang_max_s").value)
+            if outcome == "hang":
+                # 既不成功也不失败 —— 用来测 G2 的超时判据
+                self.get_logger().warn(f"目标 #{my_seq} 进入挂起状态（模拟无进展）")
+                max_hang = float(self.get_parameter("hang_max_s").value)
 
-            with self._lock:
-                self._active_hangs += 1
-                n_hangs = self._active_hangs
-            if n_hangs >= 3:
-                # ⚠️ hang 会**一直占住一个 executor 线程**（这是 hang 语义的应有之义），
-                # 但多个 hang 叠加会耗尽线程池 —— 届时连 goal_callback 都排不上，
-                # 抢占彻底不可能，这个测试工具就失去意义了。所以到这里要吼一声。
-                self.get_logger().error(
-                    f"已有 {n_hangs} 个目标处于挂起状态，每个都占着一个 executor 线程。"
-                    f"线程池耗尽后 goal_callback 将排不上队，抢占会失效 —— "
-                    f"这时的测试结果不可信。可用 -p hang_max_s:=<秒> 给挂起加个上限。"
-                )
-
-            try:
-                deadline = (time.monotonic() + max_hang) if max_hang > 0 else None
-                while rclpy.ok() and goal_handle.is_active and not goal_handle.is_cancel_requested:
-                    if deadline is not None and time.monotonic() >= deadline:
-                        self.get_logger().warn(
-                            f"目标 #{my_seq} 挂起超过 hang_max_s={max_hang}s，自动收尾"
-                        )
-                        break
-                    time.sleep(0.1)
-            finally:
                 with self._lock:
-                    self._active_hangs -= 1
+                    self._active_hangs += 1
+                    n_hangs = self._active_hangs
+                if n_hangs >= 3:
+                    # ⚠️ hang 会**一直占住一个 executor 线程**（这是 hang 语义的应有之义），
+                    # 但多个 hang 叠加会耗尽线程池 —— 届时连 goal_callback 都排不上，
+                    # 抢占彻底不可能，这个测试工具就失去意义了。所以到这里要吼一声。
+                    self.get_logger().error(
+                        f"已有 {n_hangs} 个目标处于挂起状态，每个都占着一个 executor 线程。"
+                        f"线程池耗尽后 goal_callback 将排不上队，抢占会失效 —— "
+                        f"这时的测试结果不可信。可用 -p hang_max_s:=<秒> 给挂起加个上限。"
+                    )
 
-            self._terminate(goal_handle, "canceled", my_seq, "挂起后被终止")
+                try:
+                    deadline = (time.monotonic() + max_hang) if max_hang > 0 else None
+                    while rclpy.ok() and goal_handle.is_active and not goal_handle.is_cancel_requested:
+                        if deadline is not None and time.monotonic() >= deadline:
+                            self.get_logger().warn(
+                                f"目标 #{my_seq} 挂起超过 hang_max_s={max_hang}s，自动收尾"
+                            )
+                            break
+                        time.sleep(0.1)
+                finally:
+                    with self._lock:
+                        self._active_hangs -= 1
+
+                self._terminate(goal_handle, "canceled", my_seq, "挂起后被终止")
+                return NavigateToPose.Result()
+
+            if fail_every > 0 and my_seq % fail_every == 0:
+                outcome = "abort"
+
+            if outcome == "abort":
+                self._terminate(goal_handle, "abort", my_seq, "失败(ABORTED)")
+            else:
+                self._terminate(goal_handle, "succeed", my_seq, "到达(SUCCEEDED)")
+
             return NavigateToPose.Result()
-
-        if fail_every > 0 and my_seq % fail_every == 0:
-            outcome = "abort"
-
-        if outcome == "abort":
-            self._terminate(goal_handle, "abort", my_seq, "失败(ABORTED)")
-        else:
-            self._terminate(goal_handle, "succeed", my_seq, "到达(SUCCEEDED)")
-
-        return NavigateToPose.Result()
+        finally:
+            # ⚠️ 摘除**只能在这里**做 —— 见上面 try 的说明。
+            with self._lock:
+                if self._active_handle is goal_handle:
+                    self._active_handle = None
+                    self._active_seq = None
 
     # ------------------------------------------------------------------
     def _terminate(self, goal_handle, action: str, seq: int, label: str) -> None:

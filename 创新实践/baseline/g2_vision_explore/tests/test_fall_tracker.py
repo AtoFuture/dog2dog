@@ -276,3 +276,47 @@ def test_prune_drops_stale_tracks_but_keeps_fresh_ones():
 
 def test_prune_on_empty_tracker_is_a_no_op():
     assert FallTracker().prune(now=0.0) == 0
+
+
+# ----------------------------------------------------------------------
+# 「已躺平」的上界（审核 P1-④）
+# ----------------------------------------------------------------------
+def test_swapped_keypoints_do_not_report_a_fall():
+    """⚠️ 回归：倾角 >120° 不算躺平。
+
+    把肩髋两组关键点调换，倾角会变成 ``180° - θ`` —— 一个站立的人（真值 ~0°）
+    于是算出 ~180°。若没有上界，`tilt >= 60` 一路放行，**站着的人被报成倒地**。
+
+    这条规则 ``anomaly.FALLEN_MAX_DEG`` 早就写了，但节点侧的倒地路径不走那条函数
+    （自己算倾角喂给本状态机），于是它一度**没传过来**。
+
+    ⚠️ 而且 ``check_reprojection`` 抓不到这种错：肩宽/髋宽/躯干长在两组点
+    调换下**全都不变**。
+    """
+    tracker = FallTracker()
+    seq = [5.0] * 5 + [175.0] * 30      # 站立 -> 「弄反」后的 175°
+
+    assert feed(tracker, 1, seq, dt=0.2) == [], "肩髋弄反不该被报成倒地"
+
+
+def test_out_of_range_does_not_break_an_ongoing_lying_run():
+    """超出上界应当当「没有信息」，而不是把正在保持的躺平段打断。
+
+    躺姿本来就可能因为关键点抖动瞬间跳出量程。若把这种帧当成「不躺平」，
+    `lying_since` 会被反复重置，倒地在真实数据上就永远确认不了。
+    """
+    tracker = FallTracker()
+    seq = [5.0] * 5 + [85.0] * 5 + [170.0] * 2 + [85.0] * 20
+
+    events = feed(tracker, 1, seq, dt=0.2)
+
+    assert len(events) == 1
+    assert events[0].onset_stamp == pytest.approx(5 * 0.2), "起始时刻不该被越界帧推迟"
+
+
+def test_horizontal_max_is_the_same_value_as_the_anomaly_rule():
+    """两处上界必须同值 —— 它们表达的是同一条规则。"""
+    from g2_core.anomaly import FALLEN_MAX_DEG
+    from g2_core.fall_tracker import HORIZONTAL_MAX_DEG
+
+    assert HORIZONTAL_MAX_DEG == FALLEN_MAX_DEG
