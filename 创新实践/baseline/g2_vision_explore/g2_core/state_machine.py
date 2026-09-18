@@ -104,10 +104,16 @@ class ExplorerStateMachine:
             if result.status is SelectStatus.GOAL:
                 send_goal(result.goal)     # 真正的 action 调用
                 sm.on_goal_sent()
-            elif result.status is SelectStatus.NO_FRONTIER:
-                sm.on_exhausted()          # 只有这一种才算探索完成
             else:
-                sm.on_nav_timeout()        # 暂时选不出点，回 IDLE 稍后再试
+                # ⚠️ 关键：**不要**在这里调 on_nav_timeout() / on_exhausted()。
+                #
+                # next_command() 已经把 phase 置成 SENDING 了，而那两条的守卫
+                # 分别要求 NAVIGATING 和 IDLE/PASSIVE —— 调用它们**双双无效**，
+                # phase 会永久卡在 SENDING 且不留任何日志。
+                # （这正是 2026-09-18 审核发现的 P0-①。）
+                sm.on_select_failed(
+                    exhausted=(result.status is SelectStatus.NO_FRONTIER)
+                )
 
         elif cmd is Command.CANCEL_GOAL:
             cancel_goal()
@@ -145,13 +151,70 @@ class ExplorerStateMachine:
         return True
 
     def send_failed(self) -> None:
-        """SEND_GOAL 指令发出去了，但动作调用本身失败了（未进入 SENDING 之外的状态）。
+        """SEND_GOAL 指令发出去了，但**动作调用本身失败**了。
 
         这是给节点用的：``send_goal_async`` 返回失败时调用，
         让状态机回到 IDLE，而不是卡在 SENDING。
+
+        与 ``on_select_failed()`` 的区别（**这两个别混用**）::
+
+            send_failed()       有目标要发，但没发出去   （action 层失败）
+            on_select_failed()  根本没目标要发           （select 没选出点）
+
+        两者都在 SENDING 下被调用，都回到 IDLE —— 但语义完全不同，
+        日志里要能分清是哪一种。
         """
         if self.phase is Phase.SENDING:
             self.phase = Phase.IDLE
+
+    def on_select_failed(self, exhausted: bool = False) -> bool:
+        """``SEND_GOAL`` 已给出，但 ``select()`` 没有选出目标。
+
+        返回 ``True`` 表示确实从 SENDING 收尾了。
+
+        ⚠️ **这个方法的存在本身就是一条设计决定**，见下。
+
+        ---------------------------------------------------------------------------
+        为什么需要它（2026-09-18，对抗性审核 P0-①）
+
+        ``next_command()`` 会**先**把 phase 置成 SENDING 并返回 ``SEND_GOAL``，
+        节点拿到指令**之后**才去跑 ``select()``。于是 ``select()`` 失败时，
+        状态机已经站在 SENDING 上了 —— 而这个状态原先的所有出口
+        （``on_goal_sent`` / ``send_failed`` / ``on_goal_result``）都假定
+        「有一个目标已经发出去了」。
+
+        结果：``on_nav_timeout()``（守卫要求 NAVIGATING）和 ``on_exhausted()``
+        （守卫要求 IDLE/PASSIVE）**双双变成空操作**，phase 永久停在 SENDING，
+        ``next_command()`` 之后一律返回 ``NONE``，**而且不记任何 anomaly**。
+
+        实测：``NO_CANDIDATE`` 在 400 张随机栅格图上出现 **256 次** ——
+        任意一次发生在第一拍，G2 就一次目标都发不出去，且全程静默。
+        ``NO_FRONTIER`` 那条则把「探索完成」信号吞掉，永远到不了 DONE。
+
+        根因不是「守卫写窄了」，是 **SENDING 这一个状态混了两件事**：
+        「有目标正在发出」和「刚决定要选点」。这个方法把后者显式表达出来。
+
+        ---------------------------------------------------------------------------
+        Parameters
+        ----------
+        exhausted : bool
+            ``True`` = ``select()`` 报的是「没有 frontier 了」（探索完成）。
+            ``False`` = 只是这一拍选不出点（黑名单没过期、位姿未就绪…）。
+
+        Notes
+        -----
+        ``exhausted=True`` 只有在**任务状态仍然允许探索**时才判 DONE。
+        否则会把「被 G3 叫停」误记成「探完了」—— 那是两件完全不同的事，
+        而 DONE 是终止态，只能由 ``revive()`` 复活。
+        """
+        if self.phase is not Phase.SENDING:
+            self._anomalies.append(
+                f"on_select_failed 在 {self.phase.value} 下被调用（预期 SENDING）"
+            )
+            return False
+        self.phase = Phase.DONE if (exhausted and self.should_explore) else Phase.IDLE
+        self._cancel_issued = False
+        return True
 
     def on_goal_result(self, success: bool) -> None:
         """在飞目标到达终态。
@@ -263,10 +326,27 @@ class ExplorerStateMachine:
         """
         if not self.should_explore:
             # 需要停手
-            if self.phase in (Phase.NAVIGATING, Phase.SENDING):
+            if self.phase is Phase.NAVIGATING:
+                # 只有**真的有目标在飞**时才发 cancel
                 if not self._cancel_issued:
                     self._cancel_issued = True
                     return Command.CANCEL_GOAL
+                return Command.NONE
+            if self.phase is Phase.SENDING:
+                # ⚠️ 这个分支原先和 NAVIGATING 合在一起，是个陷阱（审核 P0-⑦）。
+                #
+                # SENDING 意味着**节点正拿着 SEND_GOAL 指令在跑 select()**，
+                # 目标还没有发出去 —— 此时**没有任何 goal 可以取消**。
+                # 若在这里返回 CANCEL_GOAL，节点会照着文档调用
+                # ``on_goal_cancelled()``，而那个方法的守卫要求 NAVIGATING，
+                # 于是 phase 卡死在 SENDING：`_cancel_issued` 已是 True，
+                # 之后每拍都返回 NONE，连 ``on_mission_state("exploring")``
+                # 也拉不回来（它只处理 PASSIVE → IDLE）。
+                # 结果是**专为「返航抢占」设计的 PASSIVE 通路完全没走到**。
+                #
+                # 正确做法：什么都不做，等节点回报 select 的结果，
+                # 由 ``on_select_failed()`` 收尾（它会回 IDLE），
+                # 下一个 tick 自然进入 PASSIVE。
                 return Command.NONE
             # 没有在飞目标：进入 PASSIVE 待命。
             # 注意**不碰 DONE** —— 终止态不该被无声改写。

@@ -196,14 +196,101 @@ def test_nav_timeout_is_noop_when_not_navigating(sm):
     assert sm.phase is Phase.IDLE
 
 
-def test_nav_timeout_works_from_sending(sm):
-    """SENDING 下也该能被超时救出来（send_goal_async 的回执可能丢）。"""
-    sm.next_command()          # -> SENDING
-    sm.on_nav_timeout()        # 当前实现只处理 NAVIGATING，SENDING 用 send_failed
-    # SENDING 不是 NAVIGATING，所以这里返回 False；用 send_failed 收尾
+def test_sending_exits_are_the_three_reports(sm):
+    """SENDING 的出口有三个，各自对应一种「指令出去之后发生了什么」。
+
+    ⚠️ 本用例原先叫 ``test_nav_timeout_works_from_sending``（「能从 SENDING 救出来」），
+    但函数体断言的恰恰是**救不出来** —— 名字和正文互相矛盾，而 setter 是
+    它把当时的实现（卡死）当成规格钉住了。2026-09-18 审核 P0-① 之后重写。
+
+    定下来的规格（``SENDING`` 的语义 = 「一条 SEND_GOAL 指令已发出、结局待报」）::
+
+        on_goal_sent()              目标发出去了      -> NAVIGATING
+        send_failed()               有目标但发失败    -> IDLE
+        on_select_failed()          根本没目标要发    -> IDLE / DONE
+
+    而 ``on_nav_timeout()`` **不是** SENDING 的出口 —— 它的语义是
+    「在飞的目标卡住了」，此刻没有在飞的目标。这不是遗漏，是刻意的。
+    """
+    sm.next_command()                                  # -> SENDING
     assert sm.phase is Phase.SENDING
+
+    assert sm.on_nav_timeout() is False, "SENDING 下没有「在飞目标卡住」这回事"
+    assert sm.phase is Phase.SENDING
+
     sm.send_failed()
     assert sm.phase is Phase.IDLE
+
+
+def test_select_failed_returns_to_idle(sm):
+    """⭐ P0-① 回归：``select()`` 选不出点时，必须能收尾，不能卡在 SENDING。"""
+    assert sm.next_command() is Command.SEND_GOAL     # -> SENDING
+    assert sm.on_select_failed() is True
+    assert sm.phase is Phase.IDLE
+    assert sm.next_command() is Command.SEND_GOAL, "回 IDLE 之后必须能再选"
+
+
+def test_select_exhausted_goes_done(sm):
+    """``NO_FRONTIER`` 才是「探索完成」。"""
+    sm.next_command()
+    assert sm.on_select_failed(exhausted=True) is True
+    assert sm.phase is Phase.DONE
+
+
+def test_select_exhausted_while_not_exploring_does_not_go_done(sm):
+    """⚠️ 被 G3 叫停时选不出点，**不是**「探完了」。
+
+    ``DONE`` 是终止态、只能由 ``revive()`` 复活 —— 把「被叫停」记成
+    「探完了」会让 G3 恢复探索时拉不回来。
+    """
+    sm.next_command()                       # -> SENDING，此时还在探索
+    sm.on_mission_state("returning")        # select 途中被叫停
+
+    assert sm.on_select_failed(exhausted=True) is True
+    assert sm.phase is Phase.IDLE, "应当回 IDLE，由下一个 tick 转入 PASSIVE"
+    assert sm.next_command() is Command.NONE
+    assert sm.phase is Phase.PASSIVE
+
+
+def test_select_failed_outside_sending_is_recorded(sm):
+    from g2_core.state_machine import Phase as _P
+    assert sm.on_select_failed() is False
+    assert sm.phase is _P.IDLE
+    assert any("on_select_failed" in a for a in sm.anomalies)
+
+
+def test_cancel_is_not_issued_during_sending(sm):
+    """⭐ P0-⑦ 回归：SENDING 下**没有 goal 可以取消**。
+
+    原先 ``next_command()`` 对 NAVIGATING 和 SENDING 一视同仁地返回
+    ``CANCEL_GOAL``，而节点照做后会调 ``on_goal_cancelled()`` ——
+    那个方法的守卫要求 NAVIGATING，于是 phase 卡死在 SENDING，
+    连 ``on_mission_state("exploring")`` 也拉不回来。
+    结果是**专为「返航抢占」设计的 PASSIVE 通路完全没走到**。
+    """
+    sm.next_command()                       # -> SENDING
+    sm.on_mission_state("returning")
+
+    assert sm.next_command() is Command.NONE, "SENDING 下没有在飞目标，不该要求 cancel"
+
+    sm.on_select_failed()                   # 节点回报 select 结果
+    assert sm.phase is Phase.IDLE
+    assert sm.next_command() is Command.NONE
+    assert sm.phase is Phase.PASSIVE, "被叫停的通路必须能走到 PASSIVE"
+
+
+def test_g3_stop_signal_during_select_recovers(sm):
+    """P0-⑦ 的完整时序：select 途中收到 returning，之后恢复 exploring 要能继续。"""
+    sm.next_command()                       # -> SENDING（节点开始 select）
+    sm.on_mission_state("returning")        # 途中被叫停
+    sm.next_command()                       # -> NONE（等 select 回报）
+    sm.on_select_failed()                   # 回报：没选出点
+    assert sm.phase is Phase.IDLE
+    sm.next_command()
+    assert sm.phase is Phase.PASSIVE
+
+    sm.on_mission_state("exploring")        # G3 恢复探索
+    assert sm.next_command() is Command.SEND_GOAL
 
 
 # ----------------------------------------------------------------------

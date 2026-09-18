@@ -1,6 +1,6 @@
 # 议题：探索状态机卡死在 `SENDING`
 
-> 提出人：G2 ｜ 日期：2026-09-18 ｜ 状态：**待拍板**
+> 提出人：G2 ｜ 日期：2026-09-18 ｜ 状态：**已定：走方案乙，已实现**（见 §九）
 > 来源：`g2_vision_explore/docs/对抗性审核-2026-09-18.md` P0-①
 
 ---
@@ -156,3 +156,55 @@ else:
 「G2 好像不动了」，排查时会先怀疑地图、TF、Nav2，很难想到是状态机卡住。
 
 现在是第 1 周、接口正在冻结，改一处状态机的成本最低。
+
+
+---
+
+## 九、结论与实现（2026-09-18）
+
+**定了：走乙。** `SENDING` 的语义取「**指令已发出、结局待报**」。
+
+实现（`g2_core/state_machine.py`）：
+
+```python
+def on_select_failed(self, exhausted: bool = False) -> bool:
+    if self.phase is not Phase.SENDING:
+        self._anomalies.append(...)          # 不该发生的事件照样记下来
+        return False
+    self.phase = Phase.DONE if (exhausted and self.should_explore) else Phase.IDLE
+    self._cancel_issued = False
+    return True
+```
+
+三个出口现在互斥且完备：
+
+| 出口 | 语义 | 去向 |
+|---|---|---|
+| `on_goal_sent()` | 目标发出去了 | NAVIGATING |
+| `send_failed()` | 有目标要发，但 action 调用失败 | IDLE |
+| `on_select_failed()` | **根本没目标要发** | IDLE / DONE |
+
+⚠️ `exhausted=True` 只在**任务状态仍允许探索**时才判 `DONE`。
+否则会把「被 G3 叫停」误记成「探完了」—— 而 `DONE` 是终止态、只能 `revive()` 复活。
+
+### 顺带修掉的 P0-⑦
+
+同一个状态还有第二个陷阱：`next_command()` 原先对 `NAVIGATING` 和 `SENDING`
+一视同仁地返回 `CANCEL_GOAL`，但 **SENDING 下根本没有 goal 可以取消** ——
+节点照做后调 `on_goal_cancelled()`，守卫要求 NAVIGATING，于是卡死。
+现在 SENDING 下返回 `NONE`（等节点回报 select 结果），被叫停的通路能正常走到 `PASSIVE`。
+
+### 三处已对齐
+
+文档（类 docstring 用法示例）、实现、测试**一起改了** ——
+那个名字与正文矛盾的 `test_nav_timeout_works_from_sending` 已重写为
+`test_sending_exits_are_the_three_reports`，正文明确写出
+「`on_nav_timeout()` **不是** SENDING 的出口，这不是遗漏，是刻意的」。
+
+测试：185 条全过；三个关键点各自用变异验证过有牙。
+
+### 给节点作者的一条注意事项
+
+节点在 `select()` 途中若收到 G3 的叫停，**不要再把选出来的目标发出去** ——
+发出去会瞬时抢占返航点。安全写法是先确认 `sm.should_explore` 仍为真再发。
+（节点 `explorer_node` 目前尚未编写，实现时请照此。）
