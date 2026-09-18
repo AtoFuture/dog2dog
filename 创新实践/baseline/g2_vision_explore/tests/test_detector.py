@@ -207,3 +207,34 @@ def test_aspect_ratio_of_degenerate_box():
     """零宽框不能让 aspect_ratio 除零崩掉。"""
     d = Detection2D("person", 0, 0.9, (5.0, 5.0, 5.0, 50.0))
     assert d.aspect_ratio == 0.0
+
+
+def test_track_passes_an_explicit_tracker(monkeypatch):
+    """必须显式传跟踪器，不能靠 ultralytics 的隐式默认。
+
+    实测（fall-01-cam0.mp4，真实倒地录像）：隐式默认是 ``tracktrack.yaml``，
+    ``new_track_thresh=0.7``，而人躺在地上时检测置信度只有 0.28~0.74 ——
+    轨迹根本建不起来，**落地后 0/31 帧有 id**。换成 bytetrack 是 24/31。
+
+    没有 id，倒地判据（fall_tracker）就完全无从下手。
+    隐式默认还会随 ultralytics 版本变，所以这里钉死「必须传」。
+    """
+    from g2_core.detector import Detector, DetectorConfig
+
+    captured = {}
+
+    class _FakeModel:
+        def track(self, img, **kw):
+            captured.update(kw)
+            return []
+
+    d = Detector.__new__(Detector)
+    d.config = DetectorConfig()
+    d._model = _FakeModel()
+    d._class_filter = None
+
+    d.track(np.zeros((8, 8, 3), dtype=np.uint8))
+
+    assert "tracker" in captured, "没传 tracker 就会用随版本变的隐式默认"
+    assert captured["tracker"] == "bytetrack.yaml"
+    assert captured["persist"] is True

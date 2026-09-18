@@ -194,6 +194,36 @@ class DetectorConfig:
     device: str | None = None
     """``"cpu"`` / ``"0"`` / ``None``（自动）。"""
 
+    tracker: str = "bytetrack.yaml"
+    """跟踪器配置文件。**必须显式指定**，理由见下。
+
+    ---------------------------------------------------------------------------
+    ⚠️ 不要依赖 ultralytics 的隐式默认（2026-09-18，真实倒地视频实测）
+
+    原先 ``Detector.track()`` 调 ``model.track(...)`` 时**不传** ``tracker=``，
+    于是用 ultralytics 的 ``DEFAULT_CFG['tracker']``。在 8.4.154 上它是
+    ``tracktrack.yaml`` —— 既不是 bytetrack 也不是 botsort，而且它的
+    ``new_track_thresh`` 是 **0.7**。
+
+    后果（`fall-01-cam0.mp4`，一段真实倒地录像）::
+
+        跟踪器配置            落地后有 id 的帧数
+        不传（= 原状）         **0 / 31**     ← 一个人躺在地上，从头到尾没有 id
+        bytetrack.yaml         24 / 31
+        botsort.yaml           26 / 31
+
+    原因：人躺在地上时检测置信度普遍只有 **0.28~0.74**（身体被画面边缘裁掉、
+    姿态又少见），全部低于 ``new_track_thresh``，**轨迹根本建不起来**。
+    而倒地判据（``fall_tracker``）完全建立在「同一个 id 的连续观测」上 ——
+    没有 id 就没有一切。
+
+    这类问题极其隐蔽：检测框明明有、置信度也不是 0，只是**没有 id**，
+    而 ``id`` 为空和「没检出人」在统计上长得一样。
+
+    **显式写死一个跟踪器**，并在换 ultralytics 版本时重跑
+    ``tools/check_track_continuity.py`` 复核 —— 隐式默认是随版本变的。
+    """
+
 
 class Detector:
     """YOLO 检测器的薄封装。
@@ -252,7 +282,12 @@ class Detector:
             kwargs["classes"] = self._class_filter
 
         if track:
-            results = self._model.track(image_bgr, persist=True, **kwargs)
+            # 显式指定跟踪器 —— 理由见 DetectorConfig.tracker 的说明：
+            # 隐式默认是随 ultralytics 版本变的，而其中一种会让「躺在地上的人」
+            # 完全拿不到 track_id。
+            results = self._model.track(
+                image_bgr, persist=True, tracker=self.config.tracker, **kwargs
+            )
         else:
             results = self._model.predict(image_bgr, **kwargs)
 
