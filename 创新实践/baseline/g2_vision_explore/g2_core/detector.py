@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -168,6 +170,14 @@ def _load_ultralytics():
     return YOLO
 
 
+def _default_tracker_path() -> str:
+    """本包自带的跟踪器配置。用绝对路径 —— ultralytics 会按 cwd 找相对路径。"""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "track_fall.yaml")
+
+
+_DEFAULT_TRACKER = _default_tracker_path()
+
+
 @dataclass
 class DetectorConfig:
     """检测器配置。默认值都是**起点**，需按实测调整。"""
@@ -194,34 +204,24 @@ class DetectorConfig:
     device: str | None = None
     """``"cpu"`` / ``"0"`` / ``None``（自动）。"""
 
-    tracker: str = "bytetrack.yaml"
+    tracker: str = _DEFAULT_TRACKER
     """跟踪器配置文件。**必须显式指定**，理由见下。
 
     ---------------------------------------------------------------------------
-    ⚠️ 不要依赖 ultralytics 的隐式默认（2026-09-18，真实倒地视频实测）
+    ⚠️ 不要依赖 ultralytics 的隐式默认（2026-09-18，真实倒地录像实测）
 
     原先 ``Detector.track()`` 调 ``model.track(...)`` 时**不传** ``tracker=``，
     于是用 ultralytics 的 ``DEFAULT_CFG['tracker']``。在 8.4.154 上它是
-    ``tracktrack.yaml`` —— 既不是 bytetrack 也不是 botsort，而且它的
-    ``new_track_thresh`` 是 **0.7**。
+    ``tracktrack.yaml``（既不是 bytetrack 也不是 botsort），实测在倒地视频上
+    **id 会断**，倒地判据拿不到任何可用的轨迹。而隐式默认是**随版本变**的。
 
-    后果（`fall-01-cam0.mp4`，一段真实倒地录像）::
+    默认值指向本包自带的 ``config/track_fall.yaml``，理由与消融实验见该文件。
+    核心那一条：**``match_thresh`` 必须放宽到 0.95** ——
+    它是关联代价上限，默认 0.8 要求 IoU>0.2，而人一倒地框从「高瘦」变
+    「扁宽」，IoU 掉到 0.2 以下，旧轨迹就再也绑不回来，id 当场断掉。
 
-        跟踪器配置            落地后有 id 的帧数
-        不传（= 原状）         **0 / 31**     ← 一个人躺在地上，从头到尾没有 id
-        bytetrack.yaml         24 / 31
-        botsort.yaml           26 / 31
-
-    原因：人躺在地上时检测置信度普遍只有 **0.28~0.74**（身体被画面边缘裁掉、
-    姿态又少见），全部低于 ``new_track_thresh``，**轨迹根本建不起来**。
-    而倒地判据（``fall_tracker``）完全建立在「同一个 id 的连续观测」上 ——
-    没有 id 就没有一切。
-
-    这类问题极其隐蔽：检测框明明有、置信度也不是 0，只是**没有 id**，
-    而 ``id`` 为空和「没检出人」在统计上长得一样。
-
-    **显式写死一个跟踪器**，并在换 ultralytics 版本时重跑
-    ``tools/check_track_continuity.py`` 复核 —— 隐式默认是随版本变的。
+    ⚠️ 换 ultralytics 版本或换素材后，用 ``tools/check_track_continuity.py``
+    复核，**尤其是多人场景** —— 放宽关联的代价是两个人挨得近时更容易并成一条。
     """
 
 

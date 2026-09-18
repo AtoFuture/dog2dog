@@ -236,5 +236,7 @@ def test_track_passes_an_explicit_tracker(monkeypatch):
     d.track(np.zeros((8, 8, 3), dtype=np.uint8))
 
     assert "tracker" in captured, "没传 tracker 就会用随版本变的隐式默认"
-    assert captured["tracker"] == "bytetrack.yaml"
+    # 具体是哪个文件不重要，重要的是**必须是本包自带的那份** ——
+    # 它的 match_thresh 放宽过（默认 bytetrack.yaml 的 0.8 会让 id 在倒地瞬间断掉）
+    assert captured["tracker"].endswith("track_fall.yaml")
     assert captured["persist"] is True

@@ -11,12 +11,17 @@ from setuptools import setup
 setup(
     name="g2_core",
     version="0.1.0",
-    packages=["g2_core"],
+    packages=["g2_core", "g2_core.config"],
     package_dir={"g2_core": "."},
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/g2_core"]),
         ("share/g2_core", ["package.xml"]),
     ],
+    # 跟踪器配置要一起装 —— ultralytics 是按**路径**读它的，
+    # 不装的话 Detector 会在运行时找不到文件，而错误信息来自 ultralytics 内部，
+    # 不会提示「你少装了一个数据文件」。
+    package_data={"g2_core": ["config/*.yaml"]},
+    include_package_data=True,
     zip_safe=False,
     maintainer="AtoFuture",
     maintainer_email="240923267+AtoFuture@users.noreply.github.com",
