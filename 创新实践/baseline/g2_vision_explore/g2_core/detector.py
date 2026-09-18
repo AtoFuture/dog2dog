@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import os
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
+import cv2
 import numpy as np
 
 # 侦查场景关心的 COCO 类别（名字，不是索引 —— 索引在不同权重版本间可能变）
@@ -158,6 +159,105 @@ def results_to_detections(result, names: dict, track: bool) -> list["Detection2D
     return out
 
 
+def upscale_factor(h: int, w: int, min_side: int, max_factor: int = 4) -> int:
+    """算「把短边抬到 ``min_side`` 以上」所需的**整数**放大倍数。
+
+    整数是为了让还原是精确的除法（``/k``），也为了让掩膜能用整数步长抽回原尺寸。
+    """
+    if min_side <= 0:
+        return 1
+    short = min(h, w)
+    if short <= 0 or short >= min_side:
+        return 1
+    return min(int(np.ceil(min_side / short)), max_factor)
+
+
+def upscale_for_inference(image_bgr: np.ndarray, min_side: int,
+                          max_factor: int = 4):
+    """按需放大输入图。返回 ``(推理用图, 倍数)``；不需要放大时原样返回、倍数为 1。
+
+    ---------------------------------------------------------------------------
+    为什么要放大，以及为什么必须是 ``INTER_LANCZOS4``（2026-09-18 实测）
+
+    在 ``1378_rgb_depth16.mkv``（Kinect v1，320x240）上，**人一躺下置信度就塌**：
+
+        站立 #114  0.91      躺床 #342  **0.00**      躺地 #918  0.12
+
+    类别判对了（``person``，不是误分成 ``dog``/``bed``），塌的是置信度，
+    全部落到 0.25 门限以下 —— 于是关键帧被静默丢弃。
+    这与跟踪器 ``new_track_thresh`` 那次**是同一个失效模式**，只是换了一层。
+
+    固定算力预算（``imgsz=640``）下比不同预处理，4 个躺姿关键帧的均值置信度：
+
+        不放大（ultralytics 内部 LINEAR 2x）   0.275
+        LINEAR 2x + unsharp                    0.381
+        LANCZOS4 2x -> 640x480                 **0.456**
+        LANCZOS4 4x（又被缩回 640）             0.449
+
+    四条结论，每条都排除了一个想当然的做法：
+
+    * **起作用的是插值核，不是「放大」本身。** 内部那步放大用的是 ``INTER_LINEAR``
+      —— 实测它与手工 ``INTER_LINEAR`` **逐帧完全相等**（0.238/0.179/0.301/0.382）。
+      换成 ``LANCZOS4`` 才有提升。``INTER_AREA``（放大时是模糊）反而最差（0.00~0.10）。
+    * **放大超过 2x 不再有收益**（0.449 vs 0.456）。所以只放大到够用为止。
+    * **把 ``imgsz`` 开大不是替代方案**：``imgsz=960`` 时 ultralytics 内部用
+      LINEAR 放 3x，结果反而**不如**手工 2x（0.091~0.230 vs 0.476~0.531）。
+    * 附带否掉的：「LANCZOS4 + 反锐化掩膜」均值最高（0.474）但**跨帧方差大**
+      （帧 576 从 0.364 掉到 0.145），不可靠，不采用。
+    """
+    if not isinstance(image_bgr, np.ndarray):
+        # ultralytics 本身接受文件路径，但自动放大要读像素尺寸。
+        # **不能**在这里「读不到就跳过放大」—— 那会让小分辨率输入静默退回
+        # 置信度塌陷那条老路，正是这个机制要修的。宁可报错。
+        raise TypeError(
+            f"Detector 只接受 numpy 图像，收到 {type(image_bgr).__name__}。\n"
+            f"  自动放大（upscale_min_side）需要先读像素尺寸；传路径的话这一步做不了，\n"
+            f"  而跳过它会让低分辨率输入上的躺姿置信度静默塌到 conf 门限以下。\n"
+            f"  用 cv2.imread(path) 读进来再传。"
+        )
+
+    h, w = image_bgr.shape[:2]
+    k = upscale_factor(h, w, min_side, max_factor)
+    if k == 1:
+        return image_bgr, 1
+    bigger = cv2.resize(image_bgr, (w * k, h * k), interpolation=cv2.INTER_LANCZOS4)
+    return bigger, k
+
+
+def rescale_detections(dets: list["Detection2D"], k: int,
+                       out_hw: tuple[int, int]) -> list["Detection2D"]:
+    """把「在放大 ``k`` 倍的图上」得到的检测**还原到原图坐标系**（``out_hw`` = 原图高宽）。
+
+    ---------------------------------------------------------------------------
+    ⚠️ 漏了这一步**不会报错**，这是它危险的地方
+
+    关键点会整体偏到 2 倍远处。拿它去索引深度图时，采到的是**完全另一个位置**的深度，
+    离地高度照常算得出来、照常是个合法浮点数 —— 只是全是错的。
+    与「地面拟合锁错平面」属于同一类：不抛异常，结果全错。
+
+    掩膜也必须一起还原：``retina_masks=True`` 让掩膜回到**输入图**分辨率，
+    放大之后那个「输入图」就是放大图了。``Detection2D.mask`` 的契约是
+    「与原图同形状」，所以这里用 ``INTER_NEAREST`` 抽回原尺寸（保持二值）。
+    """
+    if k == 1:
+        return dets
+    oh, ow = out_hw
+    out = []
+    for d in dets:
+        bbox = tuple(v / k for v in d.bbox_xyxy)
+        kps = None
+        if d.keypoints is not None:
+            kps = np.column_stack([d.keypoints[:, 0] / k,
+                                   d.keypoints[:, 1] / k,
+                                   d.keypoints[:, 2]])       # 置信度那一列不动
+        mask = None
+        if d.mask is not None:
+            mask = cv2.resize(d.mask.astype(np.uint8), (ow, oh),
+                              interpolation=cv2.INTER_NEAREST) > 0
+        out.append(replace(d, bbox_xyxy=bbox, keypoints=kps, mask=mask))
+    return out
+
+
 def _load_ultralytics():
     """惰性导入。失败时给一条能直接照做的提示，而不是一个裸的 ImportError。"""
     try:
@@ -213,6 +313,27 @@ class DetectorConfig:
 
     ⚠️ 这个值直接决定**能看多远**：640x480 输入下，20 m 外的人可能只有 20-30 px 高。
     定「检出率 > 85%」这类指标时，必须同时说明是在什么距离、什么 imgsz 下测的。
+    """
+
+    upscale_min_side: int = 480
+    """输入短边小于它时，先用 ``INTER_LANCZOS4`` 整数倍放大到 ≥ 它再推理。``0`` = 关闭。
+
+    ---------------------------------------------------------------------------
+    实测依据见 :func:`upscale_for_inference` 的 docstring。一句话：
+    **低分辨率输入上，躺姿的检测置信度会塌到门限以下**，
+    而「躺下」正是本系统要检测的事件，所以这是致命的而不是精度损失。
+
+    默认 **480** 的具体含义：
+
+    * Kinect v1 的 ``320x240``（短边 240）→ 放大 **2x** 到 ``640x480``，
+      正是实测最优的那一档；
+    * RealSense 的 ``640x480``（短边 480）→ 倍数 1，**行为与改动前完全一致**；
+    * 更大的输入也一律不动。
+
+    也就是说这个默认值**只影响小分辨率输入**，不会悄悄改变现有 640x480 素材的结果。
+
+    ⚠️ 放大倍数上限为 4（:func:`upscale_factor` 的 ``max_factor``），
+    避免极小图被放大到吃掉大量显存。
     """
 
     classes: tuple[str, ...] | None = field(default_factory=lambda: DEFAULT_CLASSES)
@@ -281,6 +402,9 @@ class Detector:
 
     # ------------------------------------------------------------------
     def _run(self, image_bgr: np.ndarray, track: bool) -> list[Detection2D]:
+        # 小分辨率输入先放大 —— 否则躺姿置信度会塌到门限以下（见 upscale_min_side）。
+        img_in, k = upscale_for_inference(image_bgr, self.config.upscale_min_side)
+
         kwargs = dict(
             conf=self.config.conf,
             iou=self.config.iou,
@@ -303,11 +427,13 @@ class Detector:
             # 隐式默认是随 ultralytics 版本变的，而其中一种会让「躺在地上的人」
             # 完全拿不到 track_id。
             results = self._model.track(
-                image_bgr, persist=True, tracker=self.config.tracker, **kwargs
+                img_in, persist=True, tracker=self.config.tracker, **kwargs
             )
         else:
-            results = self._model.predict(image_bgr, **kwargs)
+            results = self._model.predict(img_in, **kwargs)
 
         if not results:
             return []
-        return results_to_detections(results[0], self._names, track=track)
+        dets = results_to_detections(results[0], self._names, track=track)
+        # 还原到原图坐标系 —— 漏掉不会报错，只会让所有坐标偏到 k 倍远处。
+        return rescale_detections(dets, k, image_bgr.shape[:2])

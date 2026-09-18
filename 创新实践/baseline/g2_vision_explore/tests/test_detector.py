@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
 import pytest
 
@@ -276,3 +277,201 @@ def test_track_fall_yaml_only_changes_match_thresh():
         f"（改别的参数前请先确认那不是「凭印象写的默认值」）"
     )
     assert mine["match_thresh"] == 0.95
+
+
+# ----------------------------------------------------------------------
+# 小分辨率放大（2026-09-18）
+# ----------------------------------------------------------------------
+def test_upscale_factor_semantics():
+    """只有短边低于目标时才放大，且倍数是整数。"""
+    from g2_core.detector import upscale_factor
+
+    assert upscale_factor(240, 320, 480) == 2          # Kinect 320x240 → 2x
+    assert upscale_factor(480, 640, 480) == 1          # RealSense 不动
+    assert upscale_factor(720, 1280, 480) == 1         # 更大也不动
+    assert upscale_factor(240, 320, 0) == 1            # 0 = 关闭
+    assert upscale_factor(200, 200, 480) == 3          # ceil(480/200)=3
+    assert upscale_factor(479, 479, 480) == 2          # 差一点点也要抬上去
+
+
+def test_upscale_factor_is_capped():
+    """极小图不许被放大到天文数字（会吃掉大量显存）。"""
+    from g2_core.detector import upscale_factor
+
+    assert upscale_factor(10, 10, 480) == 4
+    assert upscale_factor(10, 10, 480, max_factor=2) == 2
+
+
+def test_upscale_for_inference_noop_returns_same_object():
+    """倍数 1 时必须原样返回 —— 不要白白复制一帧图像。"""
+    from g2_core.detector import upscale_for_inference
+
+    img = np.zeros((480, 640, 3), dtype=np.uint8)
+    out, k = upscale_for_inference(img, min_side=480)
+    assert k == 1
+    assert out is img
+
+
+def test_upscale_for_inference_rejects_non_array_input():
+    """传路径要**明确报错**，不能静默跳过放大。
+
+    ultralytics 自己接受文件路径，所以「传路径」是个很自然的用法；
+    但读不到像素尺寸就没法放大，而静默跳过等于悄悄退回置信度塌陷那条老路。
+    """
+    from g2_core.detector import upscale_for_inference
+
+    with pytest.raises(TypeError, match="numpy 图像"):
+        upscale_for_inference("some/image.jpg", min_side=480)
+
+
+def test_upscale_for_inference_uses_lanczos4():
+    """钉死插值核是 ``INTER_LANCZOS4``。
+
+    这不是吹毛求疵 —— 实测（1378 素材，4 个躺姿关键帧均值置信度）：
+    ``INTER_LINEAR`` 0.275 / ``INTER_AREA`` 0.05 / ``INTER_CUBIC`` 0.42 /
+    ``INTER_LANCZOS4`` **0.456**。换成别的核，躺姿就又开始往门限下面掉，
+    而**不会有任何报错**。
+    """
+    from g2_core.detector import upscale_for_inference
+
+    # 棋盘格：不同插值核的结果差异最大，最容易把换核钉出来
+    img = np.indices((240, 320)).sum(axis=0) % 2
+    img = np.repeat((img * 255).astype(np.uint8)[:, :, None], 3, axis=2)
+
+    out, k = upscale_for_inference(img, min_side=480)
+    expected = cv2.resize(img, (640, 480), interpolation=cv2.INTER_LANCZOS4)
+
+    assert k == 2
+    assert out.shape == (480, 640, 3)
+    assert np.array_equal(out, expected)
+
+
+def test_rescale_detections_restores_original_coordinates():
+    """放大后必须把坐标除回去 —— 漏掉不会报错，只会让所有坐标偏到 k 倍远处。"""
+    from g2_core.detector import Detection2D, rescale_detections
+
+    kps = np.zeros((17, 3), dtype=float)
+    kps[0] = [20.0, 40.0, 0.9]
+    kps[1] = [60.0, 120.0, 0.4]
+    d = Detection2D("person", 0, 0.9, (20.0, 40.0, 60.0, 120.0), keypoints=kps)
+
+    out = rescale_detections([d], k=2, out_hw=(240, 320))
+
+    assert out[0].bbox_xyxy == (10.0, 20.0, 30.0, 60.0)
+    assert out[0].keypoints[0].tolist() == [10.0, 20.0, 0.9]
+    assert out[0].keypoints[1].tolist() == [30.0, 60.0, 0.4]   # 置信度列不动
+    assert out[0].confidence == 0.9
+
+
+def test_rescale_detections_resizes_mask_back():
+    """``mask`` 的契约是「与原图同形状」，放大之后必须还原。"""
+    from g2_core.detector import Detection2D, rescale_detections
+
+    mask = np.zeros((480, 640), dtype=bool)
+    mask[100:200, 200:300] = True
+    d = Detection2D("person", 0, 0.9, (10.0, 20.0, 30.0, 60.0), mask=mask)
+
+    out = rescale_detections([d], k=2, out_hw=(240, 320))
+
+    assert out[0].mask.shape == (240, 320)
+    assert out[0].mask.dtype == bool
+    assert out[0].mask.any()
+
+
+def test_rescale_detections_noop_at_factor_one():
+    from g2_core.detector import Detection2D, rescale_detections
+
+    d = Detection2D("person", 0, 0.9, (10.0, 20.0, 30.0, 60.0))
+    assert rescale_detections([d], k=1, out_hw=(240, 320)) == [d]
+
+
+def test_run_feeds_upscaled_image_and_returns_original_coordinates():
+    """端到端钉死：模型**看到的是放大图**，调用方**拿到的是原图坐标**。
+
+    这两件事必须同时成立。只做前者会让所有坐标偏到 2 倍远处（不报错），
+    只做后者等于没放大（躺姿置信度照塌）。
+    """
+    from g2_core.detector import Detector, DetectorConfig
+
+    seen = {}
+
+    class _Model:
+        def predict(self, img, **kw):
+            seen["img"] = img
+            kps = np.zeros((17, 3), dtype=float)
+            kps[0] = [20.0, 40.0, 0.9]        # 放大图坐标系
+            return [_FakeResult(
+                boxes=_FakeBoxes(xyxy=[[20.0, 40.0, 60.0, 120.0]],
+                                 conf=[0.9], cls=[0]),
+                keypoints=_FakeKeypoints([kps]),
+            )]
+
+    d = Detector.__new__(Detector)
+    d.config = DetectorConfig(upscale_min_side=480)
+    d._model = _Model()
+    d._names = COCO_NAMES
+    d._class_filter = None
+
+    out = d.detect(np.zeros((240, 320, 3), dtype=np.uint8))
+
+    assert seen["img"].shape == (480, 640, 3), "模型没拿到放大图"
+    assert out[0].bbox_xyxy == (10.0, 20.0, 30.0, 60.0), "坐标没还原"
+    assert out[0].keypoints[0].tolist() == [10.0, 20.0, 0.9]
+
+
+def test_default_config_upscales_small_input():
+    """⚠️ 回归：**默认配置**就必须放大 320x240 输入。
+
+    这条测试的由来（2026-09-18）：变异测试把 ``upscale_min_side`` 的默认值
+    从 480 改成 0（等于关掉整个机制），**全部测试照过** ——
+    因为其它用例要么显式传了 480，要么用的是 640x480 输入（本来就是倍数 1）。
+    于是「默认值被改坏」这件事没有任何东西守着。
+
+    这与 ``track_fall.yaml`` 那次是同一类：**默认值悄悄失守，行为静默退化**。
+    后果具体是什么：Kinect 320x240 下躺姿置信度从 0.53 掉回 0.00，
+    落到 conf 门限以下，倒地事件永远是 0，没有任何报错。
+    """
+    from g2_core.detector import Detector, DetectorConfig
+
+    seen = {}
+
+    class _Model:
+        def predict(self, img, **kw):
+            seen["img"] = img
+            return []
+
+    d = Detector.__new__(Detector)
+    d.config = DetectorConfig()                 # ← 默认，不传任何东西
+    d._model = _Model()
+    d._names = COCO_NAMES
+    d._class_filter = None
+
+    d.detect(np.zeros((240, 320, 3), dtype=np.uint8))
+
+    assert seen["img"].shape == (480, 640, 3), (
+        f"默认配置没有放大 320x240 输入（模型拿到 {seen['img'].shape}）—— "
+        f"躺姿置信度会塌回门限以下"
+    )
+
+
+def test_run_without_upscale_keeps_original_behaviour():
+    """640x480 输入下倍数必须是 1 —— 默认值不许悄悄改动现有素材的结果。"""
+    from g2_core.detector import Detector, DetectorConfig
+
+    seen = {}
+
+    class _Model:
+        def predict(self, img, **kw):
+            seen["img"] = img
+            return [_FakeResult(boxes=_boxes())]
+
+    d = Detector.__new__(Detector)
+    d.config = DetectorConfig()          # 默认 upscale_min_side=480
+    d._model = _Model()
+    d._names = COCO_NAMES
+    d._class_filter = None
+
+    out = d.detect(np.zeros((480, 640, 3), dtype=np.uint8))
+
+    assert seen["img"].shape == (480, 640, 3)
+    assert out[0].bbox_xyxy == (10.0, 20.0, 30.0, 60.0)

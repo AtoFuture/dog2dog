@@ -305,6 +305,13 @@ class VisionDetector(Node):
         d("weights", "yolo26n.pt")
         d("conf", 0.25)
         d("imgsz", 640)
+        # 输入短边小于它时先放大（INTER_LANCZOS4 整数倍）再推理，0 = 关闭。
+        # 理由：低分辨率输入上**躺姿的置信度会塌到 conf 以下**，
+        # 而「躺下」正是要检测的事件 —— 静默丢帧，下游永远收不到结论。
+        # Kinect 320x240 → 放大 2x；640x480 输入下倍数 1，行为不变。
+        # ⚠️ 放在 conf 旁边是因为这两条**必须一起看**：
+        # 抬 conf 会把人丢掉，而放大是把人找回来。详见 DetectorConfig.upscale_min_side。
+        d("upscale_min_side", 480)
         d("device", "cpu")
         d("detect_hz", 5.0)
         d("sync_slop_s", 0.05)
@@ -352,6 +359,7 @@ class VisionDetector(Node):
                     weights=self.get_parameter("weights").value,
                     conf=self.get_parameter("conf").value,
                     imgsz=self.get_parameter("imgsz").value,
+                    upscale_min_side=self.get_parameter("upscale_min_side").value,
                     device=self.get_parameter("device").value,
                 )
             )

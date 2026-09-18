@@ -80,6 +80,7 @@ from g2_core.anomaly import (  # noqa: E402
     check_reprojection,
     midpoints_from_keypoints_2d,
 )
+from g2_core.floor import fit_floor_plane  # noqa: E402
 from g2_core.projector import depth_to_meters, sample_depth_near  # noqa: E402
 
 # ⚠️ 数据集**没有提供相机标定**，这是本次验证最大的已知误差源。
@@ -115,39 +116,10 @@ def backproject(depth_mm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return np.stack([x, y, z], axis=-1), ok
 
 
-def ransac_floor_normal(depth_mm: np.ndarray, thr: float = 0.02,
-                        iters: int = 400, step: int = 5, seed: int = 0):
-    """拟合地面平面，返回（相机光学系下的「上」方向, 内点率, 相机离地高度）。
-
-    「上」的定号：光学系 +y 朝下，所以朝上的法向其 y 分量必为负。
-    """
-    P, ok = backproject(depth_mm)
-    pts = P[ok][::step]
-    if len(pts) < 100:
-        return None, 0.0, float("nan")
-
-    rng = np.random.default_rng(seed)
-    n = len(pts)
-    best = (0, None, None)
-    for _ in range(iters):
-        i = rng.choice(n, 3, replace=False)
-        p0, p1, p2 = pts[i]
-        nv = np.cross(p1 - p0, p2 - p0)
-        ln = np.linalg.norm(nv)
-        if ln < 1e-9:
-            continue
-        nv = nv / ln
-        d = -float(nv @ p0)
-        c = int((np.abs(pts @ nv + d) < thr).sum())
-        if c > best[0]:
-            best = (c, nv, d)
-
-    cnt, nv, d = best
-    if nv is None:
-        return None, 0.0, float("nan")
-    if nv[1] > 0:            # 定号：朝上
-        nv, d = -nv, -d
-    return nv, cnt / n, abs(d)
+# 地面拟合已移到 g2_core/floor.py —— 那里带「拟合出的是不是地面」的校验。
+# 本脚本原先自己实现了一份**没有校验**的 RANSAC：它只返回内点最多的平面，
+# 于是天花板、床面、墙面都可能被当成地面用，量出来的离地高度照常是个合法浮点数。
+# 理由与实测见 g2_core/floor.py 的模块 docstring。
 
 
 # ----------------------------------------------------------------------
@@ -219,11 +191,25 @@ def main() -> int:
         im = cv2.imread(rgb_path)
         depth_mm = np.load(depth_path)
         # 地面拟合要毫米（它内部除以 1000），取深度要米 —— 分开传，别混
-        up, inlier, cam_h = ransac_floor_normal(depth_mm)
+        P, valid = backproject(depth_mm)
+        fit = fit_floor_plane(P[valid], step=5)
+        up, inlier, cam_h = fit.normal, fit.inlier_ratio, fit.camera_height_m
         depth_m = depth_to_meters(depth_mm, "16UC1")
         res = model.predict(im, verbose=False, conf=args.conf)[0]
 
         persons = []
+        if up is None:
+            # 平面没通过校验 → 这一帧**不能**用来量离地高度或倾角。
+            # 硬算出来的数会是个合法浮点数，但整体偏掉，且不报任何错。
+            recs.append(dict(
+                rgb=os.path.basename(rgb_path), depth=os.path.basename(depth_path),
+                label=label, n_person=0, floor_ok=False,
+                floor_status=fit.status.value, floor_reason=fit.reason,
+                floor_inlier=inlier, cam_height=cam_h, up=None, persons=[],
+            ))
+            print(f"  {os.path.basename(rgb_path)[:29]}  label={label}  "
+                  f"地面不合格：{fit.reason}")
+            continue
         if res.keypoints is not None and len(res.keypoints):
             kd = res.keypoints.data.cpu().numpy()      # (n, 17, 3)
             for kp in kd:
@@ -255,8 +241,9 @@ def main() -> int:
         recs.append(dict(
             rgb=os.path.basename(rgb_path), depth=os.path.basename(depth_path),
             label=label, n_person=len(persons),
+            floor_ok=True, floor_status=fit.status.value,
             floor_inlier=inlier, cam_height=cam_h,
-            up=None if up is None else [float(x) for x in up],
+            up=[float(x) for x in up],
             persons=persons,
         ))
         tilts = []
@@ -285,10 +272,20 @@ def report(recs) -> None:
     print("=" * 72)
 
     # 地面拟合质量
-    inl = np.array([r["floor_inlier"] for r in recs if r["up"]])
-    hs = np.array([r["cam_height"] for r in recs if r["up"]])
-    print(f"\n[地面拟合] {len(inl)}/{len(recs)} 帧成功  "
+    good = [r for r in recs if r.get("up")]
+    inl = np.array([r["floor_inlier"] for r in good])
+    hs = np.array([r["cam_height"] for r in good])
+    print(f"\n[地面拟合] {len(good)}/{len(recs)} 帧通过校验  "
           f"内点率 {inl.mean()*100:.1f}%  相机高度 {hs.mean():.2f}±{hs.std():.2f} m")
+
+    # 被校验挡下的那些帧，分别是什么原因 —— 只看「挡了多少」没用，
+    # 得知道是「平面不在底部」还是「相机高度离谱」，才知道该调哪个阈值
+    dropped = Counter(r.get("floor_status") for r in recs if not r.get("up"))
+    if dropped:
+        print("[地面拟合·被挡下的原因]")
+        for st, cnt in dropped.most_common():
+            ex = next((r for r in recs if r.get("floor_status") == st and not r.get("up")), None)
+            print(f"    {st:>28}: {cnt} 帧   （例：{ex.get('floor_reason', '') if ex else ''}）")
 
     by_label = defaultdict(list)
     for r in recs:

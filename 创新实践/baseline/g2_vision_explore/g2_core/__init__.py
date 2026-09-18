@@ -21,8 +21,12 @@ from .detector import (
     Detector,
     DetectorConfig,
     DetectorUnavailableError,
+    rescale_detections,
+    upscale_factor,
+    upscale_for_inference,
 )
 from .explorer import ExplorerParams, Goal, GoalSelection, GoalSelector, SelectStatus
+from .floor import FloorFit, FloorFitStatus, fit_floor_plane
 from .frontier import FrontierCluster, detect_frontiers
 from .geodesic import geodesic_distance, geodesic_nearest_cell
 from .grid import FREE, OCCUPIED, UNKNOWN, GridMap
@@ -58,5 +62,7 @@ __all__ = [
     "ExplorerStateMachine", "Phase", "Command",
     # detector
     "Detector", "DetectorConfig", "Detection2D", "DetectorUnavailableError",
-    "DEFAULT_CLASSES",
+    "DEFAULT_CLASSES", "upscale_factor", "upscale_for_inference", "rescale_detections",
+    # floor
+    "fit_floor_plane", "FloorFit", "FloorFitStatus",
 ]
