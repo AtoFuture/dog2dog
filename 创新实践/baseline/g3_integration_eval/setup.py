@@ -21,10 +21,10 @@ setup(
         "transmission-disabled NavigateToPose client skeleton."
     ),
     license="Apache-2.0",
-    tests_require=["pytest"],
     entry_points={
         "console_scripts": [
             "g3_state_machine = g3_integration_eval.state_machine_node:main",
+            "evaluate_bag = g3_integration_eval.evaluate_bag:main",
         ],
     },
 )
