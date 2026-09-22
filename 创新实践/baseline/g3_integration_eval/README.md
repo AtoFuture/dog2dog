@@ -87,6 +87,13 @@ ros2 topic hz /xxx   # 关键传感器的实际频率
 
 > 覆盖率随时间的变化曲线是最有说服力的一张图——它同时体现探索策略与建图稳定性。
 
+### 当前离线导航统计规则
+
+- `GoalStatusArray` 可能携带录包开始前的历史 goal，因此离线评估只把**当前 bag 中实际出现过 NavigateToPose feedback 的 goal UUID**计为本次实验的 observed goal。
+- observed goal 的唯一终态为 `SUCCEEDED / ABORTED / CANCELED` 时才进入导航成功率分母；没有终态记为 `incomplete`，同一 UUID 出现多个不同终态记为 `conflict` 并排除。
+- 导航成功率定义为 `SUCCEEDED / (SUCCEEDED + ABORTED + CANCELED)`。若本次 bag 没有 observed goal 到达终态，则输出 `unavailable`，而不是误报 `0%`。
+- 当前还没有能把 Nav2 goal UUID 与 G3 `RETURN` 事件明确关联的标记，因此 `return_success_rate` 保持 `unavailable`；后续启用真实返航发送时再增加显式返航 goal 标记。
+
 ---
 
 ## 对外接口

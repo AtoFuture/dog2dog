@@ -13,6 +13,7 @@ from g3_integration_eval.metrics import (
     availability,
     battery_statistics,
     duration_seconds,
+    navigation_statistics,
 )
 
 
@@ -66,11 +67,26 @@ def evaluate_bag(
     last_timestamp_ns = None
 
     battery_msg_type = None
+    nav_feedback_msg_type = None
+    nav_status_msg_type = None
 
     if BATTERY_TOPIC in topic_types:
         battery_msg_type = get_message(
             topic_types[BATTERY_TOPIC]
         )
+
+    if NAV_FEEDBACK_TOPIC in topic_types:
+        nav_feedback_msg_type = get_message(
+            topic_types[NAV_FEEDBACK_TOPIC]
+        )
+
+    if NAV_STATUS_TOPIC in topic_types:
+        nav_status_msg_type = get_message(
+            topic_types[NAV_STATUS_TOPIC]
+        )
+
+    observed_nav_goal_ids = set()
+    nav_statuses_by_goal = {}
 
     while reader.has_next():
         topic_name, raw_data, timestamp_ns = (
@@ -99,6 +115,36 @@ def evaluate_bag(
                 message.percentage
             )
 
+        elif (
+            topic_name == NAV_FEEDBACK_TOPIC
+            and nav_feedback_msg_type is not None
+        ):
+            message = deserialize_message(
+                raw_data,
+                nav_feedback_msg_type,
+            )
+            observed_nav_goal_ids.add(
+                bytes(message.goal_id.uuid).hex()
+            )
+
+        elif (
+            topic_name == NAV_STATUS_TOPIC
+            and nav_status_msg_type is not None
+        ):
+            message = deserialize_message(
+                raw_data,
+                nav_status_msg_type,
+            )
+
+            for item in message.status_list:
+                goal_id = bytes(
+                    item.goal_info.goal_id.uuid
+                ).hex()
+                nav_statuses_by_goal.setdefault(
+                    goal_id,
+                    [],
+                ).append(int(item.status))
+
     if (
         first_timestamp_ns is None
         or last_timestamp_ns is None
@@ -114,6 +160,25 @@ def evaluate_bag(
     duration = duration_seconds(
         first_timestamp_ns,
         last_timestamp_ns,
+    )
+
+    navigation = navigation_statistics(
+        observed_nav_goal_ids,
+        nav_statuses_by_goal,
+    )
+
+    navigation_success_metric = availability(
+        navigation.success_rate,
+        (
+            None
+            if navigation.success_rate is not None
+            else "no_terminal_navigation_goal_observed"
+        ),
+    )
+
+    return_success_metric = availability(
+        None,
+        "no_explicit_return_goal_marker",
     )
 
     detection_present = (
@@ -186,6 +251,23 @@ def evaluate_bag(
                 NAV_STATUS_TOPIC,
                 0,
             ),
+            "observed_goal_count": (
+                navigation.observed_goal_count
+            ),
+            "succeeded": navigation.succeeded,
+            "aborted": navigation.aborted,
+            "canceled": navigation.canceled,
+            "incomplete": navigation.incomplete,
+            "conflict": navigation.conflict,
+            "terminal_goal_count": (
+                navigation.terminal_goal_count
+            ),
+            "observed_goal_ids": list(
+                navigation.observed_goal_ids
+            ),
+            "conflicting_goal_ids": list(
+                navigation.conflicting_goal_ids
+            ),
         },
         "battery": {
             "sample_count": battery.sample_count,
@@ -195,6 +277,12 @@ def evaluate_bag(
         },
         "metrics": {
             "coverage": coverage_metric,
+            "navigation_success_rate": (
+                navigation_success_metric
+            ),
+            "return_success_rate": (
+                return_success_metric
+            ),
             "ate": availability(
                 None,
                 "ground-truth trajectory not provided",
@@ -328,6 +416,43 @@ def main():
     print(
         "NavigateToPose status:",
         report["navigation"]["status_messages"],
+    )
+
+    navigation = report["navigation"]
+
+    print(
+        "Observed navigation goals:",
+        navigation["observed_goal_count"],
+    )
+    print(
+        "Navigation outcomes: "
+        f"succeeded={navigation['succeeded']} "
+        f"aborted={navigation['aborted']} "
+        f"canceled={navigation['canceled']} "
+        f"incomplete={navigation['incomplete']} "
+        f"conflict={navigation['conflict']}"
+    )
+
+    navigation_success = (
+        report["metrics"]["navigation_success_rate"]
+    )
+    if navigation_success["available"]:
+        print(
+            "Navigation success rate: "
+            f"{navigation_success['value']:.2%}"
+        )
+    else:
+        print(
+            "Navigation success rate: unavailable "
+            f"({navigation_success['reason']})"
+        )
+
+    return_success = (
+        report["metrics"]["return_success_rate"]
+    )
+    print(
+        "Return success rate: unavailable "
+        f"({return_success['reason']})"
     )
 
     battery = report["battery"]
