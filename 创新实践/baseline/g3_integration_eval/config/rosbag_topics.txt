@@ -1,0 +1,17 @@
+/clock
+/robot1/odom
+/robot1/odometry/filtered
+/robot1/amcl_pose
+/robot1/tf
+/robot1/tf_static
+/robot1/map
+/robot1/map_updates
+/robot1/scan
+/robot1/velodyne
+/robot1/plan
+/robot1/local_plan
+/robot1/cmd_vel
+/robot1/cmd_vel_nav
+/robot1/battery_state
+/robot1/navigate_to_pose/_action/feedback
+/robot1/navigate_to_pose/_action/status

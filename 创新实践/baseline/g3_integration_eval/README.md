@@ -67,6 +67,8 @@ ros2 topic hz /xxx   # 关键传感器的实际频率
 ### ③ 低电量返航（第 10–12 周）
 
 - 读电量 → 低于阈值 → 发一个回基站的目标点
+- 当前已实现：订阅可配置 `BatteryState` 话题，仅在 `EXPLORE` 且电量低于阈值时自动切换到 `RETURN`。默认话题为 `/robot1/battery_state`，默认阈值为 `0.20`。
+- 当前安全阶段中，自动返航只生成并打印目标预览；`NavigateToPose` 真实发送仍被硬禁用。
 - **复用接口 02 的 `NavigateToPose`**，不另开通路。G2 的探索目标点和你们的返航点走同一个入口
 - 加一层：返航途中电量继续掉怎么办（降速 / 就近停靠 / 直接趴下）
 
@@ -85,6 +87,13 @@ ros2 topic hz /xxx   # 关键传感器的实际频率
 
 > 覆盖率随时间的变化曲线是最有说服力的一张图——它同时体现探索策略与建图稳定性。
 
+### 当前离线导航统计规则
+
+- `GoalStatusArray` 可能携带录包开始前的历史 goal，因此离线评估只把**当前 bag 中实际出现过 NavigateToPose feedback 的 goal UUID**计为本次实验的 observed goal。
+- observed goal 的唯一终态为 `SUCCEEDED / ABORTED / CANCELED` 时才进入导航成功率分母；没有终态记为 `incomplete`，同一 UUID 出现多个不同终态记为 `conflict` 并排除。
+- 导航成功率定义为 `SUCCEEDED / (SUCCEEDED + ABORTED + CANCELED)`。若本次 bag 没有 observed goal 到达终态，则输出 `unavailable`，而不是误报 `0%`。
+- 当前还没有能把 Nav2 goal UUID 与 G3 `RETURN` 事件明确关联的标记，因此 `return_success_rate` 保持 `unavailable`；后续启用真实返航发送时再增加显式返航 goal 标记。
+
 ---
 
 ## 对外接口
@@ -100,3 +109,48 @@ ros2 topic hz /xxx   # 关键传感器的实际频率
 - [ ] `unitree_ros2` 编译过，官方 demo 遥控走通
 - [ ] **设备盘点五项**，结果写进 `docs/设备清单.md`，通知 G1
 - [ ] 建 rosbag 话题清单初稿（接口 04）
+
+---
+
+## Mission Brain（DeepSeek Flash 安全 MVP）
+
+G3 集成层已加入 `mission_brain` 节点，默认调用 DeepSeek 官方
+OpenAI 兼容接口，模型 ID 为 `deepseek-flash`。密钥只能通过
+`MISSION_BRAIN_API_KEY` 环境变量提供，不得写入代码、YAML、launch 文件或日志。
+
+```bash
+source /opt/ros/humble/setup.bash
+source /tmp/g3_eval_colcon/install/setup.bash
+export MISSION_BRAIN_API_KEY="<new-rotated-key>"
+export MISSION_BRAIN_MODEL="deepseek-flash"
+ros2 run g3_integration_eval mission_brain
+```
+
+### 临时 JSON 话题协议
+
+共用 ROS 消息尚未冻结，MVP 先用 `std_msgs/String` 承载 JSON：
+
+- `/mission/context`：至少含 `mission_state` 和 `localization_healthy`。
+- `/exploration/candidates`：含 `candidates` 和当前可用 `evidence_ids`。
+- `/brain/decision`：受限高层动作，不含任意坐标或速度指令。
+
+候选集示例：
+
+```json
+{
+  "set_id": "map-17",
+  "evidence_ids": [42],
+  "candidates": [
+    {"id": "f1", "x": 1.2, "y": -0.5, "information_gain": 18.0,
+     "path_cost": 4.1, "failure_count": 0}
+  ]
+}
+```
+
+安全边界：
+
+- 模型只能从输入的 frontier ID 中选择，不能自造坐标。
+- `COMPLETE` / `VERIFY_DETECTION` 必须引用当前存在的检测证据 ID。
+- 非 `EXPLORE` 或定位不健康时只能安全等待。
+- API 超时、断网、格式错误或越界输出会自动回退到确定性 frontier 打分。
+- 本节点只发布决策，不发布 `cmd_vel`，也不直接发 Nav2 goal。

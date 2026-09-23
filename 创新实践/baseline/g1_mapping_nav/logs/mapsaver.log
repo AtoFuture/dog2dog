@@ -1,0 +1,23 @@
+-rw-rw-r-- 1 wy wy 307K  9月 19 21:50 /home/wy/go2_sim_ws/ROS2-Gazebo-GO2/src/navigation2/maps/live_warehouse_20260919.pgm
+-rw-rw-r-- 1 wy wy  141  9月 19 21:50 /home/wy/go2_sim_ws/ROS2-Gazebo-GO2/src/navigation2/maps/live_warehouse_20260919.yaml
+-rw-rw-r-- 1 wy wy 307K  9月 19 21:50 /tmp/go2_warehouse_live.pgm
+-rw-rw-r-- 1 wy wy  136  9月 19 21:50 /tmp/go2_warehouse_live.yaml
+--- yaml /tmp ---
+image: go2_warehouse_live.pgm
+mode: trinary
+resolution: 0.05
+origin: [-9.22, -8.57, 0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.25--- yaml maps ---
+image: live_warehouse_20260919.pgm
+mode: trinary
+resolution: 0.05
+origin: [-9.22, -8.57, 0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.25--- md5 ---
+c66b2dd378c61a72b6d1cf3d99f7bb23  /tmp/go2_warehouse_live.pgm
+c66b2dd378c61a72b6d1cf3d99f7bb23  /home/wy/go2_sim_ws/ROS2-Gazebo-GO2/src/navigation2/maps/live_warehouse_20260919.pgm
+--- date ---
+2026年 09月 19日 星期六 21:51:05 CST

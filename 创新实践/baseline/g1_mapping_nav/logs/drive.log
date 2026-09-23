@@ -1,0 +1,110 @@
+=== drive start 2026-09-19T13:47:33Z ===
+--- map_before ---
+map_load_time:
+  sec: 0
+  nanosec: 0
+resolution: 0.05000000074505806
+width: 718
+height: 437
+origin:
+  position:
+    x: -9.215655177791087
+    y: -8.572324884717709
+    z: 0.0
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    w: 1.0
+---
+
+--- odomfilt_before ---
+header:
+  stamp:
+    sec: 51
+    nanosec: 730000000
+  frame_id: odom
+child_frame_id: base_link
+pose:
+  pose:
+    position:
+      x: 2.94782828831965e-09
+      y: 1.5497085207951912e-11
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.0001480129939055597
+      w: 0.9999999890460768
+  covariance:
+  - 0.0005000010000990008
+  - -1.5228704843563765e-29
+  - 0.0
+  - 0.0
+  - 0.0
+  - -2.8698199761958006e-27
+  - -1.5228704749524122e-29
+  - 0.0005000010000990008
+  - 0.0
+  - 0.0
+  - 0.0
+  - 5.458921171662125e-25
+
+--- odom_before ---
+header:
+  stamp:
+    sec: 52
+    nanosec: 620000000
+  frame_id: odom
+child_frame_id: base_link
+pose:
+  pose:
+    position:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.0001480530665169442
+      w: 0.9999999890401446
+  covariance:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+
+[2026-09-19T13:48:08Z] START rotate1_init lx=0.0 az=0.35 tmo=25 yaml={linear: {x: 0.00, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.35}}
+[2026-09-19T13:48:36Z] END rotate1_init rc=0 dt=27.9s
+[2026-09-19T13:48:37Z] START fwd1 lx=0.25 az=0.0 tmo=20 yaml={linear: {x: 0.25, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.00}}
+[2026-09-19T13:49:00Z] END fwd1 rc=0 dt=22.5s
+[2026-09-19T13:49:01Z] START turn1 lx=0.0 az=0.35 tmo=11 yaml={linear: {x: 0.00, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.35}}
+[2026-09-19T13:49:15Z] END turn1 rc=0 dt=13.4s
+[2026-09-19T13:49:15Z] START fwd2 lx=0.25 az=0.0 tmo=20 yaml={linear: {x: 0.25, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.00}}
+[2026-09-19T13:49:38Z] END fwd2 rc=0 dt=22.4s
+[2026-09-19T13:49:39Z] START turn2 lx=0.0 az=0.35 tmo=11 yaml={linear: {x: 0.00, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.35}}
+[2026-09-19T13:49:53Z] END turn2 rc=0 dt=13.5s
+[2026-09-19T13:49:54Z] START fwd3 lx=0.25 az=0.0 tmo=20 yaml={linear: {x: 0.25, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.00}}
+[2026-09-19T13:50:17Z] END fwd3 rc=0 dt=22.5s
+[2026-09-19T13:50:17Z] START turn3 lx=0.0 az=0.35 tmo=11 yaml={linear: {x: 0.00, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.35}}
+[2026-09-19T13:50:31Z] END turn3 rc=0 dt=13.5s
+[2026-09-19T13:50:32Z] START fwd4 lx=0.25 az=0.0 tmo=20 yaml={linear: {x: 0.25, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.00}}
+[2026-09-19T13:50:54Z] END fwd4 rc=0 dt=22.2s
+[2026-09-19T13:50:55Z] START turn4_close lx=0.0 az=0.35 tmo=11 yaml={linear: {x: 0.00, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.35}}
+[2026-09-19T13:51:09Z] END turn4_close rc=0 dt=13.3s
+[2026-09-19T13:51:09Z] START fwd5_short lx=0.2 az=0.0 tmo=15 yaml={linear: {x: 0.20, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.00}}
+[2026-09-19T13:51:27Z] END fwd5_short rc=0 dt=17.2s
+[2026-09-19T13:51:28Z] START rotate_final lx=0.0 az=0.3 tmo=20 yaml={linear: {x: 0.00, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.30}}
+[2026-09-19T13:51:50Z] END rotate_final rc=0 dt=22.1s
+[2026-09-19T13:52:06Z] STOP zero sent
+--- map_after 718x437 origin -9.21565,-8.57232 (no expansion vs before) ---
+--- odomfilt_after x=-2.3625 y=-0.5211 yaw_qz=0.2858 ---
+[2026-09-19T13:53:43Z] DRIVE_VERIFIED_STOPPED

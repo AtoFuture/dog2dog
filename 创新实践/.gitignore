@@ -8,6 +8,13 @@ log/
 *.mcap
 rosbag2_*/
 
+# ---- SLAM / 点云大型实验产物 ----
+# 仓库只保留启动配置、实验说明和小型地图；
+# 数据库、原始点云和 OctoMap 应放团队共享存储。
+*.db
+*.pcd
+*.ot
+
 # ---- Python ----
 __pycache__/
 *.py[cod]

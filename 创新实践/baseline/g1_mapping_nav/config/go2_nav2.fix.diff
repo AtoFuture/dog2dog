@@ -1,0 +1,20 @@
+--- "/home/wy/data1/\345\210\233\346\226\260\345\256\236\350\267\265/baseline/g1_mapping_nav/config/go2_nav2.yaml.bak"	2026-09-20 10:52:02.288935802 +0800
++++ "/home/wy/data1/\345\210\233\346\226\260\345\256\236\350\267\265/baseline/g1_mapping_nav/config/go2_nav2.yaml"	2026-09-20 10:52:02.285935786 +0800
+@@ -212,7 +212,7 @@
+         mark_threshold: 0
+         observation_sources: scan
+         scan:
+-          topic: /velodyne
++          topic: velodyne
+           max_obstacle_height: 2.0
+           clearing: True
+           marking: True
+@@ -248,7 +248,7 @@
+         enabled: True
+         observation_sources: scan
+         scan:
+-          topic: /velodyne
++          topic: velodyne
+           max_obstacle_height: 2.0
+           clearing: True
+           marking: True

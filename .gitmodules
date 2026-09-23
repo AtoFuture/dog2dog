@@ -1,0 +1,6 @@
+[submodule "创新实践/unitree_ros2"]
+	path = 创新实践/unitree_ros2
+	url = https://github.com/unitreerobotics/unitree_ros2.git
+[submodule "创新实践/external/aws-robomaker-small-warehouse-world"]
+	path = 创新实践/external/aws-robomaker-small-warehouse-world
+	url = https://github.com/aws-robotics/aws-robomaker-small-warehouse-world.git
