@@ -14,12 +14,14 @@ from g3_integration_eval.metrics import (
     battery_statistics,
     duration_seconds,
     navigation_statistics,
+    return_statistics,
 )
 
 
 BATTERY_TOPIC = "/robot1/battery_state"
 NAV_FEEDBACK_TOPIC = "/robot1/navigate_to_pose/_action/feedback"
 NAV_STATUS_TOPIC = "/robot1/navigate_to_pose/_action/status"
+RETURN_EVENT_TOPIC = "/g3/return_event"
 
 DETECTION_TOPIC = "/detections_3d"
 DETECTION_SNAPSHOT_TOPIC = "/detections_snapshot"
@@ -69,6 +71,7 @@ def evaluate_bag(
     battery_msg_type = None
     nav_feedback_msg_type = None
     nav_status_msg_type = None
+    return_event_msg_type = None
 
     if BATTERY_TOPIC in topic_types:
         battery_msg_type = get_message(
@@ -85,8 +88,15 @@ def evaluate_bag(
             topic_types[NAV_STATUS_TOPIC]
         )
 
+    if RETURN_EVENT_TOPIC in topic_types:
+        return_event_msg_type = get_message(
+            topic_types[RETURN_EVENT_TOPIC]
+        )
+
     observed_nav_goal_ids = set()
     nav_statuses_by_goal = {}
+    return_events = []
+    invalid_return_events = 0
 
     while reader.has_next():
         topic_name, raw_data, timestamp_ns = (
@@ -145,6 +155,24 @@ def evaluate_bag(
                     [],
                 ).append(int(item.status))
 
+        elif (
+            topic_name == RETURN_EVENT_TOPIC
+            and return_event_msg_type is not None
+        ):
+            message = deserialize_message(
+                raw_data,
+                return_event_msg_type,
+            )
+            try:
+                event = json.loads(message.data)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                invalid_return_events += 1
+            else:
+                if isinstance(event, dict):
+                    return_events.append(event)
+                else:
+                    invalid_return_events += 1
+
     if (
         first_timestamp_ns is None
         or last_timestamp_ns is None
@@ -167,6 +195,8 @@ def evaluate_bag(
         nav_statuses_by_goal,
     )
 
+    returns = return_statistics(return_events)
+
     navigation_success_metric = availability(
         navigation.success_rate,
         (
@@ -176,10 +206,20 @@ def evaluate_bag(
         ),
     )
 
-    return_success_metric = availability(
-        None,
-        "no_explicit_return_goal_marker",
-    )
+    if RETURN_EVENT_TOPIC not in topic_types:
+        return_success_metric = availability(
+            None,
+            "no_explicit_return_goal_marker",
+        )
+    else:
+        return_success_metric = availability(
+            returns.success_rate,
+            (
+                None
+                if returns.success_rate is not None
+                else "no_terminal_return_attempt_observed"
+            ),
+        )
 
     detection_present = (
         DETECTION_TOPIC in topic_types
@@ -267,6 +307,30 @@ def evaluate_bag(
             ),
             "conflicting_goal_ids": list(
                 navigation.conflicting_goal_ids
+            ),
+        },
+        "return_navigation": {
+            "event_messages": topic_counts.get(
+                RETURN_EVENT_TOPIC,
+                0,
+            ),
+            "valid_events": returns.event_count,
+            "invalid_events": invalid_return_events,
+            "attempt_count": returns.attempt_count,
+            "preview": returns.preview,
+            "succeeded": returns.succeeded,
+            "aborted": returns.aborted,
+            "canceled": returns.canceled,
+            "rejected": returns.rejected,
+            "server_unavailable": returns.server_unavailable,
+            "error": returns.error,
+            "unknown": returns.unknown,
+            "incomplete": returns.incomplete,
+            "conflict": returns.conflict,
+            "terminal_attempt_count": returns.terminal_attempt_count,
+            "goal_ids": list(returns.goal_ids),
+            "conflicting_attempt_ids": list(
+                returns.conflicting_attempt_ids
             ),
         },
         "battery": {
@@ -450,10 +514,16 @@ def main():
     return_success = (
         report["metrics"]["return_success_rate"]
     )
-    print(
-        "Return success rate: unavailable "
-        f"({return_success['reason']})"
-    )
+    if return_success["available"]:
+        print(
+            "Return success rate: "
+            f"{return_success['value']:.2%}"
+        )
+    else:
+        print(
+            "Return success rate: unavailable "
+            f"({return_success['reason']})"
+        )
 
     battery = report["battery"]
 

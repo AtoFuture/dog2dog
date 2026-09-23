@@ -40,6 +40,39 @@ class NavigationStatistics:
     conflicting_goal_ids: tuple
 
 
+RETURN_FAILURE_STATUSES = {
+    "aborted",
+    "canceled",
+    "rejected",
+    "server_unavailable",
+    "send_error",
+    "goal_response_error",
+    "result_error",
+    "unknown",
+}
+RETURN_TERMINAL_STATUSES = RETURN_FAILURE_STATUSES | {"succeeded"}
+
+
+@dataclass(frozen=True)
+class ReturnStatistics:
+    event_count: int
+    attempt_count: int
+    preview: int
+    succeeded: int
+    aborted: int
+    canceled: int
+    rejected: int
+    server_unavailable: int
+    error: int
+    unknown: int
+    incomplete: int
+    conflict: int
+    terminal_attempt_count: int
+    success_rate: Optional[float]
+    goal_ids: tuple
+    conflicting_attempt_ids: tuple
+
+
 def navigation_statistics(observed_goal_ids, statuses_by_goal) -> NavigationStatistics:
     """Summarize NavigateToPose outcomes for goals active in this bag.
 
@@ -102,6 +135,104 @@ def navigation_statistics(observed_goal_ids, statuses_by_goal) -> NavigationStat
         success_rate=success_rate,
         observed_goal_ids=observed,
         conflicting_goal_ids=tuple(sorted(conflicts)),
+    )
+
+
+def return_statistics(events: Iterable[dict]) -> ReturnStatistics:
+    """Summarize explicit G3 RETURN events grouped by local attempt ID.
+
+    Preview-only attempts remain visible but do not enter the success-rate
+    denominator. Once transmission is enabled, server, rejection, callback, and
+    action-result failures are final failed attempts. Duplicate bag messages are
+    de-duplicated, while contradictory final states are reported as conflicts.
+    """
+
+    valid_events = [event for event in events if isinstance(event, dict)]
+    statuses_by_attempt = {}
+    goal_ids = set()
+
+    for index, event in enumerate(valid_events):
+        attempt_id = event.get("attempt_id")
+        goal_id = event.get("goal_id")
+        status = event.get("status")
+
+        if not isinstance(attempt_id, str) or not attempt_id:
+            if isinstance(goal_id, str) and goal_id:
+                attempt_id = f"goal:{goal_id}"
+            else:
+                attempt_id = f"unidentified:{index}"
+
+        if isinstance(status, str) and status:
+            statuses_by_attempt.setdefault(attempt_id, set()).add(status)
+        else:
+            statuses_by_attempt.setdefault(attempt_id, set())
+
+        if isinstance(goal_id, str) and goal_id:
+            goal_ids.add(goal_id)
+
+    counts = {
+        "preview": 0,
+        "succeeded": 0,
+        "aborted": 0,
+        "canceled": 0,
+        "rejected": 0,
+        "server_unavailable": 0,
+        "error": 0,
+        "unknown": 0,
+        "incomplete": 0,
+    }
+    conflicts = []
+
+    for attempt_id, statuses in statuses_by_attempt.items():
+        terminal = statuses & RETURN_TERMINAL_STATUSES
+
+        if len(terminal) > 1:
+            conflicts.append(attempt_id)
+            continue
+
+        if terminal:
+            status = next(iter(terminal))
+            if status in {"send_error", "goal_response_error", "result_error"}:
+                counts["error"] += 1
+            else:
+                counts[status] += 1
+        elif "preview" in statuses:
+            counts["preview"] += 1
+        else:
+            counts["incomplete"] += 1
+
+    terminal_attempt_count = (
+        counts["succeeded"]
+        + counts["aborted"]
+        + counts["canceled"]
+        + counts["rejected"]
+        + counts["server_unavailable"]
+        + counts["error"]
+        + counts["unknown"]
+    )
+    success_rate = (
+        counts["succeeded"] / terminal_attempt_count
+        if terminal_attempt_count
+        else None
+    )
+
+    return ReturnStatistics(
+        event_count=len(valid_events),
+        attempt_count=len(statuses_by_attempt),
+        preview=counts["preview"],
+        succeeded=counts["succeeded"],
+        aborted=counts["aborted"],
+        canceled=counts["canceled"],
+        rejected=counts["rejected"],
+        server_unavailable=counts["server_unavailable"],
+        error=counts["error"],
+        unknown=counts["unknown"],
+        incomplete=counts["incomplete"],
+        conflict=len(conflicts),
+        terminal_attempt_count=terminal_attempt_count,
+        success_rate=success_rate,
+        goal_ids=tuple(sorted(goal_ids)),
+        conflicting_attempt_ids=tuple(sorted(conflicts)),
     )
 
 

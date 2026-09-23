@@ -18,7 +18,7 @@ setup(
     maintainer_email="g3-team@example.com",
     description=(
         "G3 integration state machine, low-battery RETURN monitor, and a "
-        "transmission-disabled NavigateToPose client skeleton."
+        "safety-gated NavigateToPose client with explicit outcome events."
     ),
     license="Apache-2.0",
     entry_points={

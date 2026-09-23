@@ -2,7 +2,7 @@
 <package format="3">
   <name>g3_integration_eval</name>
   <version>0.1.0</version>
-  <description>G3 integration state machine and a transmission-disabled NavigateToPose client skeleton.</description>
+  <description>G3 state machine and safety-gated NavigateToPose RETURN integration.</description>
   <maintainer email="g3-team@example.com">G3 Team</maintainer>
   <license>Apache-2.0</license>
 

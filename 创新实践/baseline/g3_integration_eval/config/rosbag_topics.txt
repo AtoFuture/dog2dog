@@ -13,5 +13,6 @@
 /robot1/cmd_vel
 /robot1/cmd_vel_nav
 /robot1/battery_state
+/g3/return_event
 /robot1/navigate_to_pose/_action/feedback
 /robot1/navigate_to_pose/_action/status

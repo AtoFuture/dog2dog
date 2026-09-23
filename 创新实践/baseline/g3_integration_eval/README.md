@@ -68,7 +68,9 @@ ros2 topic hz /xxx   # 关键传感器的实际频率
 
 - 读电量 → 低于阈值 → 发一个回基站的目标点
 - 当前已实现：订阅可配置 `BatteryState` 话题，仅在 `EXPLORE` 且电量低于阈值时自动切换到 `RETURN`。默认话题为 `/robot1/battery_state`，默认阈值为 `0.20`。
-- 当前安全阶段中，自动返航只生成并打印目标预览；`NavigateToPose` 真实发送仍被硬禁用。
+- `enable_navigation_transmission` 默认值为 `false`：自动返航只生成并打印目标预览，不等待 action server，也不发送 goal。
+- 只有显式设为 `true` 时才等待 `/robot1/navigate_to_pose`，发送 home pose，并在 `/g3/return_event` 发布 `std_msgs/String` JSON 事件。事件包含 `attempt_id`、真实 Nav2 `goal_id`（接受/拒绝响应可用后）、触发源、ROS 时间戳、home target 和状态。
+- 状态链包括 `preview / waiting_for_server / server_unavailable / goal_request_sent / accepted / rejected / succeeded / aborted / canceled`，回调异常也会形成明确失败事件，便于 rosbag 离线追踪。
 - **复用接口 02 的 `NavigateToPose`**，不另开通路。G2 的探索目标点和你们的返航点走同一个入口
 - 加一层：返航途中电量继续掉怎么办（降速 / 就近停靠 / 直接趴下）
 
@@ -92,7 +94,25 @@ ros2 topic hz /xxx   # 关键传感器的实际频率
 - `GoalStatusArray` 可能携带录包开始前的历史 goal，因此离线评估只把**当前 bag 中实际出现过 NavigateToPose feedback 的 goal UUID**计为本次实验的 observed goal。
 - observed goal 的唯一终态为 `SUCCEEDED / ABORTED / CANCELED` 时才进入导航成功率分母；没有终态记为 `incomplete`，同一 UUID 出现多个不同终态记为 `conflict` 并排除。
 - 导航成功率定义为 `SUCCEEDED / (SUCCEEDED + ABORTED + CANCELED)`。若本次 bag 没有 observed goal 到达终态，则输出 `unavailable`，而不是误报 `0%`。
-- 当前还没有能把 Nav2 goal UUID 与 G3 `RETURN` 事件明确关联的标记，因此 `return_success_rate` 保持 `unavailable`；后续启用真实返航发送时再增加显式返航 goal 标记。
+- `/g3/return_event` 将 G3 `RETURN` 尝试与 Nav2 goal UUID 明确关联。离线评估按 `attempt_id` 去重：preview 不进入成功率分母；真实发送后的成功、取消、中止、拒绝、server unavailable 与发送/回调错误进入分母。旧 bag 不含该话题时，`return_success_rate` 仍保持 `unavailable`，原因是 `no_explicit_return_goal_marker`。
+
+### 返航发送安全开关
+
+默认启动不会发送导航目标：
+
+```bash
+ros2 run g3_integration_eval g3_state_machine
+```
+
+仅在 Nav2 与传感器链健康、且确认允许控制目标机器人后显式开启：
+
+```bash
+ros2 run g3_integration_eval g3_state_machine --ros-args \
+  -p enable_navigation_transmission:=true \
+  -p navigation_server_timeout_sec:=2.0
+```
+
+home target 仍由 `home_frame / home_x / home_y / home_yaw` 参数配置。
 
 ---
 
