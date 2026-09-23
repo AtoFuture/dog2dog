@@ -25,6 +25,7 @@ setup(
         "console_scripts": [
             "g3_state_machine = g3_integration_eval.state_machine_node:main",
             "evaluate_bag = g3_integration_eval.evaluate_bag:main",
+            "mission_brain = g3_integration_eval.mission_brain_node:main",
         ],
     },
 )

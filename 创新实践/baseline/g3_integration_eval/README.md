@@ -129,3 +129,48 @@ home target 仍由 `home_frame / home_x / home_y / home_yaw` 参数配置。
 - [ ] `unitree_ros2` 编译过，官方 demo 遥控走通
 - [ ] **设备盘点五项**，结果写进 `docs/设备清单.md`，通知 G1
 - [ ] 建 rosbag 话题清单初稿（接口 04）
+
+---
+
+## Mission Brain（DeepSeek Flash 安全 MVP）
+
+G3 集成层已加入 `mission_brain` 节点，默认调用 DeepSeek 官方
+OpenAI 兼容接口，模型 ID 为 `deepseek-flash`。密钥只能通过
+`MISSION_BRAIN_API_KEY` 环境变量提供，不得写入代码、YAML、launch 文件或日志。
+
+```bash
+source /opt/ros/humble/setup.bash
+source /tmp/g3_eval_colcon/install/setup.bash
+export MISSION_BRAIN_API_KEY="<new-rotated-key>"
+export MISSION_BRAIN_MODEL="deepseek-flash"
+ros2 run g3_integration_eval mission_brain
+```
+
+### 临时 JSON 话题协议
+
+共用 ROS 消息尚未冻结，MVP 先用 `std_msgs/String` 承载 JSON：
+
+- `/mission/context`：至少含 `mission_state` 和 `localization_healthy`。
+- `/exploration/candidates`：含 `candidates` 和当前可用 `evidence_ids`。
+- `/brain/decision`：受限高层动作，不含任意坐标或速度指令。
+
+候选集示例：
+
+```json
+{
+  "set_id": "map-17",
+  "evidence_ids": [42],
+  "candidates": [
+    {"id": "f1", "x": 1.2, "y": -0.5, "information_gain": 18.0,
+     "path_cost": 4.1, "failure_count": 0}
+  ]
+}
+```
+
+安全边界：
+
+- 模型只能从输入的 frontier ID 中选择，不能自造坐标。
+- `COMPLETE` / `VERIFY_DETECTION` 必须引用当前存在的检测证据 ID。
+- 非 `EXPLORE` 或定位不健康时只能安全等待。
+- API 超时、断网、格式错误或越界输出会自动回退到确定性 frontier 打分。
+- 本节点只发布决策，不发布 `cmd_vel`，也不直接发 Nav2 goal。
