@@ -5,10 +5,24 @@ from g3_integration_eval.state_machine import (
     InvalidTransition,
     State,
     battery_return_event,
+    mission_state_value,
     parse_event,
     transition,
     validate_low_battery_threshold,
 )
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        (State.STANDBY, "standby"),
+        (State.EXPLORE, "exploring"),
+        (State.RETURN, "returning"),
+        (State.ESTOP, "estop"),
+    ],
+)
+def test_mission_state_mapping_matches_g2_contract(state, expected):
+    assert mission_state_value(state) == expected
 
 
 def test_nominal_mission_cycle():

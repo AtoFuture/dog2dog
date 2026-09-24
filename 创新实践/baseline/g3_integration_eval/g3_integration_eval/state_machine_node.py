@@ -6,7 +6,13 @@ from typing import Optional, Sequence
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import BatteryState
 from std_msgs.msg import String
 
@@ -18,9 +24,18 @@ from g3_integration_eval.state_machine import (
     InvalidTransition,
     State,
     battery_return_event,
+    mission_state_value,
     parse_event,
     transition,
     validate_low_battery_threshold,
+)
+
+
+MISSION_STATE_QOS = QoSProfile(
+    depth=1,
+    history=HistoryPolicy.KEEP_LAST,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
 )
 
 
@@ -32,9 +47,10 @@ class G3StateMachineNode(Node):
 
         self.declare_parameter("command_topic", "/g3/command")
         self.declare_parameter("state_topic", "/g3/state")
-        self.declare_parameter("battery_topic", "/robot1/battery_state")
+        self.declare_parameter("mission_state_topic", "/mission_state")
+        self.declare_parameter("battery_topic", "/battery_state")
         self.declare_parameter("low_battery_threshold", 0.20)
-        self.declare_parameter("navigate_action", "/robot1/navigate_to_pose")
+        self.declare_parameter("navigate_action", "/navigate_to_pose")
         self.declare_parameter("return_event_topic", "/g3/return_event")
         self.declare_parameter("enable_navigation_transmission", False)
         self.declare_parameter("navigation_server_timeout_sec", 2.0)
@@ -45,6 +61,9 @@ class G3StateMachineNode(Node):
 
         command_topic = str(self.get_parameter("command_topic").value)
         state_topic = str(self.get_parameter("state_topic").value)
+        mission_state_topic = str(
+            self.get_parameter("mission_state_topic").value
+        )
         battery_topic = str(self.get_parameter("battery_topic").value)
         return_event_topic = str(self.get_parameter("return_event_topic").value)
         self._low_battery_threshold = validate_low_battery_threshold(
@@ -60,6 +79,11 @@ class G3StateMachineNode(Node):
 
         self._state = State.STANDBY
         self._state_publisher = self.create_publisher(String, state_topic, 10)
+        self._mission_state_publisher = self.create_publisher(
+            String,
+            mission_state_topic,
+            MISSION_STATE_QOS,
+        )
         self._return_event_publisher = self.create_publisher(
             String, return_event_topic, 10
         )
@@ -106,6 +130,10 @@ class G3StateMachineNode(Node):
             "robot stop command"
         )
         self.get_logger().info(f"RETURN events: topic={return_event_topic}")
+        self.get_logger().info(
+            "G2 mission-state bridge: "
+            f"topic={mission_state_topic}, qos=transient_local"
+        )
         if domain_id == "42":
             if transmission_enabled:
                 self.get_logger().warning(
@@ -218,6 +246,10 @@ class G3StateMachineNode(Node):
         message = String()
         message.data = self._state.value
         self._state_publisher.publish(message)
+
+        mission_message = String()
+        mission_message.data = mission_state_value(self._state)
+        self._mission_state_publisher.publish(mission_message)
 
 
 def main(args: Optional[Sequence[str]] = None) -> None:

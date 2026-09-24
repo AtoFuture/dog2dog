@@ -37,7 +37,7 @@ class NavigateToPoseClient:
     def __init__(
         self,
         node,
-        action_name: str = "/robot1/navigate_to_pose",
+        action_name: str = "/navigate_to_pose",
         *,
         enable_navigation_transmission: bool = False,
         server_timeout_sec: float = 2.0,

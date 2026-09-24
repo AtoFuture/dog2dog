@@ -67,9 +67,9 @@ ros2 topic hz /xxx   # 关键传感器的实际频率
 ### ③ 低电量返航（第 10–12 周）
 
 - 读电量 → 低于阈值 → 发一个回基站的目标点
-- 当前已实现：订阅可配置 `BatteryState` 话题，仅在 `EXPLORE` 且电量低于阈值时自动切换到 `RETURN`。默认话题为 `/robot1/battery_state`，默认阈值为 `0.20`。
+- 当前已实现：订阅可配置 `BatteryState` 话题，仅在 `EXPLORE` 且电量低于阈值时自动切换到 `RETURN`。默认话题为 `/battery_state`，默认阈值为 `0.20`。
 - `enable_navigation_transmission` 默认值为 `false`：自动返航只生成并打印目标预览，不等待 action server，也不发送 goal。
-- 只有显式设为 `true` 时才等待 `/robot1/navigate_to_pose`，发送 home pose，并在 `/g3/return_event` 发布 `std_msgs/String` JSON 事件。事件包含 `attempt_id`、真实 Nav2 `goal_id`（接受/拒绝响应可用后）、触发源、ROS 时间戳、home target 和状态。
+- 只有显式设为 `true` 时才等待 `/navigate_to_pose`，发送 home pose，并在 `/g3/return_event` 发布 `std_msgs/String` JSON 事件。事件包含 `attempt_id`、真实 Nav2 `goal_id`（接受/拒绝响应可用后）、触发源、ROS 时间戳、home target 和状态。
 - 状态链包括 `preview / waiting_for_server / server_unavailable / goal_request_sent / accepted / rejected / succeeded / aborted / canceled`，回调异常也会形成明确失败事件，便于 rosbag 离线追踪。
 - **复用接口 02 的 `NavigateToPose`**，不另开通路。G2 的探索目标点和你们的返航点走同一个入口
 - 加一层：返航途中电量继续掉怎么办（降速 / 就近停靠 / 直接趴下）
@@ -121,6 +121,19 @@ home target 仍由 `home_frame / home_x / home_y / home_yaw` 参数配置。
 - 收 G1：地图与定位（接口 01）
 - 收 G2：`Detection3D`（接口 03）
 - 发 G1：低电量返航的 `NavigateToPose`（复用接口 02）
+- 发 G2：`/mission_state`（`standby / exploring / returning / estop`，可靠、瞬态本地 QoS）
+
+G3 同时保留 `/g3/state` 的大写内部状态，避免破坏现有调试工具。仿真直接向
+`/battery_state` 发布 `sensor_msgs/msg/BatteryState`；真机则先运行 G3 自带的
+`unitree_battery_bridge`，把 Unitree `/lowstate` 中 0–100 的 `bms_state.soc`
+转换成 0–1 的标准电量话题：
+
+```bash
+source /opt/ros/humble/setup.bash
+source /path/to/unitree_ros2/cyclonedds_ws/install/setup.bash
+source /tmp/g3_eval_colcon/install/setup.bash
+ros2 run g3_integration_eval unitree_battery_bridge
+```
 
 ---
 

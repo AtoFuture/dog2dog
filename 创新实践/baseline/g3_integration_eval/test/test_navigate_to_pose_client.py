@@ -121,6 +121,7 @@ def test_transmission_disabled_is_preview_only():
     assert events[0]["trigger"] == "battery"
     assert events[0]["home_target"] == HOME
     assert events[0]["timestamp"] == {"sec": 123, "nanosec": 456}
+    assert events[0]["action_name"] == "/navigate_to_pose"
 
 
 def test_server_unavailable_does_not_send_goal():

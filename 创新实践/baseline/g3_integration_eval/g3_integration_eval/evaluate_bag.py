@@ -18,9 +18,9 @@ from g3_integration_eval.metrics import (
 )
 
 
-BATTERY_TOPIC = "/robot1/battery_state"
-NAV_FEEDBACK_TOPIC = "/robot1/navigate_to_pose/_action/feedback"
-NAV_STATUS_TOPIC = "/robot1/navigate_to_pose/_action/status"
+BATTERY_TOPIC = "/battery_state"
+NAV_FEEDBACK_TOPIC = "/navigate_to_pose/_action/feedback"
+NAV_STATUS_TOPIC = "/navigate_to_pose/_action/status"
 RETURN_EVENT_TOPIC = "/g3/return_event"
 
 DETECTION_TOPIC = "/detections_3d"

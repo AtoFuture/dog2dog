@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PERCENTAGE="${1:-0.19}"
-BATTERY_TOPIC="${2:-/robot1/battery_state}"
+BATTERY_TOPIC="${2:-/battery_state}"
 
 if [[ "${ROS_DOMAIN_ID:-}" != "142" ]]; then
     echo "ERROR: refusing to publish unless ROS_DOMAIN_ID=142" >&2
