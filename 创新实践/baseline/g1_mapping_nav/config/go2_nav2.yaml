@@ -131,7 +131,11 @@ controller_server:
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.5
-      movement_time_allowance: 10.0
+      # 2026-09-24 对齐：仿真工作区那份是 60.0，本仓库一直是 10.0。
+      # nav2_scaled.launch.py 加载的是本文件，所以 P1 那 5 轮实际跑的是 10.0。
+      # 10 s 太紧：准直/重规划阶段一动不到 0.5 m 就判 "Failed to make progress"，
+      # amcl_G5 那轮因此连挨两次中止、到点耗时 86 s（详见 tools/README.md）。
+      movement_time_allowance: 60.0
     # Goal checker parameters
     #precise_goal_checker:
     #  plugin: "nav2_controller::SimpleGoalChecker"

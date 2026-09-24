@@ -71,7 +71,8 @@ GUI=1 GZ_HEADLESS=1 ROS_DOMAIN_ID=43 IGN_PARTITION=wy ./run_sim_iso.sh &
 | `nav2_scaled.launch.py` | 我们自己的 Nav2 启动，把速度输出引到 `cmd_vel_scaled_out` 再经缩放器写回 |
 | `start_nav2_isolated.sh` | 激活控制器 → 起缩放器 → 起 Nav2 |
 | `set_initial_pose.sh` | 从真值设 AMCL 初始位姿 |
-| `goal_test.sh` | 发目标 + 录包 + 真值判定 |
+| `goal_test.sh` | 发目标 + 录包，收尾时自动调 `goal_check.py` |
+| `goal_check.py` | 从包按真值判定到点误差、顺带查「有指令但不动」的冻结段；不通过则 rc=1 |
 
 ## 四、必须知道的三个坑
 
@@ -97,8 +98,25 @@ GUI=1 GZ_HEADLESS=1 ROS_DOMAIN_ID=43 IGN_PARTITION=wy ./run_sim_iso.sh &
 合起来 Nav2 按配置发 0.26 m/s 实际会跑出 ~2.7 m/s、rv 顶到 0.27，
 远超实测稳定边界 **rv < 0.04**（0.06 档就原地蹬腿不前进）。
 
-`cmd_vel_scaler.py` 的系数 0.115 与上游 0.035 相乘正好 ≈0.0345，
-**本质上是把我们这一路恢复到上游默认值**。缩放只落在我们这份配置里，共享代码未动。
+`cmd_vel_scaler.py` 的系数 0.115 乘以本地被改过的 0.3 得 ≈0.0345，
+**本质上是把我们这一路恢复到上游默认值 0.035**。缩放只落在我们这份配置里，共享代码未动。
+
+### 4. 缩放器的死区原来判错了域，会把狗「冻」住（2026-09-24 修）
+
+原实现 `lx = nav × 0.115; if abs(lx) < 0.002: lx = 0` —— 死区判的是**缩放之后**
+的值，等价于把 Nav2 的 `0 ~ 0.0174 m/s` 整段抹成精确的 0。
+而 DWB 在准直/贴路径阶段输出的正是 **0.0137**，一头撞进死区：
+
+    amcl_G5 那一轮（goal (8.00,3.50)）真值原地冻结 44 s，
+    cmd_vel_scaled_out lx=0.01368 → cmd_vel lx=0.0000，
+    progress checker 连报两次 Failed to make progress，
+    到点耗时 86 s，比 80 s 测试预算晚 6 s →
+    这就是交接文档里那条「G5 的 action 未收敛」（**不是**终点朝向容差）。
+
+现在死区判在 Nav2 域，并加了最低可执行速度 `linear_min=0.020`——因为这台狗
+**没有「慢速」档**：实测 cmd 0.02 已经是 0.206 m/s，比它更小的指令只会原地蹬腿。
+副作用要留意：Nav2 现在没有慢速区间了，0.005~0.174 的指令一律给到 ~0.2 m/s。
+配 `movement_time_allowance` 也一并从 10.0 对齐成 60.0（工作区那份一直是 60）。
 
 ## 五、验收结果（2026-09-23）
 
@@ -111,3 +129,7 @@ GUI=1 GZ_HEADLESS=1 ROS_DOMAIN_ID=43 IGN_PARTITION=wy ./run_sim_iso.sh &
 
 **尚未做的**：P1 第 5 项「导航期间保持 SLAM 运行，证明地图能边走边更新」——
 上述验收用的是 AMCL 加载**静态**地图，不是 SLAM 边跑边建图。
+
+⚠️ 上表是 2026-09-23 的验收数字，**用的还是旧的缩放器**。2026-09-24 的死区修复
+（第 4 坑）与 `movement_time_allowance` 对齐都还没有在仿真里重跑过——
+下一轮跑 `goal_test.sh` 时它会在收尾自动给出真值判定，先看那个。

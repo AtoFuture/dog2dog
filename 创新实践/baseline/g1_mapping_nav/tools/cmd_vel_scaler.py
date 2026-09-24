@@ -30,9 +30,25 @@
 
   linear_scale   0.115   sim_linear = nav_linear × 该系数（0.26→0.030）
   linear_max     0.030   sim 线速度上限（对应 rv≈0.030，留出边界余量）
+  linear_min     0.020   sim 线速度下限：只要 Nav2 表示「要动」，至少给这么多
+  nav_deadband   0.005   Nav2 域的死区，低于此值视为「不要动」→ 输出 0
   angular_scale  1.667   实测偏航增益约 0.60，取倒数补偿
   angular_max    1.0     与 cmd_vel_pub 的裁剪一致
-  deadband       0.002   小于此值的速度置零，避免持续抖动
+
+## ⚠️ 2026-09-24 修：死区原来判在错误的域上
+
+原实现是 `lx = nav × 0.115; if abs(lx) < 0.002: lx = 0`——死区判的是**缩放之后**
+的值，等价于把 Nav2 的 `0 ~ 0.0174 m/s` 整段抹成精确的 0。而这正是 DWB 在
+准直/贴路径阶段输出的区间（实测稳定在 0.0137），于是：
+
+    amcl_G5 那一轮（goal (8.00,3.50)）真值原地冻结 44 s，
+    cmd_vel_scaled_out lx=0.01368 → cmd_vel lx=0.0000，
+    progress checker 连报两次 Failed to make progress，
+    到点耗时 86 s 超出 80 s 测试预算。
+
+现在死区判在 Nav2 域，并且给一个最低可执行速度——因为这台狗**根本没有「慢速」**：
+实测 cmd 0.02 就已经是 0.206 m/s，比它更慢的指令只会让它原地蹬腿。
+所以只要 Nav2 说要动，就直接给到 `linear_min`。
 """
 
 import math
@@ -50,17 +66,19 @@ class CmdVelScaler(Node):
         self.declare_parameter("output_topic", "/robot1/cmd_vel")
         self.declare_parameter("linear_scale", 0.115)
         self.declare_parameter("linear_max", 0.030)
+        self.declare_parameter("linear_min", 0.020)
+        self.declare_parameter("nav_deadband", 0.005)
         self.declare_parameter("angular_scale", 1.667)
         self.declare_parameter("angular_max", 1.0)
-        self.declare_parameter("deadband", 0.002)
 
         input_topic = str(self.get_parameter("input_topic").value)
         output_topic = str(self.get_parameter("output_topic").value)
         self._linear_scale = float(self.get_parameter("linear_scale").value)
         self._linear_max = float(self.get_parameter("linear_max").value)
+        self._linear_min = float(self.get_parameter("linear_min").value)
+        self._nav_deadband = float(self.get_parameter("nav_deadband").value)
         self._angular_scale = float(self.get_parameter("angular_scale").value)
         self._angular_max = float(self.get_parameter("angular_max").value)
-        self._deadband = float(self.get_parameter("deadband").value)
 
         self._pub = self.create_publisher(Twist, output_topic, 10)
         self._sub = self.create_subscription(
@@ -69,25 +87,30 @@ class CmdVelScaler(Node):
         self._last_logged = None
         self.get_logger().info(
             f"速度缩放就绪：{input_topic} → {output_topic}；"
-            f"linear×{self._linear_scale}（上限 {self._linear_max}），"
+            f"linear×{self._linear_scale}（{self._linear_min}~{self._linear_max}），"
+            f"nav 死区 {self._nav_deadband}，"
             f"angular×{self._angular_scale}（上限 {self._angular_max}）"
         )
 
     def _clip(self, value, limit):
         return max(-limit, min(limit, value))
 
+    def _linear(self, nav_value: float) -> float:
+        """Nav2 线速度 → sim 线速度。死区判在 **Nav2 域** 而不是缩放后的域。"""
+        if abs(nav_value) < self._nav_deadband:
+            return 0.0
+        scaled = nav_value * self._linear_scale
+        if abs(scaled) < self._linear_min:
+            # 机器人没有「慢速」档：比 linear_min 更小的指令它只会原地蹬腿。
+            scaled = math.copysign(self._linear_min, nav_value)
+        return self._clip(scaled, self._linear_max)
+
     def _on_cmd(self, msg: Twist) -> None:
         out = Twist()
 
-        # 线速度：缩放 + 限幅 + 死区
-        lx = msg.linear.x * self._linear_scale
-        ly = msg.linear.y * self._linear_scale
-        if abs(lx) < self._deadband:
-            lx = 0.0
-        if abs(ly) < self._deadband:
-            ly = 0.0
-        out.linear.x = self._clip(lx, self._linear_max)
-        out.linear.y = self._clip(ly, self._linear_max)
+        # 线速度：缩放 + 最低可执行速度 + 限幅
+        out.linear.x = self._linear(msg.linear.x)
+        out.linear.y = self._linear(msg.linear.y)
         out.linear.z = 0.0
 
         # 角速度：补偿实测增益后裁剪（cmd_vel_pub 也会裁一次）

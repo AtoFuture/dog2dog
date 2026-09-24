@@ -71,8 +71,9 @@ w: $(python3 -c "import math;print(math.cos(${GOAL_YAW}/2))")}}}}" \
 ACTION_RC=$?
 echo "   action 返回码 ${ACTION_RC}（124 = 超时未结束）"
 
-# 3) action 结束的即刻真值（这是判「真到了没有」的依据）
-echo "== 结束时刻真值 =="
+# 3) 结束时刻的真值（只是当场瞄一眼；**判定不靠它**，见第 5 步）
+#    这一步失败过：真值读不出来时 goal_end_gt.txt 会是 0 字节，而脚本照样往下走。
+echo "== 结束时刻真值（当场参考）=="
 timeout 15 ros2 topic echo "${GT_TOPIC}" --once 2>/dev/null \
     | grep -E "^    x:|^    y:" | head -2 | tee "${LOG_DIR}/goal_end_gt.txt"
 
@@ -82,3 +83,13 @@ wait "${REC_PID}" 2>/dev/null
 
 echo "== action 结果摘要 =="
 grep -E "status:|result:|Goal finished" "${LOG_DIR}/goal_action.log" | tail -5
+
+# 5) 按**真值**判定（P1 出口标准：不得仅以 action 的 SUCCEEDED 判定到达）
+#    从刚录完的包里算，不依赖任何在线话题，顺带报「有指令但不动」的冻结段。
+echo
+python3 "${TOOLS_DIR}/goal_check.py" "${OUT}" "${GOAL_X}" "${GOAL_Y}" \
+    --yaw "${GOAL_YAW}" --json "${LOG_DIR}/goal_check.json"
+CHECK_RC=$?
+if [ "${CHECK_RC}" -ne 0 ]; then
+    echo "（判定未通过，rc=${CHECK_RC}）"
+fi
