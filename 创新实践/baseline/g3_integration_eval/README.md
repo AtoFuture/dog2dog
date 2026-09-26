@@ -96,6 +96,19 @@ ros2 topic hz /xxx   # 关键传感器的实际频率
 - 导航成功率定义为 `SUCCEEDED / (SUCCEEDED + ABORTED + CANCELED)`。若本次 bag 没有 observed goal 到达终态，则输出 `unavailable`，而不是误报 `0%`。
 - `/g3/return_event` 将 G3 `RETURN` 尝试与 Nav2 goal UUID 明确关联。离线评估按 `attempt_id` 去重：preview 不进入成功率分母；真实发送后的成功、取消、中止、拒绝、server unavailable 与发送/回调错误进入分母。旧 bag 不含该话题时，`return_success_rate` 仍保持 `unavailable`，原因是 `no_explicit_return_goal_marker`。
 
+Nav2 使用 namespace 时，录包和评测必须传入同一 action 名称。例如 G1 的
+`/robot1/navigate_to_pose`：
+
+```bash
+bash g3_integration_eval/scripts/record_bag.sh experiment \
+  /robot1/navigate_to_pose
+
+ros2 run g3_integration_eval evaluate_bag /path/to/bag \
+  --navigate-action /robot1/navigate_to_pose
+```
+
+不传参时仍默认使用 `/navigate_to_pose`，兼容无 namespace 的环境。
+
 ### 返航发送安全开关
 
 默认启动不会发送导航目标：

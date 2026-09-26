@@ -77,6 +77,27 @@ def return_message(attempt_id, status, goal_id=None):
     )
 
 
+def nav_goal_id(values=range(16)):
+    return SimpleNamespace(uuid=list(values))
+
+
+def nav_feedback(values=range(16)):
+    return SimpleNamespace(goal_id=nav_goal_id(values))
+
+
+def nav_status(status, values=range(16)):
+    return SimpleNamespace(
+        status_list=[
+            SimpleNamespace(
+                goal_info=SimpleNamespace(
+                    goal_id=nav_goal_id(values),
+                ),
+                status=status,
+            )
+        ]
+    )
+
+
 def test_old_bag_keeps_original_return_unavailable_reason(tmp_path, monkeypatch):
     evaluator = load_evaluator(
         monkeypatch,
@@ -133,3 +154,36 @@ def test_malformed_return_event_is_reported_not_fatal(tmp_path, monkeypatch):
     assert report["metrics"]["return_success_rate"]["reason"] == (
         "no_terminal_return_attempt_observed"
     )
+
+
+def test_namespaced_navigation_action_is_evaluated(tmp_path, monkeypatch):
+    action = "/robot1/navigate_to_pose"
+    feedback_topic = f"{action}/_action/feedback"
+    status_topic = f"{action}/_action/status"
+    evaluator = load_evaluator(
+        monkeypatch,
+        {
+            feedback_topic: "nav2_msgs/action/NavigateToPose_FeedbackMessage",
+            status_topic: "action_msgs/msg/GoalStatusArray",
+        },
+        [
+            (feedback_topic, nav_feedback(), 1),
+            (status_topic, nav_status(2), 2),
+            (status_topic, nav_status(4), 3),
+        ],
+    )
+
+    report = evaluator.evaluate_bag(
+        str(tmp_path),
+        navigate_action="robot1/navigate_to_pose/",
+    )
+
+    assert report["navigation"]["action_name"] == action
+    assert report["navigation"]["feedback_topic"] == feedback_topic
+    assert report["navigation"]["status_topic"] == status_topic
+    assert report["navigation"]["feedback_messages"] == 1
+    assert report["navigation"]["status_messages"] == 2
+    assert report["navigation"]["succeeded"] == 1
+    assert report["metrics"]["navigation_success_rate"][
+        "value"
+    ] == pytest.approx(1.0)

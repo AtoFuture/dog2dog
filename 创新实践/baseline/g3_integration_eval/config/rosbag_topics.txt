@@ -17,5 +17,6 @@
 /g3/state
 /mission_state
 /g3/return_event
+# record_bag.sh replaces these defaults for a namespaced action.
 /navigate_to_pose/_action/feedback
 /navigate_to_pose/_action/status
