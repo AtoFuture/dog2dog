@@ -96,6 +96,19 @@ ros2 topic hz /xxx   # 关键传感器的实际频率
 - 导航成功率定义为 `SUCCEEDED / (SUCCEEDED + ABORTED + CANCELED)`。若本次 bag 没有 observed goal 到达终态，则输出 `unavailable`，而不是误报 `0%`。
 - `/g3/return_event` 将 G3 `RETURN` 尝试与 Nav2 goal UUID 明确关联。离线评估按 `attempt_id` 去重：preview 不进入成功率分母；真实发送后的成功、取消、中止、拒绝、server unavailable 与发送/回调错误进入分母。旧 bag 不含该话题时，`return_success_rate` 仍保持 `unavailable`，原因是 `no_explicit_return_goal_marker`。
 
+Nav2 使用 namespace 时，录包和评测必须传入同一 action 名称。例如 G1 的
+`/robot1/navigate_to_pose`：
+
+```bash
+bash g3_integration_eval/scripts/record_bag.sh experiment \
+  /robot1/navigate_to_pose
+
+ros2 run g3_integration_eval evaluate_bag /path/to/bag \
+  --navigate-action /robot1/navigate_to_pose
+```
+
+合并后的联调环境默认使用 `/robot1/navigate_to_pose`；无 namespace 的环境可显式传入 `/navigate_to_pose`。
+
 ### 返航发送安全开关
 
 默认启动不会发送导航目标：
@@ -121,6 +134,19 @@ home target 仍由 `home_frame / home_x / home_y / home_yaw` 参数配置。
 - 收 G1：地图与定位（接口 01）
 - 收 G2：`Detection3D`（接口 03）
 - 发 G1：低电量返航的 `NavigateToPose`（复用接口 02）
+- 发 G2：`/mission_state`（`standby / exploring / returning / estop`，可靠、瞬态本地 QoS）
+
+G3 同时保留 `/g3/state` 的大写内部状态，避免破坏现有调试工具。仿真直接向
+`/robot1/battery_state` 发布 `sensor_msgs/msg/BatteryState`；真机则先运行 G3 自带的
+`unitree_battery_bridge`，把 Unitree `/lowstate` 中 0–100 的 `bms_state.soc`
+转换成 0–1 的标准电量话题：
+
+```bash
+source /opt/ros/humble/setup.bash
+source /path/to/unitree_ros2/cyclonedds_ws/install/setup.bash
+source /tmp/g3_eval_colcon/install/setup.bash
+ros2 run g3_integration_eval unitree_battery_bridge
+```
 
 ---
 

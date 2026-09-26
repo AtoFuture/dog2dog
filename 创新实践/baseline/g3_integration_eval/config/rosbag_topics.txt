@@ -13,6 +13,10 @@
 /robot1/cmd_vel
 /robot1/cmd_vel_nav
 /robot1/battery_state
+/g3/command
+/g3/state
+/mission_state
 /g3/return_event
-/robot1/navigate_to_pose/_action/feedback
-/robot1/navigate_to_pose/_action/status
+# record_bag.sh replaces these defaults for a namespaced action.
+/navigate_to_pose/_action/feedback
+/navigate_to_pose/_action/status

@@ -19,19 +19,41 @@ from g3_integration_eval.metrics import (
 
 
 BATTERY_TOPIC = "/robot1/battery_state"
-NAV_FEEDBACK_TOPIC = "/robot1/navigate_to_pose/_action/feedback"
-NAV_STATUS_TOPIC = "/robot1/navigate_to_pose/_action/status"
+DEFAULT_NAVIGATE_ACTION = "/robot1/navigate_to_pose"
 RETURN_EVENT_TOPIC = "/g3/return_event"
 
 DETECTION_TOPIC = "/detections_3d"
 DETECTION_SNAPSHOT_TOPIC = "/detections_snapshot"
 
 
+def navigation_topic_names(action_name: str) -> tuple[str, str, str]:
+    """Return the canonical action name and its feedback/status topics."""
+    if not isinstance(action_name, str) or not action_name.strip():
+        raise ValueError("navigate action name must not be empty")
+
+    canonical_name = "/" + action_name.strip().strip("/")
+    if canonical_name == "/":
+        raise ValueError("navigate action name must not be root")
+
+    return (
+        canonical_name,
+        f"{canonical_name}/_action/feedback",
+        f"{canonical_name}/_action/status",
+    )
+
+
 def evaluate_bag(
     bag_path: str,
     reference_map: str = None,
     slam_map: str = None,
+    navigate_action: str = DEFAULT_NAVIGATE_ACTION,
 ) -> dict:
+    (
+        navigate_action,
+        nav_feedback_topic,
+        nav_status_topic,
+    ) = navigation_topic_names(navigate_action)
+
     bag_dir = Path(bag_path).expanduser().resolve()
 
     if not bag_dir.exists():
@@ -78,14 +100,14 @@ def evaluate_bag(
             topic_types[BATTERY_TOPIC]
         )
 
-    if NAV_FEEDBACK_TOPIC in topic_types:
+    if nav_feedback_topic in topic_types:
         nav_feedback_msg_type = get_message(
-            topic_types[NAV_FEEDBACK_TOPIC]
+            topic_types[nav_feedback_topic]
         )
 
-    if NAV_STATUS_TOPIC in topic_types:
+    if nav_status_topic in topic_types:
         nav_status_msg_type = get_message(
-            topic_types[NAV_STATUS_TOPIC]
+            topic_types[nav_status_topic]
         )
 
     if RETURN_EVENT_TOPIC in topic_types:
@@ -126,7 +148,7 @@ def evaluate_bag(
             )
 
         elif (
-            topic_name == NAV_FEEDBACK_TOPIC
+            topic_name == nav_feedback_topic
             and nav_feedback_msg_type is not None
         ):
             message = deserialize_message(
@@ -138,7 +160,7 @@ def evaluate_bag(
             )
 
         elif (
-            topic_name == NAV_STATUS_TOPIC
+            topic_name == nav_status_topic
             and nav_status_msg_type is not None
         ):
             message = deserialize_message(
@@ -283,12 +305,15 @@ def evaluate_bag(
             sorted(topic_counts.items())
         ),
         "navigation": {
+            "action_name": navigate_action,
+            "feedback_topic": nav_feedback_topic,
+            "status_topic": nav_status_topic,
             "feedback_messages": topic_counts.get(
-                NAV_FEEDBACK_TOPIC,
+                nav_feedback_topic,
                 0,
             ),
             "status_messages": topic_counts.get(
-                NAV_STATUS_TOPIC,
+                nav_status_topic,
                 0,
             ),
             "observed_goal_count": (
@@ -442,6 +467,16 @@ def main():
         ),
     )
 
+    parser.add_argument(
+        "--navigate-action",
+        default=DEFAULT_NAVIGATE_ACTION,
+        help=(
+            "NavigateToPose action name. Its _action/feedback and "
+            "_action/status topics are evaluated (default: "
+            f"{DEFAULT_NAVIGATE_ACTION})."
+        ),
+    )
+
     args = parser.parse_args()
 
     if bool(args.reference_map) != bool(args.slam_map):
@@ -454,6 +489,7 @@ def main():
         args.bag_path,
         reference_map=args.reference_map,
         slam_map=args.slam_map,
+        navigate_action=args.navigate_action,
     )
 
     report_file = write_report(

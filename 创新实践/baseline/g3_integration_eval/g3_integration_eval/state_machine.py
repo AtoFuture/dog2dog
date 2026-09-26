@@ -40,6 +40,23 @@ _TRANSITIONS = {
 }
 
 
+_MISSION_STATE_VALUES = {
+    State.STANDBY: "standby",
+    State.EXPLORE: "exploring",
+    State.RETURN: "returning",
+    State.ESTOP: "estop",
+}
+
+
+def mission_state_value(state: State) -> str:
+    """Translate the internal G3 state to the G2 mission-state contract."""
+
+    try:
+        return _MISSION_STATE_VALUES[state]
+    except KeyError as exc:
+        raise ValueError(f"unsupported G3 state: {state!r}") from exc
+
+
 def parse_event(raw_event: str) -> Event:
     """Normalize a command string and convert it to an Event."""
 
