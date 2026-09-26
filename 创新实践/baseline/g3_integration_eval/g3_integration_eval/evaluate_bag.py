@@ -42,17 +42,29 @@ def navigation_topic_names(action_name: str) -> tuple[str, str, str]:
     )
 
 
+def canonical_topic_name(topic_name: str) -> str:
+    """Return a canonical absolute ROS topic name."""
+    if not isinstance(topic_name, str) or not topic_name.strip():
+        raise ValueError("topic name must not be empty")
+    canonical_name = "/" + topic_name.strip().strip("/")
+    if canonical_name == "/":
+        raise ValueError("topic name must not be root")
+    return canonical_name
+
+
 def evaluate_bag(
     bag_path: str,
     reference_map: str = None,
     slam_map: str = None,
     navigate_action: str = DEFAULT_NAVIGATE_ACTION,
+    battery_topic: str = BATTERY_TOPIC,
 ) -> dict:
     (
         navigate_action,
         nav_feedback_topic,
         nav_status_topic,
     ) = navigation_topic_names(navigate_action)
+    battery_topic = canonical_topic_name(battery_topic)
 
     bag_dir = Path(bag_path).expanduser().resolve()
 
@@ -95,9 +107,9 @@ def evaluate_bag(
     nav_status_msg_type = None
     return_event_msg_type = None
 
-    if BATTERY_TOPIC in topic_types:
+    if battery_topic in topic_types:
         battery_msg_type = get_message(
-            topic_types[BATTERY_TOPIC]
+            topic_types[battery_topic]
         )
 
     if nav_feedback_topic in topic_types:
@@ -135,7 +147,7 @@ def evaluate_bag(
         last_timestamp_ns = timestamp_ns
 
         if (
-            topic_name == BATTERY_TOPIC
+            topic_name == battery_topic
             and battery_msg_type is not None
         ):
             message = deserialize_message(
@@ -359,6 +371,7 @@ def evaluate_bag(
             ),
         },
         "battery": {
+            "topic": battery_topic,
             "sample_count": battery.sample_count,
             "minimum": battery.minimum,
             "maximum": battery.maximum,
@@ -477,6 +490,15 @@ def main():
         ),
     )
 
+    parser.add_argument(
+        "--battery-topic",
+        default=BATTERY_TOPIC,
+        help=(
+            "BatteryState topic evaluated (default: "
+            f"{BATTERY_TOPIC})."
+        ),
+    )
+
     args = parser.parse_args()
 
     if bool(args.reference_map) != bool(args.slam_map):
@@ -490,6 +512,7 @@ def main():
         reference_map=args.reference_map,
         slam_map=args.slam_map,
         navigate_action=args.navigate_action,
+        battery_topic=args.battery_topic,
     )
 
     report_file = write_report(

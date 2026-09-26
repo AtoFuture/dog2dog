@@ -26,6 +26,7 @@ setup(
             "g3_state_machine = g3_integration_eval.state_machine_node:main",
             "unitree_battery_bridge = "
             "g3_integration_eval.unitree_battery_bridge_node:main",
+            "sim_battery = g3_integration_eval.sim_battery_node:main",
             "evaluate_bag = g3_integration_eval.evaluate_bag:main",
             "mission_brain = g3_integration_eval.mission_brain_node:main",
         ],

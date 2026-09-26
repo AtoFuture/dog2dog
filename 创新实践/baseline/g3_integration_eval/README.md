@@ -74,6 +74,40 @@ ros2 topic hz /xxx   # 关键传感器的实际频率
 - **复用接口 02 的 `NavigateToPose`**，不另开通路。G2 的探索目标点和你们的返航点走同一个入口
 - 加一层：返航途中电量继续掉怎么办（降速 / 就近停靠 / 直接趴下）
 
+### 仿真连续耗电与自动返航
+
+G1 自带的 `/robot1/battery_state` 固定为 80%，不能表示真实耗电。联调时启动
+G3 的 `sim_battery`，使用独立话题 `/g3/sim_battery_state`，避免与固定假 BMS
+互相覆盖。节点根据 `/robot1/cmd_vel` 判断是否运动：运动时快速耗电，静止时
+按较慢速率耗电。
+
+```bash
+# 终端 1：连续电量。比例和速率均以 0–1 表示；下面约 30 秒运动后到 20%。
+ros2 run g3_integration_eval sim_battery --ros-args \
+  -p use_sim_time:=true \
+  -p initial_percentage:=0.23 \
+  -p idle_drain_per_sec:=0.0001 \
+  -p moving_drain_per_sec:=0.001
+
+# 终端 2：让 G3 监听连续电量话题并允许真实返航。
+ros2 run g3_integration_eval g3_state_machine --ros-args \
+  -p use_sim_time:=true \
+  -p battery_topic:=/g3/sim_battery_state \
+  -p enable_navigation_transmission:=true
+```
+
+进入 `EXPLORE` 后，电量会逐步下降；严格低于 `0.20` 时，G3 切换到
+`RETURN` 并发送 home goal。录包和评测应使用相同电量话题：
+
+```bash
+bash g3_integration_eval/scripts/record_bag.sh experiment \
+  /robot1/navigate_to_pose /g3/sim_battery_state
+
+ros2 run g3_integration_eval evaluate_bag /path/to/bag \
+  --navigate-action /robot1/navigate_to_pose \
+  --battery-topic /g3/sim_battery_state
+```
+
 ### ④ 指标评测（第 13–16 周）
 
 | 指标 | 定义 | 目标 |

@@ -187,3 +187,25 @@ def test_namespaced_navigation_action_is_evaluated(tmp_path, monkeypatch):
     assert report["metrics"]["navigation_success_rate"][
         "value"
     ] == pytest.approx(1.0)
+
+
+def test_custom_battery_topic_is_evaluated(tmp_path, monkeypatch):
+    topic = "/g3/sim_battery_state"
+    evaluator = load_evaluator(
+        monkeypatch,
+        {topic: "sensor_msgs/msg/BatteryState"},
+        [
+            (topic, SimpleNamespace(percentage=0.30), 1),
+            (topic, SimpleNamespace(percentage=0.20), 2),
+        ],
+    )
+
+    report = evaluator.evaluate_bag(
+        str(tmp_path),
+        battery_topic="g3/sim_battery_state/",
+    )
+
+    assert report["battery"]["topic"] == topic
+    assert report["battery"]["sample_count"] == 2
+    assert report["battery"]["minimum"] == pytest.approx(0.20)
+    assert report["battery"]["maximum"] == pytest.approx(0.30)

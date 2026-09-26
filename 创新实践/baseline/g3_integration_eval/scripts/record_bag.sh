@@ -7,6 +7,7 @@ TOPIC_FILE="${G3_DIR}/config/rosbag_topics.txt"
 
 EXPERIMENT_NAME="${1:-experiment}"
 NAVIGATE_ACTION="${G3_NAVIGATE_ACTION:-${2:-/robot1/navigate_to_pose}}"
+BATTERY_TOPIC="${G3_BATTERY_TOPIC:-${3:-/robot1/battery_state}}"
 BAG_ROOT="${G3_BAG_DIR:-/home/wy/g3_bags}"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 OUTPUT_DIR="${BAG_ROOT}/${EXPERIMENT_NAME}_${TIMESTAMP}"
@@ -19,6 +20,12 @@ fi
 if [[ ! "${NAVIGATE_ACTION}" =~ ^/[A-Za-z0-9_/-]+$ ]] \
     || [[ "${NAVIGATE_ACTION}" == */ ]]; then
     echo "ERROR: navigate action must be an absolute ROS name without a trailing slash" >&2
+    exit 2
+fi
+
+if [[ ! "${BATTERY_TOPIC}" =~ ^/[A-Za-z0-9_/-]+$ ]] \
+    || [[ "${BATTERY_TOPIC}" == */ ]]; then
+    echo "ERROR: battery topic must be an absolute ROS name without a trailing slash" >&2
     exit 2
 fi
 
@@ -37,6 +44,9 @@ for index in "${!TOPICS[@]}"; do
         /navigate_to_pose/_action/status)
             TOPICS[index]="${NAV_STATUS_TOPIC}"
             ;;
+        /robot1/battery_state)
+            TOPICS[index]="${BATTERY_TOPIC}"
+            ;;
     esac
 done
 
@@ -50,6 +60,7 @@ mkdir -p "${BAG_ROOT}"
 echo "Experiment : ${EXPERIMENT_NAME}"
 echo "ROS domain : ${ROS_DOMAIN_ID:-unset}"
 echo "Nav action : ${NAVIGATE_ACTION}"
+echo "Battery    : ${BATTERY_TOPIC}"
 echo "Output     : ${OUTPUT_DIR}"
 echo "Topics     : ${#TOPICS[@]}"
 echo
