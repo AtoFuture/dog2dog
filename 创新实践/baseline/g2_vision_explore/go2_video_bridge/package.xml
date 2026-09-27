@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>go2_video_bridge</name>
+  <version>0.1.0</version>
+  <description>
+    Go2 前视 Go2FrontVideoData H.264 字节流到 sensor_msgs/Image 的独立桥接节点。
+    解码器按连续 H.264 字节流处理，不假设 ROS 消息边界等于视频帧边界。
+  </description>
+  <maintainer email="240923267+AtoFuture@users.noreply.github.com">AtoFuture</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <build_depend>pkg-config</build_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>unitree_go</depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
