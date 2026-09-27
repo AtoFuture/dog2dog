@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pytest
 
 from builtin_interfaces.msg import Time
@@ -146,10 +147,17 @@ def _fake_node(snapshot=False):
     class _N(VisionDetector):
         def __init__(self):
             self._det_pub = _Capture()
+            self._snap_pub = _Capture()
             self._log = _Log()
             self._snap = snapshot
+            self._last_color = np.zeros((100, 100, 3), dtype=np.uint8)
 
-        _DEFAULTS = {"publish_snapshot": False, "fall_min_keypoint_conf": 0.5}
+        _DEFAULTS = {
+            "publish_snapshot": False,
+            "fall_min_keypoint_conf": 0.5,
+            "snapshot_margin_px": 8,
+            "snapshot_quality": 80,
+        }
 
         def get_parameter(self, name):
             if name == "publish_snapshot":
@@ -160,9 +168,6 @@ def _fake_node(snapshot=False):
 
         def get_logger(self):
             return self._log
-
-        def _publish_snapshot(self, *a, **k):
-            raise AssertionError("本用例不该走到抓拍")
 
     return _N()
 
@@ -188,6 +193,82 @@ def test_normal_detection_sends_nan_not_zero_for_torso_fields():
     assert math.isnan(msg.torso_height_m), "普通检测的高度必须是 NaN，不是 0"
     assert msg.onset_stamp.sec == 0 and msg.onset_stamp.nanosec == 0, \
         "契约：非异常类的 onset_stamp 填 0"
+
+
+def _normal_det(bbox=(10.0, 10.0, 30.0, 30.0), track_id=3):
+    return Detection2D(
+        class_name="person", class_id=0, confidence=0.9,
+        bbox_xyxy=bbox, track_id=track_id,
+    )
+
+
+def test_snapshot_disabled_sets_has_snapshot_false_and_publishes_none():
+    node = _fake_node(snapshot=False)
+
+    node._publish_detection(_normal_det(), Pose(), Time())
+
+    assert node._det_pub.msgs[0].has_snapshot is False
+    assert node._snap_pub.msgs == []
+
+
+def test_valid_snapshot_sets_has_snapshot_true_and_publishes_one_snapshot():
+    node = _fake_node(snapshot=True)
+
+    node._publish_detection(_normal_det(), Pose(), Time())
+
+    assert node._det_pub.msgs[0].has_snapshot is True
+    assert len(node._snap_pub.msgs) == 1
+    assert node._snap_pub.msgs[0].image.format == "jpeg"
+    assert len(node._snap_pub.msgs[0].image.data) > 0
+
+
+def test_invalid_roi_sets_has_snapshot_false_and_publishes_none():
+    node = _fake_node(snapshot=True)
+
+    node._publish_detection(
+        _normal_det(bbox=(-40.0, -40.0, -20.0, -20.0)), Pose(), Time())
+
+    assert node._det_pub.msgs[0].has_snapshot is False
+    assert node._snap_pub.msgs == []
+
+
+def test_jpeg_encode_failure_sets_has_snapshot_false(monkeypatch):
+    from vision_detector import detector_node
+
+    monkeypatch.setattr(detector_node.cv2, "imencode", lambda *args, **kwargs: (False, None))
+    node = _fake_node(snapshot=True)
+
+    node._publish_detection(_normal_det(), Pose(), Time())
+
+    assert node._det_pub.msgs[0].has_snapshot is False
+    assert node._snap_pub.msgs == []
+
+
+def test_fall_detection_uses_actual_snapshot_result():
+    node = _fake_node(snapshot=True)
+
+    node._publish_fall(
+        _event(), _normal_det(), Time(), (1.0, 2.0, 0.2), 0.9)
+
+    assert node._det_pub.msgs[0].source == "pose"
+    assert node._det_pub.msgs[0].has_snapshot is True
+    assert len(node._snap_pub.msgs) == 1
+
+
+def test_fall_detection_clears_snapshot_flag_when_roi_is_invalid():
+    node = _fake_node(snapshot=True)
+
+    node._publish_fall(
+        _event(),
+        _normal_det(bbox=(-40.0, -40.0, -20.0, -20.0)),
+        Time(),
+        (1.0, 2.0, 0.2),
+        0.9,
+    )
+
+    assert node._det_pub.msgs[0].source == "pose"
+    assert node._det_pub.msgs[0].has_snapshot is False
+    assert node._snap_pub.msgs == []
 
 
 # ----------------------------------------------------------------------

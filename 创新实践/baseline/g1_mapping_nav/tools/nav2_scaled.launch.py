@@ -22,11 +22,26 @@
 注意 `nav2_bringup` 的 velocity_smoother 已经把 `cmd_vel_smoothed` 映射成了
 `cmd_vel`，所以对 `cmd_vel` 的重映射正好落在它的输出上。
 
+## slam 开关（P1 第 5 项）
+
+`slam:=true` 时把 `slam` 透传给 `nav2_bringup`，它会用 `slam_launch.py`
+（slam_toolbox）替掉 map_server + amcl，`map→odom` 改由 slam_toolbox 发布。
+**这是唯一一处差别**——速度缩放那套接线两条路完全一样。
+
+默认 `false`，AMCL 那条路一个字节没动，已通过的 P1 证据仍可复现。
+
+注意走 slam 时**不要**再跑 `set_initial_pose.sh`：那是给 AMCL 补初始位姿的
+（配置里没有 set_initial_pose）；slam_toolbox 从第一帧 scan 自己起图。
+`map:=` 参数在 slam 模式下被 bringup 忽略。
+
 用法：
     ros2 launch <本文件> map:=/path/to/map.yaml
+    ros2 launch <本文件> slam:=true
 参数：
-    map          地图 yaml（必填）
-    params_file  Nav2 参数（默认用我们仓库里那份 config/go2_nav2.yaml）
+    map          地图 yaml（AMCL 模式用；slam:=true 时忽略）
+    slam         默认 false；true = slam_toolbox 边跑边建图
+    params_file  Nav2 参数（默认用我们仓库里那份 config/go2_nav2.yaml，
+                 里面同时含 slam_toolbox 段）
     use_sim_time 默认 true
 """
 
@@ -47,6 +62,10 @@ from launch_ros.actions import SetRemap
 DEFAULT_PARAMS = (
     "/home/wy/data1/创新实践/baseline/g1_mapping_nav/config/go2_nav2.yaml"
 )
+# AMCL 模式的地图默认值。给默认值是为了 slam:=true 时不必再编一个用不到的路径。
+DEFAULT_MAP = (
+    "/home/wy/go2_sim_ws/ROS2-Gazebo-GO2/src/navigation2/maps/warehouse_map.yaml"
+)
 
 ROBOT_NAMESPACE = "robot1"
 # Nav2 最终速度输出的话题。仿真自带 cmd_vel_pub 订阅的是 /robot1/cmd_vel，
@@ -58,7 +77,17 @@ NAV_OUTPUT_TOPIC = "cmd_vel_scaled_out"
 def generate_launch_description():
     ld = LaunchDescription()
 
-    map_arg = DeclareLaunchArgument("map", description="地图 yaml 路径")
+    map_arg = DeclareLaunchArgument(
+        "map", default_value=DEFAULT_MAP, description="地图 yaml 路径（AMCL 模式用）"
+    )
+    # ⚠️ 值必须是 Python 风格的 True/False，不能写 true/false：
+    # nav2_bringup 用 IfCondition(slam) 判断，它把这个字符串**当 Python 表达式求值**，
+    # 传 'true' 会直接 `name 'true' is not defined` 把整个 launch 打挂。
+    slam_arg = DeclareLaunchArgument(
+        "slam",
+        default_value="False",
+        description="True = 用 slam_toolbox 边跑边建图（P1 第 5 项），替掉 amcl",
+    )
     params_arg = DeclareLaunchArgument(
         "params_file", default_value=DEFAULT_PARAMS, description="Nav2 参数文件"
     )
@@ -66,6 +95,7 @@ def generate_launch_description():
         "use_sim_time", default_value="true", description="使用仿真时间"
     )
     ld.add_action(map_arg)
+    ld.add_action(slam_arg)
     ld.add_action(params_arg)
     ld.add_action(sim_time_arg)
 
@@ -79,6 +109,7 @@ def generate_launch_description():
         ),
         launch_arguments={
             "map": LaunchConfiguration("map"),
+            "slam": LaunchConfiguration("slam"),
             "use_sim_time": LaunchConfiguration("use_sim_time"),
             "params_file": LaunchConfiguration("params_file"),
             "use_namespace": "true",

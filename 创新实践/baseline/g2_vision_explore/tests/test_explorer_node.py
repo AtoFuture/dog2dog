@@ -24,6 +24,8 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -37,6 +39,7 @@ from nav_msgs.msg import OccupancyGrid  # noqa: E402
 from vision_explorer.explorer_node import (  # noqa: E402
     occupancy_to_grid,
     select_and_report,
+    yaw_to_quaternion,
 )
 
 
@@ -200,3 +203,21 @@ def test_machine_can_carry_on_after_a_retryable_status():
     assert sm.next_command() is Command.SEND_GOAL, (
         "回到 IDLE 后必须能再次要求发点；返回 NONE 就说明卡死了"
     )
+
+
+@pytest.mark.parametrize(
+    ("yaw", "expected_z", "expected_w"),
+    [
+        (0.0, 0.0, 1.0),
+        (math.pi / 2.0, math.sqrt(0.5), math.sqrt(0.5)),
+        (math.pi, 1.0, 0.0),
+    ],
+)
+def test_yaw_to_quaternion_preserves_frontier_heading(yaw, expected_z, expected_w):
+    qx, qy, qz, qw = yaw_to_quaternion(yaw)
+
+    assert qx == pytest.approx(0.0)
+    assert qy == pytest.approx(0.0)
+    assert qz == pytest.approx(expected_z)
+    assert qw == pytest.approx(expected_w)
+    assert math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw) == pytest.approx(1.0)
