@@ -1,87 +1,62 @@
 # G2 · 视觉探索
 
 > 目标检测 · 三维定位 · 探索决策 · 异常识别
+>
+> 本页按 2026-09-27 的源码、测试和离线运行产物同步；总体设计与历史审计记录见 [`docs/框架规划.md`](docs/框架规划.md)。
 
-**人**：2 人
+## 当前进度
 
----
+### 【已实现】
 
-## 交付物
+- Frontier 的 `Goal.yaw` 已转换为绕 Z 轴的单位四元数，并发送到 `NavigateToPose.orientation`；目标朝向表示抵达 frontier 后面向附近未知区域的方向。
+- `Detection3D.has_snapshot` 已按 Snapshot 实际构造并进入发布路径的结果设置；普通检测和倒地事件共用这一语义。
+- 独立 `go2_video_bridge` ROS2 package：`Go2FrontVideoData.video720p` 输入、持久化 H.264 streaming parser、libavcodec 解码、libswscale 转 BGR，以及 `sensor_msgs/Image` 输出。
+- Bridge 的 `input_topic`、`output_topic`、`video_stream`、`frame_id` 均参数化，并带有输入消息数、payload 字节数、parser packet 数、解码/发布帧数、错误数、分辨率、频率和原始 `time_frame` 统计。
 
-| # | 交付物 | 验收标准 |
-|---|---|---|
-| 1 | 目标检测消息 `Detection3D` | 类别 / 置信度 / 三维坐标 / 时间戳 / 抓拍图 |
-| 2 | 探索目标点 | 发 `NavigateToPose`，让 G1 走过去 |
-| 3 | 异常识别 | 人员倒地、设备冒烟等在演示场景里能报出来 |
+### 【离线验证通过】
 
----
+- 针对 Frontier 朝向和 Snapshot 语义的测试：**29 passed，0 failed，0 skipped**。
+- 真实 Ultralytics 离线运行：`yolo26n.pt` + `fall-01-cam0.mp4` + 真实 `Detector.track()`；检出 `person`，confidence 约 `0.79–0.86`，`track id=1`。这是真实素材上的离线结果，不是真机结果。
+- Go2 Bridge：用现有 `fall-01-cam0.mp4` 生成 Annex-B H.264；chunk 大小 `1 / 7 / 188 / 1024 / 4096 / fixed random(seed=20260927)` 每种均解出 **160 frames**，`packets=160`、`errors=0`、分辨率 `640x240`，每帧缓冲区尺寸正确。
+- Bridge 的 C++ build、CTest/colcon test 和节点 launch smoke 均通过。launch smoke 只验证节点可启动，不等同于真机 ROS 图验证。
 
-## 一句话职责
+### 【真机未验证】
 
-**只决定「去哪」，不碰「怎么走」。**
+- Go2 真机 H.264 解码和 `/frontvideostream` 实际 QoS、`video720p` payload 边界、真机分辨率。
+- `time_frame` 单位/时钟源、真实 acquisition timestamp、camera frame 和 camera 外参。
+- G2 可用的真实 PointCloud2 输入；RGB + L1 三维目标定位。
+- 视觉目标的 map 定位、边建图边搜索完整闭环、真机 Nav2/探索闭环，以及 Foxy ↔ Humble 跨版本链路。
 
-```
-你们（决策层）               G1（执行层）
-frontier / 信息增益    ──▶    Nav2 路径规划
-「下一片没探过的区域」         代价地图 / 绕障 / TF
-```
+离线 H.264 流验证**不表示 Go2 真机视频已跑通**。
 
-路线怎么规划、怎么绕障、代价地图怎么配——全部是 G1 的。你们只管把一个目标点发出去。这条边界划清楚了，两组才能并行开工、各自独立调试。
+## 当前接口
 
----
+### Go2 前视视频 Bridge
 
-## 任务分解
-
-### ① 目标检测 + 三维定位（第 6–10 周）
-
-- **ultralytics 最新版**直接 `pip install ultralytics`，用预训练 80 类权重，**零训练成本**（这是选这个课题的核心原因之一）
-- 三维坐标解算两条路：
-  - 深度相机 → 像素 + 深度 → 相机系坐标 → 经 TF 转到 `map` 系
-  - 单目 + 地面假设 → 像素 + 相机高度与俯仰角 → 地面交点
-- **TF 变换依赖 G1**，但你们不需要等他们——先用一个静态的假 TF 把逻辑跑通，等 G1 的 TF 树出来再接真的
-
-### ② 探索策略（第 8–12 周）
-
-- **frontier 探索**：栅格地图上已建图与未知区域的边界，选信息增益最大的那个
-- 可用 `explore_lite` 起步，但大概率要自己改——它的启发式比较朴素，加信息增益项就是你们的增量工作
-- 输出：给选中 frontier 一个目标点，发 `NavigateToPose`
-- ⚠️ 别把「未探索区域中间的某个点」当成目标发出去——那是墙里。要在 frontier 上取**可通行**的单元格
-
-### ③ 异常识别（第 10–14 周，加分项）
-
-- **用姿态估计代替标注**：人体长宽比 + 躯干朝向判倒地。不需要额外标注数据，零训练成本
-- 让「侦查」从「找到人」升级到「判断异常」
-
----
-
-## 对外接口
-
-**收进来（接口 01）**：G1 的地图与定位
-- `nav_msgs/OccupancyGrid` — frontier 探索的输入
-- `sensor_msgs/PointCloud2` — 可选的障碍判断
-- TF `map → base_link` — 三维坐标解算用
-
-**发出去**：
-- 接口 02 → G1：`NavigateToPose`（探索目标点）
-- 接口 03 → G3：`Detection3D`（自定义消息）
-
-### `Detection3D` 字段（第一周冻结）
-
-```
-string   class_name        # 类别
-float32  confidence        # 置信度
-geometry_msgs/Pose       pose      # 三维坐标（map 系）
-builtin_interfaces/Time  stamp     # 时间戳
-sensor_msgs/Image        snapshot  # 抓拍图
+```text
+/frontvideostream (unitree_go/msg/Go2FrontVideoData)
+  -> video720p 连续 H.264 字节流
+  -> go2_video_bridge_node
+  -> /camera/go2/image_raw (sensor_msgs/Image, bgr8)
 ```
 
-> 加字段随时可以，改语义（比如 `pose` 从相机系改成机体系）必须全队通知。
+默认 topic：
 
----
+- 输入：`/frontvideostream`
+- 输出：`/camera/go2/image_raw`
+- QoS：输入/输出 `SensorDataQoS`
 
-## 本周要干的事
+Bridge 的具体边界、构建命令和离线测试见 [`go2_video_bridge/README.md`](go2_video_bridge/README.md)。
 
-- [ ] 起一个 ROS2 包，把 `Detection3D` 的消息定义写出来，合进 `main`（这是接口 03，越早冻结越好）
-- [ ] ultralytics 跑通，对着离线图片或视频先测检测效果
-- [ ] 用假 TF + 假深度图，把「像素 → 三维坐标」的变换链路跑通
-- [ ] 不用等 G1，仿真环境没好之前这些都能做
+`Go2FrontVideoData` 没有标准 ROS Header。Bridge 使用节点时钟在解码/发布时取得的时间作为输出 `header.stamp`；只记录原始 `time_frame`，不猜测其单位或时钟语义。`frame_id` 默认为空，启动时会 warning；在三维定位前必须配置真实 camera frame 和外参。Bridge 不发布 `CameraInfo`，不伪造深度。
+
+正式检测接口以 [`baseline/interfaces/vision_interfaces/msg/Detection3D.msg`](../interfaces/vision_interfaces/msg/Detection3D.msg) 和 [`DetectionSnapshot.msg`](../interfaces/vision_interfaces/msg/DetectionSnapshot.msg) 为准，不在本包内修改消息定义。
+
+## 尚未闭环的任务
+
+1. 上 Go2 真机验证视频 QoS、payload 边界、解码、时间和 frame 语义。
+2. 确认/接入 G2 可用的 L1 `PointCloud2`，完成 RGB + L1 三维定位。
+3. 完成视觉目标 map 定位、边建图边搜索和真机 Nav2 探索闭环验证。
+4. 评估 Foxy 真机运行与 Humble 开发环境之间的跨版本链路。
+
+G2 不修改 G1/G3、`vision_interfaces/*.msg` 或冻结的 topic、消息字段语义、QoS、TF 接口；本轮也不实现 LiDAR 代码。
