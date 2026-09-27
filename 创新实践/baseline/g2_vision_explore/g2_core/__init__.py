@@ -40,6 +40,8 @@ from .projector import (
     project_depth_bbox,
     project_ground_plane,
     project_lidar_cluster,
+    select_lidar_points_in_bbox,
+    transform_points,
 )
 
 __all__ = [
@@ -54,7 +56,8 @@ __all__ = [
     # projector
     "CameraIntrinsics", "ProjectionResult", "DepthEncodingError",
     "depth_to_meters", "project_depth_bbox", "project_ground_plane",
-    "project_lidar_cluster", "optical_axis_ground_distance",
+    "project_lidar_cluster", "select_lidar_points_in_bbox", "transform_points",
+    "optical_axis_ground_distance",
     # anomaly
     "FallAssessment", "torso_tilt_from_vertical", "assess_fall_from_keypoints_3d",
     "bbox_aspect_is_fallen", "midpoints_from_keypoints_2d",

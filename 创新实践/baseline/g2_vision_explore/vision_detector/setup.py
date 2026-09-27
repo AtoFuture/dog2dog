@@ -9,14 +9,17 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
-        ("share/" + package_name + "/config", ["config/detector.yaml"]),
+        ("share/" + package_name + "/config", [
+            "config/detector.yaml",
+            "config/lidar_camera.example.yaml",
+        ]),
         ("share/" + package_name + "/launch", ["launch/detector.launch.py"]),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
     maintainer="AtoFuture",
     maintainer_email="240923267+AtoFuture@users.noreply.github.com",
-    description="G2 感知链路：RGB 检测/跟踪 + 可选 RGB-D 三维解算",
+    description="G2 感知链路：RGB 检测/跟踪 + 可插拔 RGB-D/LiDAR 三维解算",
     license="Apache-2.0",
     entry_points={
         "console_scripts": [

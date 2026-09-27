@@ -5,6 +5,9 @@
     # input_mode=rgbd 保持原 RGB-D 路径；input_mode=rgb 时只使用 rgb_topic。
     input_mode: rgbd
     rgb_topic: /camera/go2/image_raw
+    # auto: rgbd 输入默认 rgbd 后端，rgb 输入默认 none；也可显式设 lidar。
+    localization_backend: auto
+    pointcloud_topic: /utlidar/cloud   # 候选名，真机仍需 ros2 topic info 复核
     # RGB-D 模式的 RealSense 常见命名，不是冻结契约。
     color_topic: /camera/color/image_raw
     depth_topic: /camera/aligned_depth_to_color/image_raw   # 注意：只有 align_depth:=true 才发布
@@ -19,6 +22,27 @@
     device: cpu          # 实测 640 下 CPU 有 25 FPS，远超 5 Hz 需求，不必占 GPU
     detect_hz: 5.0
     sync_slop_s: 0.05    # 50 ms ≈ Go2 行走 5 cm；跑得快时应调小
+
+    # ---- LiDAR 三维解算 ----
+    # 下面的 0/空值是无效占位；localization_backend=lidar 时必须替换为真实标定。
+    lidar_sync_slop_s: 0.05
+    lidar_cloud_queue_size: 10
+    lidar_fx: 0.0
+    lidar_fy: 0.0
+    lidar_cx: 0.0
+    lidar_cy: 0.0
+    lidar_image_width: 0
+    lidar_image_height: 0
+    lidar_frame: utlidar_lidar
+    lidar_camera_frame: ""
+    # T_camera_lidar：p_camera = R * p_lidar + t
+    lidar_translation_xyz: [0.0, 0.0, 0.0]
+    lidar_quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+    lidar_bbox_shrink_ratio: 0.2
+    lidar_min_points: 3
+    lidar_depth_cluster_bin_m: 0.25
+    lidar_min_depth_m: 0.1
+    lidar_max_depth_m: 100.0
 
     # ---- 三维解算 ----
     anchor: center       # center | bottom（倒地检测推荐 bottom）

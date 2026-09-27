@@ -6,16 +6,18 @@
 
     RGB/Image ─► 抽帧 ─► YOLO/ByteTrack ─► Detection2D（g2_core）
                                       │
-                         ┌────────────┴────────────┐
-                         │                         │
-                 RGB-only mode              RGB-D mode
-                 只保留二维结果          Depth + CameraInfo + TF
-                                           ─► 三维反投影
-                                           ─► /detections_3d
+                         ┌────────────┴────────────────────┐
+                         │                                 │
+                 RGB-only mode                      RGB-D mode
+                 backend=none: 2D only         backend=rgbd: Depth + CameraInfo
+                 backend=lidar: PointCloud2    或 backend=lidar: PointCloud2
+                         │                                 │
+                         └──────────────► /detections_3d
                                            └─► /detections_snapshot
 
 算法全在 ``g2_core`` 里，本模块只做胶水：订阅、同步、抽帧、调 tf2、打包消息。
-RGB-only 模式不伪造三维坐标，也不发布 Detection3D/Snapshot。
+RGB-only + ``backend=none`` 不伪造三维坐标，也不发布 Detection3D/Snapshot；
+``backend=lidar`` 只有在标定、时间同步、点云簇和 map TF 全部有效时才发布三维消息。
 
 --------------------------------------------------------------------------------
 几个刻意的设计（都是踩过坑换来的，见 docs/框架规划.md）
@@ -43,6 +45,7 @@ RGB-only 模式不伪造三维坐标，也不发布 Detection3D/Snapshot。
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 import math
 import time
@@ -57,7 +60,7 @@ from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from g2_core.anomaly import keypoints_to_torso_3d, torso_tilt_from_vertical
@@ -78,6 +81,15 @@ from g2_core.projector import (
 from vision_interfaces.msg import Detection3D, DetectionSnapshot
 
 from .qos import LATCHED_QOS, RESULT_QOS, SENSOR_QOS
+from .lidar_backend import (
+    CalibrationError,
+    LidarLocalizationBackend,
+    PointCloudSample,
+    backend_config_from_parameters,
+    calibration_from_parameters,
+    pointcloud2_to_sample,
+    stamp_to_seconds,
+)
 
 #: map 系（REP-103，重力对齐）里的「上」。
 #: 注意这**只对 map 系成立** —— 相机光学系里的「上」是 (0,-1,0)。
@@ -153,13 +165,20 @@ class VisionDetector(Node):
             raise ValueError(
                 f"input_mode 必须是 'rgbd' 或 'rgb'，得到 {self._input_mode!r}"
             )
+        self._localization_backend = self._resolve_localization_backend()
+        self._lidar_backend: LidarLocalizationBackend | None = None
+        self._lidar_backend_error = ""
+        self._lidar_clouds: deque[PointCloudSample] = deque(
+            maxlen=max(1, int(self.get_parameter("lidar_cloud_queue_size").value))
+        )
 
         self._bridge = CvBridge()
-        # RGB-only 没有三维后端，不需要启动 TF listener；RGB-D 保持原行为。
-        self.tf_buffer = Buffer() if self._input_mode == "rgbd" else None
+        # RGB-D 与 LiDAR 都需要 map TF；纯二维模式不启动 TF listener。
+        needs_tf = self._input_mode == "rgbd" or self._localization_backend == "lidar"
+        self.tf_buffer = Buffer() if needs_tf else None
         self.tf_listener = (
             TransformListener(self.tf_buffer, self)
-            if self._input_mode == "rgbd" else None
+            if needs_tf else None
         )
 
         # 内参：从 CameraInfo 拿一次就够（准静态）
@@ -171,22 +190,38 @@ class VisionDetector(Node):
         # 长得一模一样，都是「什么都没发生」。
         self._stat = {"frames": 0, "dets": 0, "proj_fail": 0, "dedup": 0, "tf_fail": 0,
                       "published": 0,
+                      # LiDAR backend 的链路分解；这些计数按目标/点云回调累计，
+                      # 用来区分「没有云」「不同步」「框内没点」和「簇被拒绝」。
+                      "clouds_received": 0, "cloud_parse_errors": 0,
+                      "frames_with_2d_detection": 0, "fusion_attempts": 0,
+                      "fusion_success": 0, "no_calibration": 0, "unsynced": 0,
+                      "dropped_unsynced": 0,
+                      "no_points_in_bbox": 0, "cluster_rejected": 0,
+                      "tf_failed": 0, "lidar_published": 0,
                       # 倒地判据的分解。和上面同理：没有它的话
                       # 「没检出人」「关键点置信度低」「深度取不到」「人体尺度不合格」
                       # 「轨迹还没确认」在日志上全是「没有倒地结论」，分不出是哪一步。
                       "fall_seen": 0, "fall_no_keypoints": 0, "fall_no_track": 0,
                       "fall_unusable": 0, "fall_events": 0, "fall_tf_fail": 0,
                       "fall_stamp_regress": 0}
+        if self._localization_backend == "lidar":
+            self._configure_lidar_backend()
+            if self._lidar_backend is None:
+                self._stat["no_calibration"] = 1
         # TF 降级计数（用不到图像时间戳时 +1）
         self._tf_fallback_count = 0
         self._last_color = None
         self._last_2d: TrackedFrame2D | None = None
 
         configured_fall = bool(self.get_parameter("detect_fall").value)
-        self._fall_enabled = configured_fall and self._input_mode == "rgbd"
-        if configured_fall and self._input_mode == "rgb":
+        self._fall_enabled = (
+            configured_fall
+            and self._input_mode == "rgbd"
+            and self._localization_backend == "rgbd"
+        )
+        if configured_fall and not self._fall_enabled:
             self.get_logger().warn(
-                "RGB-only mode 不启用依赖深度/TF 的倒地 Detection3D 发布；"
+                "当前模式不启用依赖 RGB-D 深度投影的倒地 Detection3D 发布；"
                 "二维检测/跟踪仍正常运行"
             )
         _max_h = float(self.get_parameter("fall_max_height_m").value)
@@ -241,11 +276,67 @@ class VisionDetector(Node):
         # 每 10 秒报一次处理统计 —— 出问题时一眼能看出卡在哪一步
         self.create_timer(10.0, self._report_stats)
 
+    def _resolve_localization_backend(self) -> str:
+        """把 input_mode 与三维后端独立解析，``auto`` 只负责兼容默认值。"""
+        requested = str(self.get_parameter("localization_backend").value).strip().lower()
+        if requested == "auto":
+            return "rgbd" if self._input_mode == "rgbd" else "none"
+        if requested not in {"rgbd", "lidar", "none"}:
+            raise ValueError(
+                "localization_backend 必须是 'rgbd'、'lidar' 或 'none'"
+            )
+        if requested == "rgbd" and self._input_mode != "rgbd":
+            raise ValueError(
+                "localization_backend=rgbd 需要 input_mode=rgbd；"
+                "Go2 RGB-only 请显式使用 lidar 或 none"
+            )
+        return requested
+
+    def _configure_lidar_backend(self) -> None:
+        """只从显式参数建立 LiDAR backend，缺标定时明确禁用。"""
+        names = (
+            "lidar_fx", "lidar_fy", "lidar_cx", "lidar_cy",
+            "lidar_image_width", "lidar_image_height", "lidar_frame",
+            "lidar_camera_frame", "lidar_translation_xyz",
+            "lidar_quaternion_xyzw",
+        )
+        values = {name: self.get_parameter(name).value for name in names}
+        try:
+            calibration = calibration_from_parameters(values)
+            config = backend_config_from_parameters({
+                name: self.get_parameter(name).value
+                for name in (
+                    "lidar_bbox_shrink_ratio", "lidar_min_points",
+                    "lidar_depth_cluster_bin_m", "lidar_min_depth_m",
+                    "lidar_max_depth_m",
+                )
+            })
+            self._lidar_backend = LidarLocalizationBackend(calibration, config)
+            self.get_logger().info(
+                "LiDAR localization backend enabled: "
+                f"cloud={self.get_parameter('pointcloud_topic').value} ｜ "
+                f"lidar_frame={calibration.lidar_frame} ｜ "
+                f"camera_frame={calibration.camera_frame}"
+            )
+        except (CalibrationError, KeyError, TypeError, ValueError) as exc:
+            self._lidar_backend = None
+            self._lidar_backend_error = str(exc)
+            self.get_logger().error(
+                "LiDAR localization backend disabled: 缺少有效 calibration；"
+                f"{exc}。不会发布伪造 Detection3D。"
+            )
+
     def _setup_subscriptions(self) -> None:
         """按 input_mode 建立最小输入集合。"""
         self._rgb_sub = None
         self._camera_info_sub = None
         self._sync = None
+        self._pointcloud_sub = None
+        backend = getattr(
+            self,
+            "_localization_backend",
+            "rgbd" if self._input_mode == "rgbd" else "none",
+        )
         if self._input_mode == "rgb":
             self._rgb_sub = self.create_subscription(
                 Image,
@@ -254,14 +345,25 @@ class VisionDetector(Node):
                 SENSOR_QOS,
                 callback_group=self._vision_group,
             )
+            VisionDetector._setup_lidar_subscription(self)
+            if backend == "lidar" and getattr(self, "_lidar_backend", None) is not None:
+                mode_message = (
+                    "RGB-only mode enabled. 2D detection/tracking and LiDAR "
+                    "localization are active."
+                )
+            else:
+                mode_message = (
+                    "RGB-only mode enabled. 2D detection/tracking is active. "
+                    "Detection3D will not be published until a 3D localization "
+                    "backend is available."
+                )
             self.get_logger().info(
-                "RGB-only mode enabled. 2D detection/tracking is active. "
-                "Detection3D will not be published until a 3D localization backend "
-                "is available."
+                mode_message
             )
             self.get_logger().info(
                 f"感知链路就绪：抽帧 {self.get_parameter('detect_hz').value} Hz ｜ "
-                f"RGB {self.get_parameter('rgb_topic').value}"
+                f"RGB {self.get_parameter('rgb_topic').value} ｜ "
+                f"backend={backend}"
             )
             return
 
@@ -288,16 +390,46 @@ class VisionDetector(Node):
             slop=self.get_parameter("sync_slop_s").value,
         )
         self._sync.registerCallback(self._on_images)
+        VisionDetector._setup_lidar_subscription(self)
 
         self.get_logger().info(
             f"感知链路就绪：抽帧 {self.get_parameter('detect_hz').value} Hz ｜ "
             f"彩色 {self.get_parameter('color_topic').value} ｜ "
-            f"深度 {self.get_parameter('depth_topic').value}"
+            f"深度 {self.get_parameter('depth_topic').value} ｜ "
+            f"backend={backend}"
+        )
+
+    def _setup_lidar_subscription(self) -> None:
+        if (getattr(self, "_localization_backend", "none") != "lidar"
+                or getattr(self, "_lidar_backend", None) is None):
+            return
+        self._pointcloud_sub = self.create_subscription(
+            PointCloud2,
+            self.get_parameter("pointcloud_topic").value,
+            self._on_pointcloud,
+            SENSOR_QOS,
+            callback_group=self._vision_group,
         )
 
     def _report_stats(self) -> None:
         st = self._stat
         if st["frames"] == 0:
+            return
+        backend = getattr(
+            self,
+            "_localization_backend",
+            "rgbd" if getattr(self, "_input_mode", "rgbd") == "rgbd" else "none",
+        )
+        if backend == "lidar":
+            self.get_logger().info(
+                f"[统计] LiDAR clouds={st['clouds_received']} ｜ "
+                f"二维帧={st['frames_with_2d_detection']} ｜ "
+                f"融合尝试={st['fusion_attempts']} ｜ 成功={st['fusion_success']} ｜ "
+                f"已发布={st['lidar_published']} ｜ 不同步={st['unsynced']} ｜ "
+                f"dropped_unsynced={st['dropped_unsynced']} ｜ "
+                f"框内无点={st['no_points_in_bbox']} ｜ 簇拒绝={st['cluster_rejected']} ｜ "
+                f"TF失败={st['tf_failed']} ｜ 无标定={st['no_calibration']}"
+            )
             return
         # 旧的单元测试替身可能没有这个新参数；生产节点总会设置它，
         # 缺失时按历史 RGB-D 统计路径处理，保持向后兼容。
@@ -369,6 +501,9 @@ class VisionDetector(Node):
         # --- 话题 ---
         d("input_mode", "rgbd")       # rgbd（兼容原路径）| rgb（仅二维）
         d("rgb_topic", "/camera/go2/image_raw")
+        # auto -> rgbd 模式使用 rgbd，rgb 模式默认 none；也可显式选 lidar。
+        d("localization_backend", "auto")
+        d("pointcloud_topic", "/utlidar/cloud")
         d("color_topic", "/camera/color/image_raw")
         d("depth_topic", "/camera/depth/image_raw")
         d("camera_info_topic", "/camera/color/camera_info")
@@ -389,6 +524,25 @@ class VisionDetector(Node):
         d("device", "cpu")
         d("detect_hz", 5.0)
         d("sync_slop_s", 0.05)
+
+        # --- LiDAR 三维后端 ---
+        d("lidar_sync_slop_s", 0.05)
+        d("lidar_cloud_queue_size", 10)
+        d("lidar_fx", 0.0)
+        d("lidar_fy", 0.0)
+        d("lidar_cx", 0.0)
+        d("lidar_cy", 0.0)
+        d("lidar_image_width", 0)
+        d("lidar_image_height", 0)
+        d("lidar_frame", "utlidar_lidar")
+        d("lidar_camera_frame", "")
+        d("lidar_translation_xyz", [0.0, 0.0, 0.0])
+        d("lidar_quaternion_xyzw", [0.0, 0.0, 0.0, 1.0])
+        d("lidar_bbox_shrink_ratio", 0.2)
+        d("lidar_min_points", 3)
+        d("lidar_depth_cluster_bin_m", 0.25)
+        d("lidar_min_depth_m", 0.1)
+        d("lidar_max_depth_m", 100.0)
 
         # --- 三维解算 ---
         d("anchor", "center")     # center | bottom
@@ -487,6 +641,42 @@ class VisionDetector(Node):
             now,
         )
 
+    def _on_pointcloud(self, cloud_msg: PointCloud2) -> None:
+        """缓存带原始时间戳/frame 的点云，等待图像回调做保守匹配。"""
+        self._stat["clouds_received"] += 1
+        try:
+            sample = pointcloud2_to_sample(cloud_msg)
+        except (TypeError, ValueError, RuntimeError) as exc:
+            self._stat["cloud_parse_errors"] += 1
+            self.get_logger().error(
+                f"PointCloud2 XYZ 解析失败：{exc}", throttle_duration_sec=5.0
+            )
+            return
+        self._lidar_clouds.append(sample)
+
+    def _nearest_lidar_cloud(self, image_stamp) -> PointCloudSample | None:
+        """按时间找最近点云；零时间戳或超 slop 一律拒绝。"""
+        image_sec = stamp_to_seconds(image_stamp)
+        if image_sec <= 0.0 or not self._lidar_clouds:
+            self._record_unsynced()
+            return None
+        candidates = [sample for sample in self._lidar_clouds if sample.stamp_sec > 0.0]
+        if not candidates:
+            self._record_unsynced()
+            return None
+        sample = min(candidates, key=lambda item: abs(item.stamp_sec - image_sec))
+        delta = abs(sample.stamp_sec - image_sec)
+        slop = float(self.get_parameter("lidar_sync_slop_s").value)
+        if delta > slop:
+            self._record_unsynced()
+            return None
+        return sample
+
+    def _record_unsynced(self) -> None:
+        """记录时间门控丢弃；保留旧 ``unsynced`` 名称并提供明确别名。"""
+        self._stat["unsynced"] = self._stat.get("unsynced", 0) + 1
+        self._stat["dropped_unsynced"] = self._stat.get("dropped_unsynced", 0) + 1
+
     def _next_detection_time(self) -> float | None:
         """按 detect_hz 抽帧，返回本次处理用的单调时钟时间。"""
         now = time.monotonic()
@@ -526,15 +716,77 @@ class VisionDetector(Node):
         )
         self._last_2d = frame_2d
 
+        backend = getattr(
+            self,
+            "_localization_backend",
+            "rgbd" if self._input_mode == "rgbd" else "none",
+        )
         if self._input_mode == "rgb":
-            # 二维结果留在内部，不发布伪造的 Detection3D/Snapshot。
+            if backend == "lidar":
+                self._process_lidar_detections(frame_2d, now)
+            # none backend 只保留二维结果，不发布伪造的 Detection3D/Snapshot。
             return frame_2d
 
-        if depth_m is None:
-            # 防御性保护：RGB-D 模式没有合法深度时也不能构造三维消息。
-            return frame_2d
-        self._process_rgbd_detections(detections, depth_m, camera_frame, stamp, now)
+        if backend == "rgbd":
+            if depth_m is None:
+                # 防御性保护：RGB-D 模式没有合法深度时也不能构造三维消息。
+                return frame_2d
+            self._process_rgbd_detections(detections, depth_m, camera_frame, stamp, now)
+        elif backend == "lidar":
+            self._process_lidar_detections(frame_2d, now)
         return frame_2d
+
+    def _process_lidar_detections(self, frame_2d: TrackedFrame2D, now: float) -> None:
+        """用最近且通过时间门控的 L1 点云为二维检测定位。"""
+        if self._lidar_backend is None or not frame_2d.detections:
+            return
+
+        self._stat["frames_with_2d_detection"] += 1
+        sample = self._nearest_lidar_cloud(frame_2d.stamp)
+        if sample is None:
+            return
+        self._stat["fusion_attempts"] += len(frame_2d.detections)
+
+        calibration = self._lidar_backend.calibration
+        if frame_2d.frame_id and frame_2d.frame_id != calibration.camera_frame:
+            self._stat["tf_failed"] += len(frame_2d.detections)
+            self.get_logger().warn(
+                f"图像 frame {frame_2d.frame_id!r} 与 LiDAR 标定 camera_frame "
+                f"{calibration.camera_frame!r} 不一致，拒绝融合",
+                throttle_duration_sec=5.0,
+            )
+            return
+
+        successful = []
+        for det in frame_2d.detections:
+            result = self._lidar_backend.localize(
+                det, sample, frame_2d.image_shape
+            )
+            if result.projection is None:
+                if result.reason == "no_points_in_bbox":
+                    self._stat["no_points_in_bbox"] += 1
+                else:
+                    self._stat["cluster_rejected"] += 1
+                continue
+            self._stat["fusion_success"] += 1
+            successful.append((det, result.projection))
+
+        if not successful:
+            return
+
+        camera_frame = frame_2d.frame_id or calibration.camera_frame
+        tf = self._lookup_tf(camera_frame, frame_2d.stamp)
+        if tf is None:
+            self._stat["tf_failed"] += len(successful)
+            return
+
+        for det, projection in successful:
+            if not self._should_publish(det.track_id, now):
+                self._stat["dedup"] += 1
+                continue
+            self._stat["published"] += 1
+            self._stat["lidar_published"] += 1
+            self._publish_detection(det, self._to_map(projection, tf), frame_2d.stamp)
 
     def _process_rgbd_detections(
         self,

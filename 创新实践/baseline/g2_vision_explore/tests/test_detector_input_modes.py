@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from builtin_interfaces.msg import Time
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 
 from g2_core.detector import Detection2D
 from g2_core.projector import ProjectionResult
@@ -40,6 +40,8 @@ class _Logger:
 class _SubscriptionNode:
     def __init__(self, mode):
         self._input_mode = mode
+        self._localization_backend = "rgbd" if mode == "rgbd" else "none"
+        self._lidar_backend = None
         self._vision_group = object()
         self.calls = []
         self._log = _Logger()
@@ -50,6 +52,7 @@ class _SubscriptionNode:
             "camera_info_topic": "/camera/color/camera_info",
             "sync_slop_s": 0.05,
             "detect_hz": 5.0,
+            "pointcloud_topic": "/utlidar/cloud",
         }
 
     def get_parameter(self, name):
@@ -69,6 +72,9 @@ class _SubscriptionNode:
         pass
 
     def _on_images(self, _color, _depth):
+        pass
+
+    def _on_pointcloud(self, _message):
         pass
 
 
@@ -129,6 +135,22 @@ def test_rgbd_mode_keeps_camera_info_and_approximate_sync(monkeypatch):
     assert node._rgb_sub is None
     assert node._camera_info_sub is not None
     assert node._sync is not None
+
+
+def test_rgb_lidar_mode_adds_only_configured_pointcloud_subscription():
+    node = _SubscriptionNode("rgb")
+    node._localization_backend = "lidar"
+    node._lidar_backend = object()
+
+    VisionDetector._setup_subscriptions(node)
+
+    assert len(node.calls) == 2
+    assert node.calls[0][0][0] is Image
+    assert node.calls[0][0][1] == "/camera/go2/image_raw"
+    assert node.calls[1][0][0] is PointCloud2
+    assert node.calls[1][0][1] == "/utlidar/cloud"
+    assert node._camera_info_sub is None
+    assert node._sync is None
 
 
 def test_rgb_and_rgbd_use_the_same_2d_detector_path():
@@ -278,3 +300,5 @@ def test_detector_config_defaults_to_rgbd_and_exposes_go2_rgb_topic():
     ).read_text(encoding="utf-8")
     assert "input_mode: rgbd" in config
     assert "rgb_topic: /camera/go2/image_raw" in config
+    assert "localization_backend: auto" in config
+    assert "pointcloud_topic: /utlidar/cloud" in config

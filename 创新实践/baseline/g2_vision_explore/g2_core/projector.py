@@ -212,6 +212,29 @@ def rotate_translate(
     return R @ np.asarray(point, dtype=np.float64) + np.asarray(translation, dtype=np.float64)
 
 
+def transform_points(
+    points: np.ndarray,
+    quaternion_xyzw: tuple[float, float, float, float],
+    translation: tuple[float, float, float],
+) -> np.ndarray:
+    """把一批点用同一个刚体变换从子系变到父系。
+
+    这是 ``rotate_translate`` 的批量版本，供 LiDAR 点云投影使用。
+    ``quaternion_xyzw`` 和 ``translation`` 的含义与 TF 一致：
+    ``point_parent = R * point_child + t``。
+    """
+    pts = np.asarray(points, dtype=np.float64)
+    if pts.size == 0:
+        return np.empty((0, 3), dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] != 3:
+        raise ValueError(f"points 应为 (N, 3)，得到 {pts.shape}")
+    t = np.asarray(translation, dtype=np.float64)
+    if t.shape != (3,):
+        raise ValueError(f"translation 应为 3 个元素，得到 {t.shape}")
+    R = quaternion_to_matrix(*quaternion_xyzw)
+    return (R @ pts.T).T + t
+
+
 MIN_VALID_DEPTH_M = 0.6
 """有效深度下限（米）。低于它的读数**不是测量值**，按无效处理。
 
@@ -614,17 +637,79 @@ def project_ground_plane(
 # ----------------------------------------------------------------------
 # 路线 C：点云簇关联
 # ----------------------------------------------------------------------
+def select_lidar_points_in_bbox(
+    points_camera: np.ndarray,
+    intrinsics: CameraIntrinsics,
+    bbox_xyxy: tuple[float, float, float, float],
+    bbox_shrink_ratio: float = 0.2,
+    min_depth_m: float = 0.1,
+    max_depth_m: float = 100.0,
+) -> np.ndarray:
+    """返回投影后落入缩小 bbox 的有效相机系点。
+
+    这是 LiDAR backend 的可诊断前置步骤：调用方可以区分「框内没有点」
+    与「框内有点但没有形成稠密前景簇」。
+    """
+    if points_camera is None:
+        return np.empty((0, 3), dtype=np.float64)
+    pts = np.asarray(points_camera, dtype=np.float64)
+    if pts.size == 0:
+        return np.empty((0, 3), dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] != 3:
+        return np.empty((0, 3), dtype=np.float64)
+
+    if not (math.isfinite(bbox_shrink_ratio) and 0.0 <= bbox_shrink_ratio < 1.0):
+        raise ValueError("bbox_shrink_ratio 必须在 [0, 1) 内")
+    if not (math.isfinite(min_depth_m) and math.isfinite(max_depth_m)
+            and 0.0 < min_depth_m < max_depth_m):
+        raise ValueError("深度范围必须满足 0 < min_depth_m < max_depth_m")
+
+    pts = pts[np.isfinite(pts).all(axis=1)]
+    if pts.size == 0:
+        return np.empty((0, 3), dtype=np.float64)
+
+    z = pts[:, 2]
+    valid_depth = (z >= min_depth_m) & (z <= max_depth_m)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        u = np.where(z > 0, pts[:, 0] / z * intrinsics.fx + intrinsics.cx, -1.0)
+        v = np.where(z > 0, pts[:, 1] / z * intrinsics.fy + intrinsics.cy, -1.0)
+
+    x1, y1, x2, y2 = bbox_xyxy
+    left, right = sorted((float(x1), float(x2)))
+    top, bottom = sorted((float(y1), float(y2)))
+    width, height = right - left, bottom - top
+    left += width * bbox_shrink_ratio / 2.0
+    right -= width * bbox_shrink_ratio / 2.0
+    top += height * bbox_shrink_ratio / 2.0
+    bottom -= height * bbox_shrink_ratio / 2.0
+    inside = (
+        valid_depth
+        & (u >= left) & (u <= right)
+        & (v >= top) & (v <= bottom)
+    )
+    return pts[inside]
+
+
 def project_lidar_cluster(
     points_camera: np.ndarray,
     intrinsics: CameraIntrinsics,
     bbox_xyxy: tuple[float, float, float, float],
     min_points: int = 3,
+    bbox_shrink_ratio: float = 0.2,
+    depth_cluster_bin_m: float = 0.25,
+    min_depth_m: float = 0.1,
+    max_depth_m: float = 100.0,
 ) -> ProjectionResult | None:
-    """点云簇关联：把落在检测框内的三维点取中位数。
+    """点云簇关联：投影 bbox 内点并选择最近的稠密深度簇。
 
     有激光雷达时的**标准做法**，比单目地面假设鲁棒得多，且不依赖深度相机。
     ``points_camera`` 应当是已经变换到相机系的点云（变换由调用方做，
     或先在 map 系里筛完再变换）。
+
+    点云通常同时包含目标和背景墙。这里不是把 bbox 内所有点直接平均，
+    而是先收集投影落入 bbox（默认缩小 20%）的有效点，再按深度分成固定宽度
+    的 bin，选择**最近且点数达到门槛**的稠密 bin。这样背景只有在目标没有
+    足够点时才会被选中；无法形成有效前景簇时返回 ``None``。
 
     Parameters
     ----------
@@ -633,35 +718,48 @@ def project_lidar_cluster(
     bbox_xyxy : tuple
         检测框。用来把点投影到图像平面后筛选。
     min_points : int
-        框内点数少于此值则丢弃。
+        前景簇点数少于此值则丢弃。
+    bbox_shrink_ratio : float
+        bbox 总宽/高缩小比例，平均分到四边。``0.2`` 表示每边收进 10%。
+        用于减少框边缘的背景点，取值必须在 ``[0, 1)``。
+    depth_cluster_bin_m : float
+        深度直方图 bin 宽度（米）。
+    min_depth_m, max_depth_m : float
+        相机前方允许的深度范围。
 
     Returns
     -------
     ProjectionResult 或 ``None``。
     """
-    if points_camera.size == 0:
-        return None
-    pts = np.asarray(points_camera, dtype=np.float64)
-    pts = pts[np.isfinite(pts).all(axis=1)]
-    if pts.size == 0:
-        return None
-
-    z = pts[:, 2]
-    with np.errstate(divide="ignore", invalid="ignore"):
-        u = np.where(z > 0, pts[:, 0] / z * intrinsics.fx + intrinsics.cx, -1.0)
-        v = np.where(z > 0, pts[:, 1] / z * intrinsics.fy + intrinsics.cy, -1.0)
-
-    x1, y1, x2, y2 = bbox_xyxy
-    inside = (z > 0) & (u >= min(x1, x2)) & (u <= max(x1, x2)) & (v >= min(y1, y2)) & (v <= max(y1, y2))
-    sel = pts[inside]
+    if not (math.isfinite(depth_cluster_bin_m) and depth_cluster_bin_m > 0.0):
+        raise ValueError("depth_cluster_bin_m 必须为正数")
+    sel = select_lidar_points_in_bbox(
+        points_camera,
+        intrinsics,
+        bbox_xyxy,
+        bbox_shrink_ratio=bbox_shrink_ratio,
+        min_depth_m=min_depth_m,
+        max_depth_m=max_depth_m,
+    )
     if sel.shape[0] < min_points:
         return None
 
-    center = np.median(sel, axis=0)
-    q75, q25 = np.percentile(sel, [75, 25], axis=0)
+    # 选最近的稠密深度层，而不是让背景墙的点数决定结果。
+    depth_bins = np.floor(sel[:, 2] / depth_cluster_bin_m).astype(np.int64)
+    unique_bins, counts = np.unique(depth_bins, return_counts=True)
+    dense_bins = unique_bins[counts >= int(min_points)]
+    if dense_bins.size == 0:
+        return None
+    foreground_bin = int(dense_bins[0])
+    foreground = sel[depth_bins == foreground_bin]
+    if foreground.shape[0] < min_points:
+        return None
+
+    center = np.median(foreground, axis=0)
+    q75, q25 = np.percentile(foreground, [75, 25], axis=0)
     return ProjectionResult(
         point=center,
-        valid_pixels=int(sel.shape[0]),
+        valid_pixels=int(foreground.shape[0]),
         dispersion=float(np.linalg.norm(q75 - q25)),
         spread_per_axis=(q75 - q25).astype(np.float64),
     )

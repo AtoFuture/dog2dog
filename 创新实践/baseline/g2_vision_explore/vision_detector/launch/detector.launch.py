@@ -22,6 +22,8 @@ def generate_launch_description():
     params_file = LaunchConfiguration("params_file")
     input_mode = LaunchConfiguration("input_mode")
     rgb_topic = LaunchConfiguration("rgb_topic")
+    localization_backend = LaunchConfiguration("localization_backend")
+    pointcloud_topic = LaunchConfiguration("pointcloud_topic")
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -44,6 +46,16 @@ def generate_launch_description():
             default_value="/camera/go2/image_raw",
             description="RGB-only 模式的 sensor_msgs/Image 输入 topic",
         ),
+        DeclareLaunchArgument(
+            "localization_backend",
+            default_value="auto",
+            description="auto、rgbd、lidar 或 none",
+        ),
+        DeclareLaunchArgument(
+            "pointcloud_topic",
+            default_value="/utlidar/cloud",
+            description="LiDAR PointCloud2 输入 topic（仅 lidar backend 使用）",
+        ),
         Node(
             package="vision_detector",
             executable="detector_node",
@@ -55,6 +67,8 @@ def generate_launch_description():
                     "use_sim_time": use_sim_time,
                     "input_mode": input_mode,
                     "rgb_topic": rgb_topic,
+                    "localization_backend": localization_backend,
+                    "pointcloud_topic": pointcloud_topic,
                 },
             ],
         ),

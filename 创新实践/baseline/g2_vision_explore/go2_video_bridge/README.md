@@ -126,4 +126,4 @@ ros2 launch vision_detector detector.launch.py \
   input_mode:=rgb rgb_topic:=/camera/go2/image_raw
 ```
 
-该连接已通过代码、参数和离线二维处理路径验证；当前没有 Go2 真机 `/frontvideostream` 数据，因此不代表真机 Bridge → detector ROS 图已经跑通。RGB-only detector 只保留内部二维检测/跟踪结果，不伪造 `Detection3D`、`CameraInfo` 或深度。
+该连接已通过代码、参数和离线二维处理路径验证；当前没有 Go2 真机 `/frontvideostream` 数据，因此不代表真机 Bridge → detector ROS 图已经跑通。`localization_backend=none` 的 RGB-only detector 只保留内部二维检测/跟踪结果，不伪造 `Detection3D`、`CameraInfo` 或深度；LiDAR 三维后端需要另行提供真实标定和点云验证。

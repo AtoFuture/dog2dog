@@ -1,0 +1,32 @@
+# EXAMPLE / NOT CALIBRATED FOR REAL GO2
+#
+# This file is a schema/example only. Replace every camera intrinsic and
+# lidar-camera transform with measured calibration before using
+# localization_backend=lidar. Zero intrinsics and empty camera_frame are
+# intentionally invalid; the node must disable the LiDAR backend instead of
+# silently publishing an uncalibrated Detection3D.
+/**:
+  ros__parameters:
+    input_mode: rgb
+    localization_backend: lidar
+    rgb_topic: /camera/go2/image_raw
+    pointcloud_topic: /utlidar/cloud
+
+    lidar_fx: 0.0
+    lidar_fy: 0.0
+    lidar_cx: 0.0
+    lidar_cy: 0.0
+    lidar_image_width: 0
+    lidar_image_height: 0
+    lidar_frame: utlidar_lidar
+    lidar_camera_frame: ""
+    # T_camera_lidar: p_camera = R * p_lidar + t
+    lidar_translation_xyz: [0.0, 0.0, 0.0]
+    lidar_quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+
+    lidar_bbox_shrink_ratio: 0.2
+    lidar_min_points: 3
+    lidar_depth_cluster_bin_m: 0.25
+    lidar_min_depth_m: 0.1
+    lidar_max_depth_m: 100.0
+    lidar_sync_slop_s: 0.05
