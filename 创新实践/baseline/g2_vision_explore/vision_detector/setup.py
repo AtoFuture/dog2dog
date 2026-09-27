@@ -25,6 +25,8 @@ setup(
         "console_scripts": [
             "detector_node = vision_detector.detector_node:main",
             "replay_images = vision_detector.replay_images:main",
+            "hardware_preflight = vision_detector.hardware_preflight:main",
+            "calibrate_intrinsics = vision_detector.calibrate_intrinsics:main",
         ],
     },
 )
