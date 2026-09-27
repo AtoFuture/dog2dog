@@ -65,6 +65,67 @@
 
 ---
 
+## 当前状态 · 2026-09-27
+
+> 这一节是**以代码为准**重新核对的结论。下面「实验记录」是历史流水，
+> 其中 09-20 那条 costmap 的结论**已被推翻**（见 §未提交改动 第 1 条）。
+
+### 已验证通过
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| 多目标点导航 | **11/11 成功**，341 s | `/home/wy/g3_reports/terrain_longrun_20260926_201358_report.json` |
+| 到点误差（真值判定） | 0.121 / 0.106 / 0.111 / 0.115 / 0.269 m，5/5 ≤0.30 | `p1_20260923` 包 + `goal_check.py` |
+| 静止 120 s 虚假位移 | 0.0000 m（限值 0.02） | 同上 |
+| 联调中被返航抢占 | G2 探索点正确让出，返航 goal 成功 | `/home/wy/g3_bags/complex_g123_20260926_171754_report/` |
+
+### 未完成
+
+| 项 | 状态 |
+|---|---|
+| **P1 第 5 项：边跑边建图** | `--slam` 通路已搭好，**无任何运行验证**；且 `config/go2_nav2.yaml` 里 slam 参数的键名有两套互相矛盾的说法（见 §未提交改动 第 4 条） |
+| 足端里程计本身的修复 | 只做了**隔离**（判据改真值），算法没修。原地蹬腿时虚报可达 **83 倍** |
+| costmap 是否异常 | ❓ 未单独量 |
+| 路径效率 | 1.10 m 直线走了 3.86 m（绕 3.5 倍） |
+
+---
+
+## ⚠️ 未提交改动（2026-09-25，有丢失风险）
+
+以下 5 个文件**已改未提交**，`git checkout` 一下即丢失。它们修的是
+「在此之前所有实验结果都建立在其上的」基座，务必先提交再跑新实验。
+
+| # | 文件 | 改了什么 | 为什么关键 |
+|---|---|---|---|
+| 1 | `config/go2_nav2.yaml` | local/global costmap 的 scan topic：相对名 `velodyne` → **绝对名 `/robot1/velodyne`** | **避障一直是失效的。** 相对名在 costmap 节点里解析成 `/robot1/local_costmap/velodyne`（**无发布者**），实测 local_costmap 的 3600/3600 cell **全 free** |
+| 2 | `config/go2_nav2.yaml` | `bt_navigator.odom_topic`：`/odom` → `/robot1/odom` | 原名**Publisher count = 0**，狗的里程计发在 `/robot1/odom` |
+| 3 | `config/go2_nav2.yaml` | AMCL 加 `set_initial_pose: true` + 基站位姿 | 原配置整份没有该项，AMCL 必须靠外部发 `/robot1/initialpose` 才出 `map→odom`；不发就永远不出，规划直接失败 |
+| 4 | `config/go2_nav2.yaml` | 末尾 `slam_toolbox:` 段 | **键名两套说法冲突**，见下 |
+| 5 | `maps/live_warehouse_20260919.yaml` | `free_thresh` 0.25 → **0.196** | 0.25 会把 10.5% 未知区静默判成可通行；**P2 的 frontier 依赖未知栅格**，图里没有未知就没有 frontier |
+
+另有两个新文件一并入库：`config/go2_nav2.yaml.bak.20260924`（09-24 那版 slam
+键名写法，保留它是为了解 §第 4 条那个未决问题时可 diff 对照）、
+`tools/map_growth.py`（P1 第 5 项的判据工具）。
+
+### 第 1 条与历史记录冲突，以第 1 条为准
+
+09-20 的实验记录写的是**反的**：当时把 `topic: /velodyne`（绝对名）改成
+相对名 `velodyne` 并记为「修好了一个 bug」。09-25 实测发现改完**避障反而失效**——
+相对名在 costmap 节点的命名空间下解析到空话题。**正确写法是绝对名 `/robot1/velodyne`。**
+
+### 第 4 条：slam 键名在同一文件里自相矛盾
+
+`config/go2_nav2.yaml` 的 `slam_toolbox` 段上方有一段长注释，说
+「下面这个空壳只为满足 `HasNodeParams`，真正的参数写在 `/robot1/slam_toolbox`」；
+但紧接着的 FIX 注释说「顶层键须用**相对名**，写 `/robot1/slam_toolbox` 会拼成
+`/robot1//robot1/`，rcl 解析失败、bringup 全挂」；而实际 yaml 是**裸键写真参数**。
+
+两套说法都自称实测过，`.bak.20260924` 保存的是「空壳 + 全限定键」那版。
+**在跑 SLAM 验证之前必须先定这一条**，否则会静默退回 slam_toolbox 代码默认值
+（`base_frame=base_footprint`、`scan_topic=/scan`），图一条都建不出来。
+
+---
+
 ## 本周要干的事
 
 - [ ] 等 G3 的设备盘点结果，确定仿真里挂哪些传感器
@@ -90,9 +151,13 @@
    浏览器 `http://10.31.112.43:6080/vnc.html` 可看 Gazebo+rviz（含 `/robot1/map` 615x318）。
 
 ### 修过的一个 bug
-- `config/go2_nav2.yaml` 里 local/global costmap 的 `topic: /velodyne`（绝对名）在 `/robot1`
-  命名空间下订阅不到，改为相对名 `topic: velodyne`。diff 见 `config/go2_nav2.fix.diff`
- （install 下是软链，改 src 即生效，无需 rebuild）。
+- ⚠️ **这条结论已被推翻（2026-09-25），不要照做。** 原文：`config/go2_nav2.yaml` 里
+  local/global costmap 的 `topic: /velodyne`（绝对名）在 `/robot1` 命名空间下订阅不到，
+  改为相对名 `topic: velodyne`。diff 见 `config/go2_nav2.fix.diff`
+  （install 下是软链，改 src 即生效，无需 rebuild）。
+  **实测：改成相对名之后，costmap 节点把它解析成 `/robot1/local_costmap/velodyne`
+  ——那是个无发布者的空话题，于是 local_costmap 3600/3600 cell 全 free，
+  避障彻底失效。正确写法是绝对名 `/robot1/velodyne`**，见本文档 §未提交改动 第 1 条。
 
 ### 目录索引
 - `scripts/`：`start_slam.sh`（建图）、`start_nav2.sh`（导航），用法见文件头注释，
@@ -126,9 +191,13 @@
 
 ### 修过的一个 bug
 
-- `config/go2_nav2.yaml` 里 local/global costmap 的 `topic: /velodyne`（绝对名）在 `/robot1`
-  命名空间下订阅不到，改为相对名 `topic: velodyne`。diff 见 `config/go2_nav2.fix.diff`
- （install 下是软链，改 src 即生效，无需 rebuild）。
+- ⚠️ **这条结论已被推翻（2026-09-25），不要照做。** 原文：`config/go2_nav2.yaml` 里
+  local/global costmap 的 `topic: /velodyne`（绝对名）在 `/robot1` 命名空间下订阅不到，
+  改为相对名 `topic: velodyne`。diff 见 `config/go2_nav2.fix.diff`
+  （install 下是软链，改 src 即生效，无需 rebuild）。
+  **实测：改成相对名之后，costmap 节点把它解析成 `/robot1/local_costmap/velodyne`
+  ——那是个无发布者的空话题，于是 local_costmap 3600/3600 cell 全 free，
+  避障彻底失效。正确写法是绝对名 `/robot1/velodyne`**，见本文档 §未提交改动 第 1 条。
 
 ### 目录索引
 

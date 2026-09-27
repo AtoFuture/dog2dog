@@ -58,6 +58,24 @@ GUI=1 GZ_HEADLESS=1 ROS_DOMAIN_ID=43 IGN_PARTITION=wy ./run_sim_iso.sh &
 ./g1ros.sh bash <本目录>/goal_test.sh 10.5 3.0 0.0 80 /tmp/p1/goal_1
 ```
 
+### 边跑边建图（P1 第 5 项）
+
+只把第 2 步换个开关，**第 3 步（set_initial_pose）不要跑**——那是给 AMCL 的：
+
+```bash
+./g1ros.sh bash <本目录>/start_nav2_isolated.sh --slam
+./g1ros.sh bash <本目录>/goal_test.sh 10.5 3.0 0.0 80 /tmp/p1/slam_1
+./g1ros.sh python3 <本目录>/map_growth.py /tmp/p1/slam_1      # 看地图有没有在长
+```
+
+⚠️ 用 `--slam` 而不是 `SLAM=1`：enroot **不继承宿主环境**，宿主机上的
+`SLAM=1` 进不了容器，脚本会静默跑成 AMCL（同样的坑 `G1_LOG_DIR` 也有）。
+
+`slam:=true` 由 `nav2_bringup` 自己换成 `slam_launch.py`（slam_toolbox 出
+`map→odom`），AMCL 那条路一个字节没动。slam 参数在 `config/go2_nav2.yaml`
+末尾的 `slam_toolbox:` 段里——放一起是被 bringup 逼的，它只接受一个
+`params_file` 并同时透传给 slam 和 Nav2。
+
 ## 三、工具清单
 
 | 文件 | 作用 |
@@ -73,6 +91,7 @@ GUI=1 GZ_HEADLESS=1 ROS_DOMAIN_ID=43 IGN_PARTITION=wy ./run_sim_iso.sh &
 | `set_initial_pose.sh` | 从真值设 AMCL 初始位姿 |
 | `goal_test.sh` | 发目标 + 录包，收尾时自动调 `goal_check.py` |
 | `goal_check.py` | 从包按真值判定到点误差、顺带查「有指令但不动」的冻结段；不通过则 rc=1 |
+| `map_growth.py` | 从包量地图有没有「边走边更新」（更新数/已知栅格增长/增长率非恒定），P1 第 5 项的判据 |
 
 ## 四、必须知道的三个坑
 
@@ -118,7 +137,59 @@ GUI=1 GZ_HEADLESS=1 ROS_DOMAIN_ID=43 IGN_PARTITION=wy ./run_sim_iso.sh &
 副作用要留意：Nav2 现在没有慢速区间了，0.005~0.174 的指令一律给到 ~0.2 m/s。
 配 `movement_time_allowance` 也一并从 10.0 对齐成 60.0（工作区那份一直是 60）。
 
-## 五、验收结果（2026-09-23）
+### 5. 地图 yaml 的 `free_thresh: 0.25` 会把「未知区」静默变成「可通行」
+
+2026-09-24 用 `nav2_map_server` 单独验过（不依赖仿真）：
+
+```
+warehouse_map.yaml  free_thresh: 0.25    →  未知 0 格（0.0%），free 97.1%
+warehouse_map.yaml  free_thresh: 0.196   →  未知 20458 格（10.5%），free 86.6%
+3 格合成图 [0,205,254] free_thresh 0.196 →  [100, -1, 0]
+```
+
+`mode: trinary` 下 `occ = (255-pixel)/255`，「未知」用的 205 算出来正好是 **0.196**；
+`free_thresh: 0.25 > 0.196`，于是 205 落进「free」分支。
+ROS 惯例用 `free_thresh: 0.196` 就是为了让 205 卡在未知带里，我们这份写成了 0.25。
+
+后果：那张图 10.5% 没建过的地方被当成可通行，规划可以往没探过的地方走。
+**P1 的 5 个目标点就是在这张图上跑的**（P1 出口标准不查这条，所以没暴露）。
+更要紧的是 **P2 的 frontier 探索依赖「未知」栅格**——图里一个未知都没有就没有 frontier。
+`src/navigation2/maps/` 下另两份 yaml 也是 0.25，同样要改。
+
+### 6. costmap 的 scan topic 写成相对名 → **避障静默失效**
+
+`config/go2_nav2.yaml` 里 local/global costmap 的 `scan.topic` 一度写成相对名
+`velodyne`。costmap 节点在 `/robot1/local_costmap` 命名空间下，相对名解析成
+**`/robot1/local_costmap/velodyne` —— 那是个无发布者的空话题**：
+
+```
+实测 local_costmap：3600/3600 cell 全 free  ← 障碍物一个都没进来
+```
+
+**后果不是「避障差一点」，是「完全没有避障」**，而且不报任何错、日志干净。
+正确写法是**绝对名** `/robot1/velodyne`（2026-09-25 修）。
+
+⚠️ 注意这与本文档引用的 09-20 实验记录**结论相反**——那条记录说
+「绝对名订阅不到，要改成相对名」。**那条是错的**，详见
+`../README.md` 的「未提交改动」一节。
+
+### 7. `bt_navigator` 的 `odom_topic: /odom` 是个空话题
+
+原来是 `/odom`，实测 **Publisher count = 0**——狗的里程计发在 `/robot1/odom`。
+（2026-09-25 修。`bt_navigator` 在 `/robot1` 命名空间下写相对名 `odom` 也能对，
+但绝对名最不容易踩。）
+
+### 8. AMCL 原配置没有 `set_initial_pose`
+
+整份配置里没有 `set_initial_pose` / `initial_pose` 任何一项，所以 AMCL
+**必须**靠外部发 `/robot1/initialpose` 才出 `map→odom`（这正是
+`set_initial_pose.sh` 存在的原因）。不发就永远不出，规划直接失败。
+2026-09-25 已在配置里补上基站（=出生点）位姿；狗不是从基站起步时，
+仍用 `set_initial_pose.sh` 从真值覆盖（脚本发的话题优先级更高）。
+
+## 五、验收结果
+
+### 2026-09-23（AMCL + 静态地图）
 
 | 指标 | 结果 |
 |---|---|
@@ -127,8 +198,26 @@ GUI=1 GZ_HEADLESS=1 ROS_DOMAIN_ID=43 IGN_PARTITION=wy ./run_sim_iso.sh &
 | 摔倒次数 | 0（五轮 z 全程 0.25~0.28） |
 | rosbag 四要素 | 地图 ✅ TF ✅ goal/result ✅ 真值 ✅ |
 
-**尚未做的**：P1 第 5 项「导航期间保持 SLAM 运行，证明地图能边走边更新」——
-上述验收用的是 AMCL 加载**静态**地图，不是 SLAM 边跑边建图。
+### 2026-09-26 多目标点（`terrain_longrun`）
+
+| 指标 | 结果 |
+|---|---|
+| 目标点数 | **11/11 成功**，0 abort 0 cancel |
+| 时长 | 341 s |
+| 报告 | `/home/wy/g3_reports/terrain_longrun_20260926_201358_report.json`（`navigation_success_rate = 1.0`） |
+
+### 尚未做的
+
+**P1 第 5 项「导航期间保持 SLAM 运行，证明地图能边走边更新」**——
+上述两次验收用的都是 AMCL 加载**静态**地图，不是 SLAM 边跑边建图。
+`--slam` 通路已搭好（见第二节），但**没有跑过**，且 slam 参数键名在
+`config/go2_nav2.yaml` 里有**两套互相矛盾**的写法（见 `../README.md`），
+跑之前必须先定这一条。
+
+⚠️ 上面 09-23 的数字用的是**旧的缩放器**（死区修复前）。09-24 的死区修复与
+`movement_time_allowance` 对齐，以及 09-25 的三处配置修复（costmap / odom /
+initial_pose）**都还没有在仿真里重跑过**——下一轮跑 `goal_test.sh` 时它会在
+收尾自动给出真值判定，先看那个 `goal_check.json`。
 
 ⚠️ 上表是 2026-09-23 的验收数字，**用的还是旧的缩放器**。2026-09-24 的死区修复
 （第 4 坑）与 `movement_time_allowance` 对齐都还没有在仿真里重跑过——
