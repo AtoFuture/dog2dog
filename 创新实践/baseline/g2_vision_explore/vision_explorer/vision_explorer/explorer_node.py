@@ -125,6 +125,17 @@ def occupancy_to_grid(msg: OccupancyGrid) -> GridMap:
     )
 
 
+def yaw_to_quaternion(yaw: float) -> tuple[float, float, float, float]:
+    """Convert a planar yaw to a unit quaternion ``(x, y, z, w)``.
+
+    Frontier goals use ``Goal.yaw`` to point the robot toward nearby unknown
+    space when it arrives.  The navigation action still carries a full 3-D
+    quaternion, so the planar rotation is represented about the Z axis.
+    """
+    half_yaw = float(yaw) / 2.0
+    return 0.0, 0.0, math.sin(half_yaw), math.cos(half_yaw)
+
+
 def select_and_report(
     selector: GoalSelector,
     sm: ExplorerStateMachine,
@@ -300,9 +311,13 @@ class VisionExplorer(Node):
         msg.pose.pose.position.x = float(goal.x)
         msg.pose.pose.position.y = float(goal.y)
         msg.pose.pose.position.z = 0.0
-        # 朝向：只给一个合法的单位四元数。G2 **不规定终点朝向** ——
-        # 怎么停是 G1 的事（契约边界）。
-        msg.pose.pose.orientation.w = 1.0
+        # GoalSelector 已经计算了抵达 frontier 后应朝向附近未知区域的 yaw。
+        # 这里必须把它传给 Nav2；G2 只决定目标位姿，G1 仍负责路径规划与绕障。
+        qx, qy, qz, qw = yaw_to_quaternion(goal.yaw)
+        msg.pose.pose.orientation.x = qx
+        msg.pose.pose.orientation.y = qy
+        msg.pose.pose.orientation.z = qz
+        msg.pose.pose.orientation.w = qw
 
         self._goal = goal
         self._goal_sent_at = now
@@ -311,7 +326,7 @@ class VisionExplorer(Node):
         fut.add_done_callback(self._on_goal_accepted)
         self.get_logger().info(
             f"发出探索目标 ({goal.x:.2f}, {goal.y:.2f})  "
-            f"[{self._sm.phase.value}]"
+            f"yaw={goal.yaw:.3f} [{self._sm.phase.value}]"
         )
 
     def _on_goal_accepted(self, future) -> None:

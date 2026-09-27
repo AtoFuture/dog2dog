@@ -588,11 +588,11 @@ class VisionDetector(Node):
         """发一条倒地事件。消息构造见模块级 build_fall_detection（可单测）。"""
         msg = build_fall_detection(
             ev, stamp, map_point, confidence,
-            has_snapshot=bool(self.get_parameter("publish_snapshot").value),
+            has_snapshot=False,
         )
+        if bool(self.get_parameter("publish_snapshot").value):
+            msg.has_snapshot = self._publish_snapshot(det, msg.id, stamp)
         self._det_pub.publish(msg)
-        if msg.has_snapshot:
-            self._publish_snapshot(det, msg.id, stamp)
 
     def _prune_fall_tracks(self, now: float) -> None:
         """清掉久未出现的轨迹。不清的话跟踪器一换 id 就留一份状态，只涨不跌。"""
@@ -688,7 +688,7 @@ class VisionDetector(Node):
         msg.stamp = stamp
         msg.id = int(det.track_id) if det.track_id is not None else 0
         msg.source = "coco"
-        msg.has_snapshot = bool(self.get_parameter("publish_snapshot").value)
+        msg.has_snapshot = False
 
         # ---- 异常类专属字段：非异常类必须显式填「无」----
         #
@@ -705,39 +705,55 @@ class VisionDetector(Node):
         msg.torso_tilt_deg = float("nan")
         msg.torso_height_m = float("nan")
 
+        if bool(self.get_parameter("publish_snapshot").value):
+            msg.has_snapshot = self._publish_snapshot(det, msg.id, stamp)
         self._det_pub.publish(msg)
 
-        if msg.has_snapshot:
-            self._publish_snapshot(det, msg.id, stamp)
-
-    def _publish_snapshot(self, det, track_id: int, stamp) -> None:
+    def _publish_snapshot(self, det, track_id: int, stamp) -> bool:
         """发 ROI 裁剪 + JPEG 的抓拍图。
 
         只发 ROI 不发整帧：整帧 rgb8 是 0.92 MB/条，会把这个话题变成链路上
         最重的，且超 1 MB 后 DDS 分片丢包会连累整条检测消息（见接口 03b 说明）。
         裁剪后典型 5-20 KB，小两个数量级。
+
+        Returns
+        -------
+        bool
+            ``True`` only after a valid JPEG snapshot has been constructed and
+            passed to the snapshot publisher.  Detection3D uses this result
+            for its ``has_snapshot`` field.
         """
         color = getattr(self, "_last_color", None)
-        if color is None:
-            return
+        if color is None or getattr(color, "ndim", 0) < 2:
+            return False
 
         margin = int(self.get_parameter("snapshot_margin_px").value)
         h, w = color.shape[:2]
-        x1, y1, x2, y2 = (int(round(v)) for v in det.bbox_xyxy)
+        try:
+            bbox = np.asarray(det.bbox_xyxy, dtype=float)
+        except (TypeError, ValueError):
+            return False
+        if bbox.shape != (4,) or not np.all(np.isfinite(bbox)):
+            return False
+
+        x1, y1, x2, y2 = (int(round(v)) for v in bbox)
         x1, y1 = max(0, x1 - margin), max(0, y1 - margin)
         x2, y2 = min(w, x2 + margin), min(h, y2 + margin)
         if x2 <= x1 or y2 <= y1:
-            return
+            return False
 
         roi = color[y1:y2, x1:x2]
-        ok, buf = cv2.imencode(
-            ".jpg",
-            roi,
-            [int(cv2.IMWRITE_JPEG_QUALITY),
-             int(self.get_parameter("snapshot_quality").value)],
-        )
-        if not ok:
-            return
+        try:
+            ok, buf = cv2.imencode(
+                ".jpg",
+                roi,
+                [int(cv2.IMWRITE_JPEG_QUALITY),
+                 int(self.get_parameter("snapshot_quality").value)],
+            )
+        except cv2.error:
+            return False
+        if not ok or buf is None:
+            return False
 
         snap = DetectionSnapshot()
         snap.id = track_id
@@ -745,6 +761,7 @@ class VisionDetector(Node):
         snap.image.format = "jpeg"
         snap.image.data = buf.tobytes()
         self._snap_pub.publish(snap)
+        return True
 
 
 def main(args=None) -> None:
