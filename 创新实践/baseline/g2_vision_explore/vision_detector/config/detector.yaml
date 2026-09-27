@@ -2,8 +2,10 @@
 /**:
   ros__parameters:
     # ---- 话题 ----
-    # ⚠️ 这几项必须**第一周与 G1/G3 对齐**，以实际发布者为准。
-    #    下面写的是 RealSense 的常见命名，不是契约。
+    # input_mode=rgbd 保持原 RGB-D 路径；input_mode=rgb 时只使用 rgb_topic。
+    input_mode: rgbd
+    rgb_topic: /camera/go2/image_raw
+    # RGB-D 模式的 RealSense 常见命名，不是冻结契约。
     color_topic: /camera/color/image_raw
     depth_topic: /camera/aligned_depth_to_color/image_raw   # 注意：只有 align_depth:=true 才发布
     camera_info_topic: /camera/color/camera_info

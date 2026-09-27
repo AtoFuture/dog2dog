@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""G2 感知链路节点：图像 → 检测 → 三维坐标 → 发布接口 03 / 03b。
+"""G2 感知链路节点：二维检测与三维定位后端解耦。
 
 --------------------------------------------------------------------------------
 数据流
 
-    color/image ─┐
-                 ├─► 时间同步 ─► 抽帧 ─► YOLO 检测 ─┐
-    depth/image ─┘                                    │
-                                                      ├─► 三维反投影（g2_core.projector）
-    camera_info ─► 内参（只需一次）                     │
-                                                      ├─► tf2: camera → map
-    TF: map→camera ──────────────────────────────────┘
-                                                      │
-                                                      ├─► /detections_3d      (Detection3D)
-                                                      └─► /detections_snapshot (抓拍图 ROI JPEG)
+    RGB/Image ─► 抽帧 ─► YOLO/ByteTrack ─► Detection2D（g2_core）
+                                      │
+                         ┌────────────┴────────────┐
+                         │                         │
+                 RGB-only mode              RGB-D mode
+                 只保留二维结果          Depth + CameraInfo + TF
+                                           ─► 三维反投影
+                                           ─► /detections_3d
+                                           └─► /detections_snapshot
 
 算法全在 ``g2_core`` 里，本模块只做胶水：订阅、同步、抽帧、调 tf2、打包消息。
+RGB-only 模式不伪造三维坐标，也不发布 Detection3D/Snapshot。
 
 --------------------------------------------------------------------------------
 几个刻意的设计（都是踩过坑换来的，见 docs/框架规划.md）
@@ -43,6 +43,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 import time
 
@@ -60,7 +61,12 @@ from sensor_msgs.msg import CameraInfo, Image
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from g2_core.anomaly import keypoints_to_torso_3d, torso_tilt_from_vertical
-from g2_core.detector import Detector, DetectorConfig, DetectorUnavailableError
+from g2_core.detector import (
+    Detection2D,
+    Detector,
+    DetectorConfig,
+    DetectorUnavailableError,
+)
 from g2_core.fall_tracker import FallTracker, TorsoObservation
 from g2_core.projector import (
     CameraIntrinsics,
@@ -76,6 +82,21 @@ from .qos import LATCHED_QOS, RESULT_QOS, SENSOR_QOS
 #: map 系（REP-103，重力对齐）里的「上」。
 #: 注意这**只对 map 系成立** —— 相机光学系里的「上」是 (0,-1,0)。
 UP_IN_MAP = np.array([0.0, 0.0, 1.0])
+
+
+@dataclass(frozen=True)
+class TrackedFrame2D:
+    """G2 内部的帧级二维结果，不是新的 ROS 接口。
+
+    ``Detection2D`` 保存每个目标的 bbox、类别、confidence 和 track id；
+    这个帧级对象补上后续 RGB-D/LiDAR 后端需要的时间与原始图像几何。
+    ``image_shape`` 使用 OpenCV 顺序 ``(height, width)``，对应未裁剪的输入图像。
+    """
+
+    detections: list[Detection2D]
+    stamp: object
+    frame_id: str
+    image_shape: tuple[int, int]
 
 
 def build_fall_detection(ev, stamp, map_point, confidence: float, has_snapshot: bool):
@@ -127,10 +148,19 @@ class VisionDetector(Node):
     def __init__(self) -> None:
         super().__init__("vision_detector")
         self._declare_params()
+        self._input_mode = str(self.get_parameter("input_mode").value).strip().lower()
+        if self._input_mode not in {"rgbd", "rgb"}:
+            raise ValueError(
+                f"input_mode 必须是 'rgbd' 或 'rgb'，得到 {self._input_mode!r}"
+            )
 
         self._bridge = CvBridge()
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        # RGB-only 没有三维后端，不需要启动 TF listener；RGB-D 保持原行为。
+        self.tf_buffer = Buffer() if self._input_mode == "rgbd" else None
+        self.tf_listener = (
+            TransformListener(self.tf_buffer, self)
+            if self._input_mode == "rgbd" else None
+        )
 
         # 内参：从 CameraInfo 拿一次就够（准静态）
         self._intrinsics: CameraIntrinsics | None = None
@@ -149,8 +179,16 @@ class VisionDetector(Node):
                       "fall_stamp_regress": 0}
         # TF 降级计数（用不到图像时间戳时 +1）
         self._tf_fallback_count = 0
+        self._last_color = None
+        self._last_2d: TrackedFrame2D | None = None
 
-        self._fall_enabled = bool(self.get_parameter("detect_fall").value)
+        configured_fall = bool(self.get_parameter("detect_fall").value)
+        self._fall_enabled = configured_fall and self._input_mode == "rgbd"
+        if configured_fall and self._input_mode == "rgb":
+            self.get_logger().warn(
+                "RGB-only mode 不启用依赖深度/TF 的倒地 Detection3D 发布；"
+                "二维检测/跟踪仍正常运行"
+            )
         _max_h = float(self.get_parameter("fall_max_height_m").value)
         self._fall_tracker = FallTracker(
             transition_max_s=float(self.get_parameter("fall_transition_max_s").value),
@@ -196,7 +234,38 @@ class VisionDetector(Node):
         # 但**不要**照着旧注释去理解这里的行为。
         self._vision_group = MutuallyExclusiveCallbackGroup()
 
-        self.create_subscription(
+        self._setup_subscriptions()
+        self.get_logger().info(
+            "⚠️ 仿真下记得给本节点设 use_sim_time:=true，否则 TF 会报 extrapolation"
+        )
+        # 每 10 秒报一次处理统计 —— 出问题时一眼能看出卡在哪一步
+        self.create_timer(10.0, self._report_stats)
+
+    def _setup_subscriptions(self) -> None:
+        """按 input_mode 建立最小输入集合。"""
+        self._rgb_sub = None
+        self._camera_info_sub = None
+        self._sync = None
+        if self._input_mode == "rgb":
+            self._rgb_sub = self.create_subscription(
+                Image,
+                self.get_parameter("rgb_topic").value,
+                self._on_rgb,
+                SENSOR_QOS,
+                callback_group=self._vision_group,
+            )
+            self.get_logger().info(
+                "RGB-only mode enabled. 2D detection/tracking is active. "
+                "Detection3D will not be published until a 3D localization backend "
+                "is available."
+            )
+            self.get_logger().info(
+                f"感知链路就绪：抽帧 {self.get_parameter('detect_hz').value} Hz ｜ "
+                f"RGB {self.get_parameter('rgb_topic').value}"
+            )
+            return
+
+        self._camera_info_sub = self.create_subscription(
             CameraInfo,
             self.get_parameter("camera_info_topic").value,
             self._on_camera_info,
@@ -225,15 +294,18 @@ class VisionDetector(Node):
             f"彩色 {self.get_parameter('color_topic').value} ｜ "
             f"深度 {self.get_parameter('depth_topic').value}"
         )
-        self.get_logger().info(
-            "⚠️ 仿真下记得给本节点设 use_sim_time:=true，否则 TF 会报 extrapolation"
-        )
-        # 每 10 秒报一次处理统计 —— 出问题时一眼能看出卡在哪一步
-        self.create_timer(10.0, self._report_stats)
 
     def _report_stats(self) -> None:
         st = self._stat
         if st["frames"] == 0:
+            return
+        # 旧的单元测试替身可能没有这个新参数；生产节点总会设置它，
+        # 缺失时按历史 RGB-D 统计路径处理，保持向后兼容。
+        if getattr(self, "_input_mode", "rgbd") == "rgb":
+            self.get_logger().info(
+                f"[统计] RGB-only 处理 {st['frames']} 帧 ｜ 二维检测 {st['dets']} 个 ｜ "
+                "Detection3D=0（未配置三维定位后端）"
+            )
             return
         self.get_logger().info(
             f"[统计] 处理 {st['frames']} 帧 ｜ 检测 {st['dets']} 个 ｜ "
@@ -295,6 +367,8 @@ class VisionDetector(Node):
         d = self.declare_parameter
 
         # --- 话题 ---
+        d("input_mode", "rgbd")       # rgbd（兼容原路径）| rgb（仅二维）
+        d("rgb_topic", "/camera/go2/image_raw")
         d("color_topic", "/camera/color/image_raw")
         d("depth_topic", "/camera/depth/image_raw")
         d("camera_info_topic", "/camera/color/camera_info")
@@ -385,70 +459,95 @@ class VisionDetector(Node):
             )
 
     # ------------------------------------------------------------------
-    def _on_images(self, color_msg: Image, depth_msg: Image) -> None:
-        # 第一对图像到达时报一次 —— 这是判断「相机链路通了没」最直接的信号。
-        # 没有它的话，「订阅建了但回调不触发」（QoS 不匹配、同步 slop 太小、
-        # 时间戳对不上）和「回调跑了但下游失败」这两种情况从日志上分不出来。
-        if not getattr(self, "_logged_first_frame", False):
-            self._logged_first_frame = True
+    def _on_rgb(self, rgb_msg: Image) -> None:
+        """RGB-only 输入：只做二维检测/跟踪，不等待深度或 CameraInfo。"""
+        if not getattr(self, "_logged_first_rgb_frame", False):
+            self._logged_first_rgb_frame = True
             self.get_logger().info(
-                f"收到第一对同步图像：彩色 {color_msg.width}x{color_msg.height} "
-                f"深度 {depth_msg.width}x{depth_msg.height}（{depth_msg.encoding}）"
+                f"收到第一帧 RGB：{rgb_msg.width}x{rgb_msg.height}（{rgb_msg.encoding}）"
             )
 
-        # --- 抽帧 ---
+        now = self._next_detection_time()
+        if now is None:
+            return
+
+        try:
+            color = self._bridge.imgmsg_to_cv2(rgb_msg, desired_encoding="bgr8")
+        except Exception as exc:
+            self.get_logger().error(f"RGB 图像转换失败：{exc}", throttle_duration_sec=5.0)
+            return
+
+        # Image.header.stamp 是当前 RGB 路径唯一可用的图像时间；不推导 Go2
+        # 的 acquisition timestamp，也不在这里伪造三维结果。
+        self._process_frame(
+            color,
+            rgb_msg.header.stamp,
+            rgb_msg.header.frame_id,
+            None,
+            now,
+        )
+
+    def _next_detection_time(self) -> float | None:
+        """按 detect_hz 抽帧，返回本次处理用的单调时钟时间。"""
         now = time.monotonic()
         period = 1.0 / max(1e-6, float(self.get_parameter("detect_hz").value))
         if now - getattr(self, "_last_detect", 0.0) < period:
-            return
+            return None
         self._last_detect = now
+        return now
 
-        if self._intrinsics is None:
-            self.get_logger().warn(
-                "还没收到 CameraInfo，无法做三维解算 —— 跳过本帧",
-                throttle_duration_sec=5.0,
-            )
-            return
-
-        # --- 转图 ---
-        try:
-            color = self._bridge.imgmsg_to_cv2(color_msg, desired_encoding="bgr8")
-            # 深度用 passthrough：保持 16UC1 / 32FC1 原样，
-            # 由 depth_to_meters 按 encoding 归一化（搞错就是 1000 倍误差）
-            depth_raw = self._bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
-        except Exception as exc:
-            self.get_logger().error(f"图像转换失败：{exc}", throttle_duration_sec=5.0)
-            return
-
-        if depth_raw.shape[:2] != color.shape[:2]:
-            self.get_logger().error(
-                f"深度图 {depth_raw.shape[:2]} 与彩色图 {color.shape[:2]} 尺寸不一致。"
-                f"三维解算无法进行 —— 请在上游做深度对齐（align_depth:=true）。",
-                throttle_duration_sec=10.0,
-            )
-            return
-
-        try:
-            depth_m = depth_to_meters(depth_raw, depth_msg.encoding)
-        except Exception as exc:
-            self.get_logger().error(f"深度编码处理失败：{exc}", throttle_duration_sec=10.0)
-            return
-
-        # --- 检测 ---
-        # track 而不是 detect：拿到稳定的 track_id，才能做去重。
+    def _run_2d(self, color: np.ndarray):
+        """公共二维路径：RGB 和 RGB-D 都从这里调用 Detector.track()。"""
+        # track 而不是 detect：拿到稳定的 track_id，才能做去重和后续融合。
         detections = self._detector.track(color)
         self._stat["frames"] += 1
         self._stat["dets"] += len(detections)
 
-        # 抓拍图要从原图上裁 ROI，这里存一下当前帧。
-        # （脏但直接；抓拍只发一次/目标，不需要保留历史帧。）
+        # 抓拍图要从原图上裁 ROI；RGB-only 不会发布 Snapshot，但保留原图几何
+        # 信息，后续接入二维/三维后端时仍可复用。
         self._last_color = color
+        return detections
 
-        # --- 逐目标处理 ---
-        stamp = color_msg.header.stamp
+    def _process_frame(
+        self,
+        color: np.ndarray,
+        stamp,
+        camera_frame: str,
+        depth_m: np.ndarray | None,
+        now: float,
+    ) -> TrackedFrame2D:
+        """处理一帧 RGB，并按模式选择是否进入三维定位后端。"""
+        detections = self._run_2d(color)
+        frame_2d = TrackedFrame2D(
+            detections=detections,
+            stamp=stamp,
+            frame_id=str(camera_frame or ""),
+            image_shape=(int(color.shape[0]), int(color.shape[1])),
+        )
+        self._last_2d = frame_2d
+
+        if self._input_mode == "rgb":
+            # 二维结果留在内部，不发布伪造的 Detection3D/Snapshot。
+            return frame_2d
+
+        if depth_m is None:
+            # 防御性保护：RGB-D 模式没有合法深度时也不能构造三维消息。
+            return frame_2d
+        self._process_rgbd_detections(detections, depth_m, camera_frame, stamp, now)
+        return frame_2d
+
+    def _process_rgbd_detections(
+        self,
+        detections,
+        depth_m: np.ndarray,
+        camera_frame: str,
+        stamp,
+        now: float,
+    ) -> None:
+        """现有 RGB-D 三维定位与正式消息发布路径。"""
         # TF 每帧查一次就够：同一帧里所有目标用的是同一个变换。
         # （原先每个目标各查一次，既浪费又让 tf_fail 计数变得难解释。）
-        tf = self._lookup_tf(color_msg.header.frame_id, stamp)
+        tf = self._lookup_tf(camera_frame, stamp)
 
         for det in detections:
             # ⚠️ 倒地判据**每帧都喂**，不受下面的 min_publish_interval_s 节流影响。
@@ -482,6 +581,62 @@ class VisionDetector(Node):
 
             self._stat["published"] += 1
             self._publish_detection(det, self._to_map(res, tf), stamp)
+
+    # ------------------------------------------------------------------
+    def _on_images(self, color_msg: Image, depth_msg: Image) -> None:
+        # 第一对图像到达时报一次 —— 这是判断「相机链路通了没」最直接的信号。
+        # 没有它的话，「订阅建了但回调不触发」（QoS 不匹配、同步 slop 太小、
+        # 时间戳对不上）和「回调跑了但下游失败」这两种情况从日志上分不出来。
+        if not getattr(self, "_logged_first_frame", False):
+            self._logged_first_frame = True
+            self.get_logger().info(
+                f"收到第一对同步图像：彩色 {color_msg.width}x{color_msg.height} "
+                f"深度 {depth_msg.width}x{depth_msg.height}（{depth_msg.encoding}）"
+            )
+
+        # --- 抽帧 ---
+        now = self._next_detection_time()
+        if now is None:
+            return
+
+        if self._intrinsics is None:
+            self.get_logger().warn(
+                "还没收到 CameraInfo，无法做三维解算 —— 跳过本帧",
+                throttle_duration_sec=5.0,
+            )
+            return
+
+        # --- 转图 ---
+        try:
+            color = self._bridge.imgmsg_to_cv2(color_msg, desired_encoding="bgr8")
+            # 深度用 passthrough：保持 16UC1 / 32FC1 原样，
+            # 由 depth_to_meters 按 encoding 归一化（搞错就是 1000 倍误差）
+            depth_raw = self._bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
+        except Exception as exc:
+            self.get_logger().error(f"图像转换失败：{exc}", throttle_duration_sec=5.0)
+            return
+
+        if depth_raw.shape[:2] != color.shape[:2]:
+            self.get_logger().error(
+                f"深度图 {depth_raw.shape[:2]} 与彩色图 {color.shape[:2]} 尺寸不一致。"
+                f"三维解算无法进行 —— 请在上游做深度对齐（align_depth:=true）。",
+                throttle_duration_sec=10.0,
+            )
+            return
+
+        try:
+            depth_m = depth_to_meters(depth_raw, depth_msg.encoding)
+        except Exception as exc:
+            self.get_logger().error(f"深度编码处理失败：{exc}", throttle_duration_sec=10.0)
+            return
+
+        self._process_frame(
+            color,
+            color_msg.header.stamp,
+            color_msg.header.frame_id,
+            depth_m,
+            now,
+        )
 
     # ------------------------------------------------------------------
     # 倒地识别

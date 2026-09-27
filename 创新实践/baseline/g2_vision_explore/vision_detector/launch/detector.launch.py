@@ -20,6 +20,8 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     params_file = LaunchConfiguration("params_file")
+    input_mode = LaunchConfiguration("input_mode")
+    rgb_topic = LaunchConfiguration("rgb_topic")
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -32,11 +34,28 @@ def generate_launch_description():
                 [FindPackageShare("vision_detector"), "config", "detector.yaml"]
             ),
         ),
+        DeclareLaunchArgument(
+            "input_mode",
+            default_value="rgbd",
+            description="rgbd 保持原 RGB-D 路径；rgb 只做二维检测/跟踪",
+        ),
+        DeclareLaunchArgument(
+            "rgb_topic",
+            default_value="/camera/go2/image_raw",
+            description="RGB-only 模式的 sensor_msgs/Image 输入 topic",
+        ),
         Node(
             package="vision_detector",
             executable="detector_node",
             name="vision_detector",
             output="screen",
-            parameters=[params_file, {"use_sim_time": use_sim_time}],
+            parameters=[
+                params_file,
+                {
+                    "use_sim_time": use_sim_time,
+                    "input_mode": input_mode,
+                    "rgb_topic": rgb_topic,
+                },
+            ],
         ),
     ])

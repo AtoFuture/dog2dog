@@ -16,7 +16,7 @@ setup(
     zip_safe=True,
     maintainer="AtoFuture",
     maintainer_email="240923267+AtoFuture@users.noreply.github.com",
-    description="G2 感知链路：检测 + 三维解算 + 发布 Detection3D",
+    description="G2 感知链路：RGB 检测/跟踪 + 可选 RGB-D 三维解算",
     license="Apache-2.0",
     entry_points={
         "console_scripts": [

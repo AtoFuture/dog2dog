@@ -109,3 +109,21 @@ ctest --test-dir build/go2_video_bridge --output-on-failure
 测试会用固定 chunk 大小 `1/7/188/1024/4096` 和固定 seed `20260927` 的随机 chunk 重复喂同一个 Annex-B 字节流，检查帧数、分辨率、每帧图像缓冲区和错误计数。当前离线素材解出的分辨率是 `640x240`；这只是测试素材分辨率，不是 Go2 真机分辨率承诺。
 
 本包不发布 `CameraInfo`，不伪造深度，不修改现有 detector 或 `vision_interfaces`。
+
+## 连接 G2 RGB-only detector
+
+Bridge 的输出可以直接作为 `vision_detector` 的 RGB-only 输入：
+
+```text
+/camera/go2/image_raw (sensor_msgs/Image, bgr8)
+    -> vision_detector(input_mode=rgb)
+```
+
+静态配置/启动方式为：
+
+```bash
+ros2 launch vision_detector detector.launch.py \
+  input_mode:=rgb rgb_topic:=/camera/go2/image_raw
+```
+
+该连接已通过代码、参数和离线二维处理路径验证；当前没有 Go2 真机 `/frontvideostream` 数据，因此不代表真机 Bridge → detector ROS 图已经跑通。RGB-only detector 只保留内部二维检测/跟踪结果，不伪造 `Detection3D`、`CameraInfo` 或深度。

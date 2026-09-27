@@ -4,7 +4,7 @@
   <name>vision_detector</name>
   <version>0.1.0</version>
   <description>
-    G2 感知链路：订阅图像+深度，跑 YOLO 检测，解算三维坐标，
+    G2 感知链路：RGB 二维检测/跟踪，以及可选的 RGB-D 三维解算，
     发布接口 03（Detection3D）与 03b（DetectionSnapshot）。
     算法主体在 g2_core 里，本包只做 ROS2 侧的胶水。
   </description>
