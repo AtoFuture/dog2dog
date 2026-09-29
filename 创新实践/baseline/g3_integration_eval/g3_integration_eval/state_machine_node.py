@@ -25,6 +25,7 @@ from g3_integration_eval.state_machine import (
     State,
     battery_return_event,
     mission_state_value,
+    normalize_battery_percentage,
     parse_event,
     transition,
     validate_low_battery_threshold,
@@ -78,6 +79,7 @@ class G3StateMachineNode(Node):
         )
 
         self._state = State.STANDBY
+        self._battery_scale_warning_emitted = False
         self._state_publisher = self.create_publisher(String, state_topic, 10)
         self._mission_state_publisher = self.create_publisher(
             String,
@@ -155,16 +157,29 @@ class G3StateMachineNode(Node):
         self._apply_event(event, source="command")
 
     def _on_battery(self, message: BatteryState) -> None:
+        normalized_percentage = normalize_battery_percentage(message.percentage)
+        if normalized_percentage is None:
+            return
+
+        if message.percentage > 1.0 and not self._battery_scale_warning_emitted:
+            self.get_logger().warning(
+                "battery percentage is using the 0..100 scale: "
+                f"received {message.percentage:.3f}, normalized to "
+                f"{normalized_percentage:.3f}; update the publisher to emit "
+                "sensor_msgs/BatteryState percentage in the 0..1 range"
+            )
+            self._battery_scale_warning_emitted = True
+
         event = battery_return_event(
             self._state,
-            message.percentage,
+            normalized_percentage,
             self._low_battery_threshold,
         )
         if event is None:
             return
 
         self.get_logger().warning(
-            f"low battery detected: {message.percentage:.3f} < "
+            f"low battery detected: {normalized_percentage:.3f} < "
             f"{self._low_battery_threshold:.3f}; requesting RETURN"
         )
         self._apply_event(event, source="battery")

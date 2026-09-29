@@ -94,6 +94,26 @@ def validate_low_battery_threshold(threshold: float) -> float:
     return normalized
 
 
+def normalize_battery_percentage(percentage: float) -> Optional[float]:
+    """Normalize a battery reading expressed as either 0..1 or 0..100.
+
+    ``sensor_msgs/BatteryState`` defines ``percentage`` as a normalized value,
+    but some battery publishers expose a whole-number percentage instead. Keep
+    the ROS representation unchanged and accept the latter at this integration
+    boundary so a reading such as 15.0 cannot silently disable low-battery
+    RETURN handling.
+
+    Unknown and out-of-range readings return ``None``.
+    """
+
+    value = float(percentage)
+    if not isfinite(value) or not 0.0 <= value <= 100.0:
+        return None
+    if value > 1.0:
+        return value / 100.0
+    return value
+
+
 def battery_return_event(
     current: State,
     percentage: float,
@@ -103,18 +123,17 @@ def battery_return_event(
 
     Only EXPLORE may produce the event. Once RETURN or ESTOP has been entered,
     subsequent battery messages therefore cannot retrigger or override it.
-    BatteryState uses NaN for an unknown percentage, so non-finite and
-    out-of-range readings are deliberately ignored.
+    Both normalized 0..1 readings and whole-number 0..100 readings are
+    accepted. BatteryState uses NaN for an unknown percentage, so non-finite
+    and out-of-range readings are deliberately ignored.
     """
 
     normalized_threshold = validate_low_battery_threshold(threshold)
-    normalized_percentage = float(percentage)
+    normalized_percentage = normalize_battery_percentage(percentage)
 
     if current is not State.EXPLORE:
         return None
-    if not isfinite(normalized_percentage):
-        return None
-    if not 0.0 <= normalized_percentage <= 1.0:
+    if normalized_percentage is None:
         return None
     if normalized_percentage < normalized_threshold:
         return Event.RETURN
