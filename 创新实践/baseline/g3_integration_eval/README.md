@@ -234,3 +234,19 @@ ros2 run g3_integration_eval mission_brain
 - 非 `EXPLORE` 或定位不健康时只能安全等待。
 - API 超时、断网、格式错误或越界输出会自动回退到确定性 frontier 打分。
 - 本节点只发布决策，不发布 `cmd_vel`，也不直接发 Nav2 goal。
+
+如需在返航成功后把仿真电量自动恢复到 80%，可以用辅助脚本代替终端 1
+中的 `sim_battery` 命令：
+
+```bash
+bash g3_integration_eval/scripts/run_sim_battery_auto_recharge.sh \
+  -p initial_percentage:=0.23 \
+  -p idle_drain_per_sec:=0.0001 \
+  -p moving_drain_per_sec:=0.001
+```
+
+`auto_recharge_on_return_success` 默认关闭。脚本会启用该参数并监听
+`/g3/return_event`；只有真实导航返回 `succeeded` 后才回充到 `0.80`，
+`preview`、失败和同一 `attempt_id` 的重复事件均不会回充。回充只改变仿真
+电量，状态机仍保持 `RETURN`；下一轮任务需要人工发送 `standby`，再发送
+`explore`。

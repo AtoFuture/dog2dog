@@ -3,6 +3,7 @@ import pytest
 from g3_integration_eval.sim_battery import (
     BatteryDischargeModel,
     elapsed_seconds,
+    successful_return_attempt_id,
     twist_is_moving,
 )
 
@@ -56,3 +57,42 @@ def test_sim_clock_initial_jump_does_not_drain_battery():
 
 def test_sim_clock_backward_jump_does_not_drain_battery():
     assert elapsed_seconds(20_000_000_000, 10_000_000_000) == 0.0
+
+
+def test_recharge_raises_battery_to_target_without_lowering_it():
+    model = BatteryDischargeModel(0.2, 0.0, 0.1)
+
+    model.advance(1.0, moving=True)
+    assert model.recharge_to(0.8) == pytest.approx(0.8)
+    assert model.percentage == pytest.approx(0.8)
+    assert model.recharge_to(0.5) == pytest.approx(0.8)
+
+
+@pytest.mark.parametrize("target", [-0.1, 1.1, float("nan")])
+def test_invalid_recharge_target_is_rejected(target):
+    model = BatteryDischargeModel(0.2, 0.0, 0.1)
+
+    with pytest.raises(ValueError):
+        model.recharge_to(target)
+
+
+def test_succeeded_return_event_yields_attempt_id():
+    payload = '{"attempt_id":"return-1","status":"succeeded"}'
+
+    assert successful_return_attempt_id(payload) == "return-1"
+
+
+@pytest.mark.parametrize("status", ["accepted", "aborted", "preview"])
+def test_non_succeeded_return_event_is_ignored(status):
+    payload = f'{{"attempt_id":"return-1","status":"{status}"}}'
+
+    assert successful_return_attempt_id(payload) is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ["not json", "[]", '{"status":"succeeded"}'],
+)
+def test_invalid_return_event_is_rejected(payload):
+    with pytest.raises(ValueError):
+        successful_return_attempt_id(payload)

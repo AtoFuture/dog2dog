@@ -8,12 +8,15 @@ from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import BatteryState
+from std_msgs.msg import String
 
 from g3_integration_eval.sim_battery import (
     BatteryDischargeModel,
     elapsed_seconds,
+    successful_return_attempt_id,
     twist_is_moving,
     validate_nonnegative,
+    validate_percentage,
     validate_positive,
 )
 
@@ -25,6 +28,9 @@ class SimulatedBatteryNode(Node):
         super().__init__("g3_sim_battery")
         self.declare_parameter("battery_topic", "/g3/sim_battery_state")
         self.declare_parameter("cmd_vel_topic", "/robot1/cmd_vel")
+        self.declare_parameter("return_event_topic", "/g3/return_event")
+        self.declare_parameter("auto_recharge_on_return_success", False)
+        self.declare_parameter("recharge_percentage", 0.80)
         self.declare_parameter("initial_percentage", 0.80)
         self.declare_parameter("idle_drain_per_sec", 0.0001)
         self.declare_parameter("moving_drain_per_sec", 0.0010)
@@ -37,6 +43,16 @@ class SimulatedBatteryNode(Node):
 
         battery_topic = str(self.get_parameter("battery_topic").value)
         cmd_vel_topic = str(self.get_parameter("cmd_vel_topic").value)
+        return_event_topic = str(
+            self.get_parameter("return_event_topic").value
+        )
+        self._auto_recharge = bool(
+            self.get_parameter("auto_recharge_on_return_success").value
+        )
+        self._recharge_percentage = validate_percentage(
+            self.get_parameter("recharge_percentage").value,
+            "recharge_percentage",
+        )
         self._publish_rate_hz = validate_positive(
             self.get_parameter("publish_rate_hz").value,
             "publish_rate_hz",
@@ -72,6 +88,7 @@ class SimulatedBatteryNode(Node):
         self._last_update_ns = None
         self._last_motion_ns = None
         self._last_log_bucket = floor(self._model.percentage * 20.0)
+        self._recharged_attempt_ids = set()
 
         self._publisher = self.create_publisher(
             BatteryState,
@@ -84,6 +101,15 @@ class SimulatedBatteryNode(Node):
             self._on_cmd_vel,
             qos_profile_sensor_data,
         )
+        self._return_event_subscription = None
+        if self._auto_recharge:
+            self._return_event_subscription = self.create_subscription(
+                String,
+                return_event_topic,
+                self._on_return_event,
+                10,
+            )
+
         self._timer = self.create_timer(
             1.0 / self._publish_rate_hz,
             self._on_timer,
@@ -94,6 +120,12 @@ class SimulatedBatteryNode(Node):
             f"topic={battery_topic}, cmd_vel={cmd_vel_topic}, "
             f"initial={self._model.percentage:.3f}"
         )
+        if self._auto_recharge:
+            self.get_logger().info(
+                "automatic simulated recharge enabled: "
+                f"return_event_topic={return_event_topic}, "
+                f"target={self._recharge_percentage:.3f}"
+            )
         self._publish(self.get_clock().now(), moving=False)
 
     def _on_cmd_vel(self, message: Twist) -> None:
@@ -109,6 +141,31 @@ class SimulatedBatteryNode(Node):
         self._last_motion_ns = (
             self.get_clock().now().nanoseconds if moving else None
         )
+
+    def _on_return_event(self, message: String) -> None:
+        try:
+            attempt_id = successful_return_attempt_id(message.data)
+        except ValueError as exc:
+            self.get_logger().warning(f"invalid RETURN event ignored: {exc}")
+            return
+
+        if attempt_id is None or attempt_id in self._recharged_attempt_ids:
+            return
+
+        previous_percentage = self._model.percentage
+        recharged_percentage = self._model.recharge_to(self._recharge_percentage)
+        self._recharged_attempt_ids.add(attempt_id)
+
+        now = self.get_clock().now()
+        self._last_update_ns = now.nanoseconds
+        self._last_motion_ns = None
+        self._last_log_bucket = floor(recharged_percentage * 20.0)
+        self._publish(now, moving=False)
+        self.get_logger().warning(
+            f"simulated recharge applied: attempt_id={attempt_id}, "
+            f"battery={previous_percentage:.3f} -> {recharged_percentage:.3f}"
+        )
+
 
     def _on_timer(self) -> None:
         now = self.get_clock().now()

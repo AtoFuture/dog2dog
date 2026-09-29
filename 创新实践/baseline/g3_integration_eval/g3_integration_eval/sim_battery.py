@@ -1,6 +1,30 @@
 """ROS-independent battery discharge model used by the simulator node."""
 
+import json
 from math import isfinite
+from typing import Optional
+
+
+def successful_return_attempt_id(payload: str) -> Optional[str]:
+    """Return the attempt ID only for a valid succeeded RETURN event."""
+
+    if not isinstance(payload, str):
+        raise ValueError("return event payload must be a string")
+
+    try:
+        event = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError("return event payload is not valid JSON") from exc
+
+    if not isinstance(event, dict):
+        raise ValueError("return event payload must be a JSON object")
+    if event.get("status") != "succeeded":
+        return None
+
+    attempt_id = event.get("attempt_id")
+    if not isinstance(attempt_id, str) or not attempt_id.strip():
+        raise ValueError("succeeded return event has no valid attempt_id")
+    return attempt_id.strip()
 
 
 def _finite_number(value, name: str) -> float:
@@ -107,4 +131,11 @@ class BatteryDischargeModel:
             0.0,
             self._percentage - drain_rate * elapsed,
         )
+        return self._percentage
+
+    def recharge_to(self, percentage: float) -> float:
+        """Raise the simulated charge to a validated target percentage."""
+
+        target = validate_percentage(percentage, "recharge_percentage")
+        self._percentage = max(self._percentage, target)
         return self._percentage
