@@ -5,6 +5,7 @@ from g3_integration_eval.state_machine import (
     InvalidTransition,
     State,
     battery_return_event,
+    estop_reset_block_reason,
     mission_state_value,
     normalize_battery_percentage,
     parse_event,
@@ -45,6 +46,23 @@ def test_estop_requires_reset_before_normal_operation():
     with pytest.raises(InvalidTransition):
         transition(State.ESTOP, Event.EXPLORE)
     assert transition(State.ESTOP, Event.RESET) is State.STANDBY
+
+
+@pytest.mark.parametrize(
+    ("battery_fault_active", "navigation_active", "expected"),
+    [
+        (True, False, "battery fault has not recovered"),
+        (False, True, "navigation cancellation has not reached a terminal state"),
+        (False, False, None),
+    ],
+)
+def test_estop_reset_requires_recovered_fault_and_finished_navigation(
+    battery_fault_active, navigation_active, expected
+):
+    assert estop_reset_block_reason(
+        battery_fault_active=battery_fault_active,
+        navigation_active=navigation_active,
+    ) == expected
 
 
 def test_return_cannot_jump_directly_to_explore():

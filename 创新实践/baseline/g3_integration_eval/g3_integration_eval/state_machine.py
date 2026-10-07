@@ -94,6 +94,18 @@ def validate_low_battery_threshold(threshold: float) -> float:
     return normalized
 
 
+def estop_reset_block_reason(
+    *, battery_fault_active: bool, navigation_active: bool
+) -> Optional[str]:
+    """Explain why a latched ESTOP cannot yet be reset, if applicable."""
+
+    if battery_fault_active:
+        return "battery fault has not recovered"
+    if navigation_active:
+        return "navigation cancellation has not reached a terminal state"
+    return None
+
+
 def normalize_battery_percentage(percentage: float) -> Optional[float]:
     """Validate a normalized battery reading in the inclusive [0, 1] range.
 

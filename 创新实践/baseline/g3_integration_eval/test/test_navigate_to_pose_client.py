@@ -22,12 +22,36 @@ class FakeClock:
 class FakeNode:
     def __init__(self):
         self.logger = FakeLogger()
+        self.timers = []
 
     def get_clock(self):
         return FakeClock()
 
     def get_logger(self):
         return self.logger
+
+    def create_timer(self, period, callback):
+        timer = FakeTimer(period, callback)
+        self.timers.append(timer)
+        return timer
+
+    def destroy_timer(self, timer):
+        timer.destroyed = True
+
+
+class FakeTimer:
+    def __init__(self, period, callback):
+        self.period = period
+        self.callback = callback
+        self.canceled = False
+        self.destroyed = False
+
+    def cancel(self):
+        self.canceled = True
+
+    def trigger(self):
+        if not self.canceled:
+            self.callback()
 
 
 class FakeGoal:
@@ -58,26 +82,49 @@ class FakeFuture:
         if self._complete_immediately:
             callback(self)
 
+    def complete(self, value=None, *, error=None):
+        if value is not None:
+            self._value = value
+        self._error = error
+        self._complete_immediately = True
+        if self.callback is not None:
+            self.callback(self)
+
 
 class FakeGoalHandle:
-    def __init__(self, *, accepted, result_future, uuid_bytes=bytes(range(16))):
+    def __init__(
+        self,
+        *,
+        accepted,
+        result_future,
+        cancel_future=None,
+        uuid_bytes=bytes(range(16)),
+    ):
         self.accepted = accepted
         self.goal_id = SimpleNamespace(uuid=list(uuid_bytes))
         self._result_future = result_future
+        self._cancel_future = cancel_future or FakeFuture(
+            SimpleNamespace(goals_canceling=[self.goal_id])
+        )
+        self.cancel_calls = 0
 
     def get_result_async(self):
         return self._result_future
+
+    def cancel_goal_async(self):
+        self.cancel_calls += 1
+        return self._cancel_future
 
 
 class FakeActionClient:
     def __init__(self, *, server_available=True, response_future=None):
         self.server_available = server_available
         self.response_future = response_future
-        self.wait_timeouts = []
+        self.server_checks = 0
         self.sent_goals = []
 
-    def wait_for_server(self, *, timeout_sec):
-        self.wait_timeouts.append(timeout_sec)
+    def server_is_ready(self):
+        self.server_checks += 1
         return self.server_available
 
     def send_goal_async(self, goal):
@@ -89,15 +136,18 @@ HOME = {"frame_id": "map", "x": 1.0, "y": -2.0, "yaw": 0.5}
 GOAL_ID = bytes(range(16)).hex()
 
 
-def make_client(*, enabled, action_client, events):
+def make_client(
+    *, enabled, action_client, events, node=None, monotonic_fn=None
+):
     return NavigateToPoseClient(
-        FakeNode(),
+        node or FakeNode(),
         enable_navigation_transmission=enabled,
         server_timeout_sec=1.25,
         event_callback=events.append,
         action_client=action_client,
         goal_factory=FakeGoal,
         attempt_id_factory=lambda: "attempt-1",
+        monotonic_fn=monotonic_fn,
     )
 
 
@@ -114,7 +164,7 @@ def test_transmission_disabled_is_preview_only():
     attempt_id = client.request_return(goal, trigger="battery", home_target=HOME)
 
     assert attempt_id == "attempt-1"
-    assert action_client.wait_timeouts == []
+    assert action_client.server_checks == 0
     assert action_client.sent_goals == []
     assert [event["status"] for event in events] == ["preview"]
     assert events[0]["goal_id"] is None
@@ -126,21 +176,31 @@ def test_transmission_disabled_is_preview_only():
 
 def test_server_unavailable_does_not_send_goal():
     events = []
+    now = [0.0]
+    node = FakeNode()
     action_client = FakeActionClient(server_available=False)
     client = make_client(
         enabled=True,
         action_client=action_client,
         events=events,
+        node=node,
+        monotonic_fn=lambda: now[0],
     )
 
     client.request_return(FakeGoal(), trigger="command", home_target=HOME)
 
-    assert action_client.wait_timeouts == [1.25]
+    assert [event["status"] for event in events] == ["waiting_for_server"]
+    assert len(node.timers) == 1
+
+    now[0] = 1.25
+    node.timers[0].trigger()
+
     assert action_client.sent_goals == []
     assert [event["status"] for event in events] == [
         "waiting_for_server",
         "server_unavailable",
     ]
+    assert node.timers[0].canceled
 
 
 def test_goal_rejected_records_goal_uuid():
@@ -180,6 +240,127 @@ def test_goal_accepted_records_uuid_before_result():
     assert events[-1]["status"] == "accepted"
     assert events[-1]["goal_id"] == GOAL_ID
     assert result_future.callback is not None
+
+
+def test_cancel_accepted_goal_waits_for_canceled_result():
+    events = []
+    result_future = FakeFuture(complete_immediately=False)
+    handle = FakeGoalHandle(accepted=True, result_future=result_future)
+    client = make_client(
+        enabled=True,
+        action_client=FakeActionClient(response_future=FakeFuture(handle)),
+        events=events,
+    )
+
+    client.request_return(FakeGoal(), trigger="battery", home_target=HOME)
+    assert client.has_active_goal
+
+    assert client.cancel_current_goal(reason="estop")
+    assert handle.cancel_calls == 1
+    assert client.has_active_goal
+    assert [event["status"] for event in events][-2:] == [
+        "cancel_request_sent",
+        "cancel_accepted",
+    ]
+
+    result_future.complete(SimpleNamespace(status=5))
+
+    assert events[-1]["status"] == "canceled"
+    assert not client.has_active_goal
+
+
+def test_goal_accepted_after_estop_is_canceled_immediately():
+    events = []
+    response_future = FakeFuture(complete_immediately=False)
+    result_future = FakeFuture(complete_immediately=False)
+    handle = FakeGoalHandle(accepted=True, result_future=result_future)
+    client = make_client(
+        enabled=True,
+        action_client=FakeActionClient(response_future=response_future),
+        events=events,
+    )
+
+    client.request_return(FakeGoal(), trigger="battery", home_target=HOME)
+    assert client.cancel_current_goal(reason="estop")
+    assert events[-1]["status"] == "cancel_pending"
+
+    response_future.complete(handle)
+
+    assert handle.cancel_calls == 1
+    assert [event["status"] for event in events][-3:] == [
+        "accepted",
+        "cancel_request_sent",
+        "cancel_accepted",
+    ]
+
+    result_future.complete(SimpleNamespace(status=5))
+    assert events[-1]["status"] == "canceled"
+    assert not client.has_active_goal
+
+
+def test_cancel_is_idempotent():
+    events = []
+    result_future = FakeFuture(complete_immediately=False)
+    handle = FakeGoalHandle(accepted=True, result_future=result_future)
+    client = make_client(
+        enabled=True,
+        action_client=FakeActionClient(response_future=FakeFuture(handle)),
+        events=events,
+    )
+
+    client.request_return(FakeGoal(), trigger="battery", home_target=HOME)
+
+    assert client.cancel_current_goal(reason="estop")
+    assert client.cancel_current_goal(reason="estop")
+    assert handle.cancel_calls == 1
+
+
+def test_cancel_while_waiting_for_server_never_sends_goal():
+    events = []
+    node = FakeNode()
+    action_client = FakeActionClient(server_available=False)
+    client = make_client(
+        enabled=True,
+        action_client=action_client,
+        events=events,
+        node=node,
+        monotonic_fn=lambda: 0.0,
+    )
+
+    client.request_return(FakeGoal(), trigger="battery", home_target=HOME)
+
+    assert client.cancel_current_goal(reason="estop")
+    assert events[-1]["status"] == "canceled"
+    assert action_client.sent_goals == []
+    assert node.timers[0].canceled
+    assert not client.has_active_goal
+
+
+def test_server_can_become_ready_without_blocking_callbacks():
+    events = []
+    node = FakeNode()
+    action_client = FakeActionClient(server_available=False)
+    result_future = FakeFuture(complete_immediately=False)
+    action_client.response_future = FakeFuture(
+        FakeGoalHandle(accepted=True, result_future=result_future)
+    )
+    client = make_client(
+        enabled=True,
+        action_client=action_client,
+        events=events,
+        node=node,
+        monotonic_fn=lambda: 0.0,
+    )
+
+    client.request_return(FakeGoal(), trigger="battery", home_target=HOME)
+    assert action_client.sent_goals == []
+
+    action_client.server_available = True
+    node.timers[0].trigger()
+
+    assert len(action_client.sent_goals) == 1
+    assert events[-1]["status"] == "accepted"
+    assert node.timers[0].canceled
 
 
 @pytest.mark.parametrize(

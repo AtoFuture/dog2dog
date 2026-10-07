@@ -24,6 +24,7 @@ from g3_integration_eval.state_machine import (
     InvalidTransition,
     State,
     battery_return_event,
+    estop_reset_block_reason,
     mission_state_value,
     normalize_battery_percentage,
     parse_event,
@@ -79,6 +80,7 @@ class G3StateMachineNode(Node):
         )
 
         self._state = State.STANDBY
+        self._battery_fault_active = False
         self._state_publisher = self.create_publisher(String, state_topic, 10)
         self._mission_state_publisher = self.create_publisher(
             String,
@@ -127,8 +129,8 @@ class G3StateMachineNode(Node):
                 "Set enable_navigation_transmission:=true explicitly to send goals"
             )
         self.get_logger().warning(
-            "ESTOP currently changes logical state only and is not a physical "
-            "robot stop command"
+            "ESTOP cancels G3 navigation goals but is not a physical robot "
+            "emergency-stop command"
         )
         self.get_logger().info(f"RETURN events: topic={return_event_topic}")
         self.get_logger().info(
@@ -153,17 +155,37 @@ class G3StateMachineNode(Node):
             self.get_logger().warning(str(exc))
             return
 
+        if event is Event.RESET and self._state is State.ESTOP:
+            block_reason = estop_reset_block_reason(
+                battery_fault_active=self._battery_fault_active,
+                navigation_active=self._navigator.has_active_goal,
+            )
+            if block_reason is not None:
+                self.get_logger().error(f"ESTOP reset rejected: {block_reason}")
+                return
+
         self._apply_event(event, source="command")
 
     def _on_battery(self, message: BatteryState) -> None:
+        if not message.present:
+            self._battery_fault_active = True
+            self.get_logger().error(
+                "电量错误：BatteryState.present=false；立即停止工作并进入 ESTOP"
+            )
+            self._apply_event(Event.ESTOP, source="battery_not_present")
+            return
+
         normalized_percentage = normalize_battery_percentage(message.percentage)
         if normalized_percentage is None:
+            self._battery_fault_active = True
             self.get_logger().error(
                 "电量错误：BatteryState.percentage 必须是 0 到 1 之间的有限数值，"
                 f"收到 {message.percentage!r}；立即停止工作并进入 ESTOP"
             )
             self._apply_event(Event.ESTOP, source="invalid_battery")
             return
+
+        self._battery_fault_active = False
 
         event = battery_return_event(
             self._state,
@@ -191,14 +213,24 @@ class G3StateMachineNode(Node):
             f"state transition: {previous.value} --{event.value}--> "
             f"{self._state.value} (source={source})"
         )
+
+        if self._state is State.ESTOP or (
+            previous is State.RETURN and self._state is not State.RETURN
+        ):
+            if self._navigator.cancel_current_goal(reason=source):
+                self.get_logger().warning(
+                    "RETURN navigation cancellation requested before leaving "
+                    f"{previous.value}"
+                )
+
         self._publish_state()
 
         if self._state is State.RETURN and previous is not State.RETURN:
             self._start_return(source)
         elif self._state is State.ESTOP:
             self.get_logger().error(
-                "ESTOP logical state entered; physical stop integration is not "
-                "yet wired"
+                "ESTOP entered; G3 navigation cancellation is active, but the "
+                "physical robot emergency-stop interface is not wired"
             )
 
     def _start_return(self, trigger: str) -> None:
@@ -240,6 +272,8 @@ class G3StateMachineNode(Node):
             "aborted",
             "canceled",
             "result_error",
+            "cancel_error",
+            "cancel_rejected",
             "unknown",
         }:
             self.get_logger().error(

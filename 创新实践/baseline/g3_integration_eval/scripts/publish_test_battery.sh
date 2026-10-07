@@ -25,4 +25,4 @@ echo "Safety domain: ROS_DOMAIN_ID=142"
 exec ros2 topic pub --once \
     "${BATTERY_TOPIC}" \
     sensor_msgs/msg/BatteryState \
-    "{percentage: ${PERCENTAGE}}"
+    "{percentage: ${PERCENTAGE}, present: true}"

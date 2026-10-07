@@ -69,8 +69,9 @@ ros2 topic hz /xxx   # 关键传感器的实际频率
 - 读电量 → 低于阈值 → 发一个回基站的目标点
 - 当前已实现：订阅可配置 `BatteryState` 话题，仅在 `EXPLORE` 且电量低于阈值时自动切换到 `RETURN`。默认话题为 `/robot1/battery_state`，默认阈值为 `0.20`。
 - `enable_navigation_transmission` 默认值为 `false`：自动返航只生成并打印目标预览，不等待 action server，也不发送 goal。
-- 只有显式设为 `true` 时才等待 `/robot1/navigate_to_pose`，发送 home pose，并在 `/g3/return_event` 发布 `std_msgs/String` JSON 事件。事件包含 `attempt_id`、真实 Nav2 `goal_id`（接受/拒绝响应可用后）、触发源、ROS 时间戳、home target 和状态。
-- 状态链包括 `preview / waiting_for_server / server_unavailable / goal_request_sent / accepted / rejected / succeeded / aborted / canceled`，回调异常也会形成明确失败事件，便于 rosbag 离线追踪。
+- 只有显式设为 `true` 时才异步等待 `/robot1/navigate_to_pose`，发送 home pose，并在 `/g3/return_event` 发布 `std_msgs/String` JSON 事件。事件包含 `attempt_id`、真实 Nav2 `goal_id`（接受/拒绝响应可用后）、触发源、ROS 时间戳、home target 和状态。
+- ESTOP 或离开 RETURN 时会取消当前返航 goal；尚未收到 accepted 响应的请求会被标记，若之后迟到 accepted 也会立即取消。取消完成前 ESTOP 不能 reset。
+- 状态链包括 `preview / waiting_for_server / server_unavailable / goal_request_sent / accepted / rejected / cancel_pending / cancel_request_sent / cancel_accepted / cancel_rejected / succeeded / aborted / canceled`，回调异常也会形成明确失败事件，便于 rosbag 离线追踪。
 - **复用接口 02 的 `NavigateToPose`**，不另开通路。G2 的探索目标点和你们的返航点走同一个入口
 - 加一层：返航途中电量继续掉怎么办（降速 / 就近停靠 / 直接趴下）
 
