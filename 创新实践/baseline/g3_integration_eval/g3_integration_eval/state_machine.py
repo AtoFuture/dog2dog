@@ -95,22 +95,17 @@ def validate_low_battery_threshold(threshold: float) -> float:
 
 
 def normalize_battery_percentage(percentage: float) -> Optional[float]:
-    """Normalize a battery reading expressed as either 0..1 or 0..100.
+    """Validate a normalized battery reading in the inclusive [0, 1] range.
 
-    ``sensor_msgs/BatteryState`` defines ``percentage`` as a normalized value,
-    but some battery publishers expose a whole-number percentage instead. Keep
-    the ROS representation unchanged and accept the latter at this integration
-    boundary so a reading such as 15.0 cannot silently disable low-battery
-    RETURN handling.
-
+    ``sensor_msgs/BatteryState.percentage`` is defined as a normalized value.
+    Values from a 0..100 publisher must be converted by that publisher or by
+    the dedicated Unitree battery adapter before reaching this state machine.
     Unknown and out-of-range readings return ``None``.
     """
 
     value = float(percentage)
-    if not isfinite(value) or not 0.0 <= value <= 100.0:
+    if not isfinite(value) or not 0.0 <= value <= 1.0:
         return None
-    if value > 1.0:
-        return value / 100.0
     return value
 
 
@@ -123,9 +118,9 @@ def battery_return_event(
 
     Only EXPLORE may produce the event. Once RETURN or ESTOP has been entered,
     subsequent battery messages therefore cannot retrigger or override it.
-    Both normalized 0..1 readings and whole-number 0..100 readings are
-    accepted. BatteryState uses NaN for an unknown percentage, so non-finite
-    and out-of-range readings are deliberately ignored.
+    BatteryState uses NaN for an unknown percentage, so non-finite and
+    out-of-range readings are deliberately ignored here. The ROS node handles
+    those readings as a safety error and enters ESTOP.
     """
 
     normalized_threshold = validate_low_battery_threshold(threshold)

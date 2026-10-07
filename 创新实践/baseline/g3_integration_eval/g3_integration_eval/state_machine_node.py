@@ -79,7 +79,6 @@ class G3StateMachineNode(Node):
         )
 
         self._state = State.STANDBY
-        self._battery_scale_warning_emitted = False
         self._state_publisher = self.create_publisher(String, state_topic, 10)
         self._mission_state_publisher = self.create_publisher(
             String,
@@ -159,16 +158,12 @@ class G3StateMachineNode(Node):
     def _on_battery(self, message: BatteryState) -> None:
         normalized_percentage = normalize_battery_percentage(message.percentage)
         if normalized_percentage is None:
-            return
-
-        if message.percentage > 1.0 and not self._battery_scale_warning_emitted:
-            self.get_logger().warning(
-                "battery percentage is using the 0..100 scale: "
-                f"received {message.percentage:.3f}, normalized to "
-                f"{normalized_percentage:.3f}; update the publisher to emit "
-                "sensor_msgs/BatteryState percentage in the 0..1 range"
+            self.get_logger().error(
+                "电量错误：BatteryState.percentage 必须是 0 到 1 之间的有限数值，"
+                f"收到 {message.percentage!r}；立即停止工作并进入 ESTOP"
             )
-            self._battery_scale_warning_emitted = True
+            self._apply_event(Event.ESTOP, source="invalid_battery")
+            return
 
         event = battery_return_event(
             self._state,

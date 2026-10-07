@@ -73,31 +73,14 @@ def test_low_battery_threshold_is_strictly_below(percentage, expected):
     assert battery_return_event(State.EXPLORE, percentage, 0.20) is expected
 
 
-@pytest.mark.parametrize(
-    ("percentage", "expected"),
-    [
-        (0.0, 0.0),
-        (0.85, 0.85),
-        (1.0, 1.0),
-        (15.0, 0.15),
-        (85.0, 0.85),
-        (100.0, 1.0),
-    ],
-)
-def test_battery_percentage_accepts_normalized_and_whole_percent_scales(
-    percentage, expected
-):
-    assert normalize_battery_percentage(percentage) == pytest.approx(expected)
+@pytest.mark.parametrize("percentage", [0.0, 0.85, 1.0])
+def test_battery_percentage_accepts_only_normalized_scale(percentage):
+    assert normalize_battery_percentage(percentage) == pytest.approx(percentage)
 
 
-@pytest.mark.parametrize(
-    ("percentage", "expected"),
-    [(19.0, Event.RETURN), (20.0, None), (85.0, None)],
-)
-def test_whole_percent_battery_readings_use_normalized_threshold(
-    percentage, expected
-):
-    assert battery_return_event(State.EXPLORE, percentage, 0.20) is expected
+@pytest.mark.parametrize("percentage", [15.0, 85.0, 100.0])
+def test_whole_percent_battery_readings_are_invalid(percentage):
+    assert normalize_battery_percentage(percentage) is None
 
 
 @pytest.mark.parametrize(
