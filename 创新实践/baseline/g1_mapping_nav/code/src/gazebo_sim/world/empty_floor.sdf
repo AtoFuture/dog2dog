@@ -1,0 +1,76 @@
+<?xml version="1.0" ?>
+<!--
+  最小验证世界：**一块无限大的地板，别的什么都没有**。
+
+  为什么需要它（2026-09-18）：
+  在 warehouse.sdf 里，前视低机位的相机看到的**几乎全是墙和货架**，
+  于是 fit_floor_plane 的「内点最多的平面就是地面」这个假设不成立，
+  RANSAC 锁到了天花板（算出的相机离地高度是 -6.8 m）。
+
+  那个失败里混着两件事：
+    ① 我们的地面拟合对「地面不是主平面」的场景不成立  ← 真问题
+    ② 场景/机器人配得对不对                          ← 仿真配置问题
+
+  这个空世界把②排除掉：只有地板，地面必然是主平面。
+  如果在这里拟合还是失败，那就是①，而且只可能是①。
+
+  ⚠️ 本文件是**加进克隆仓库的**（原仓库没有）。
+  几何用 <plane>，不走 Fuel 下载，离线可用。
+-->
+<sdf version="1.7">
+  <world name="empty_floor">
+
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="ignition-gazebo-physics-system"
+            name="ignition::gazebo::systems::Physics"/>
+    <plugin filename="ignition-gazebo-user-commands-system"
+            name="ignition::gazebo::systems::UserCommands"/>
+    <plugin filename="ignition-gazebo-scene-broadcaster-system"
+            name="ignition::gazebo::systems::SceneBroadcaster"/>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>200 200</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>200 200</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.4 0.4 0.4 1</ambient>
+            <diffuse>0.7 0.7 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>
