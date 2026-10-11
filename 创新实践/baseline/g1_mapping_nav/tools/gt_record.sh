@@ -106,3 +106,16 @@ timeout -s INT "${DURATION}" ros2 bag record --include-hidden-topics -o "${OUT}"
 RC=$?
 echo "== 录包结束（rc=${RC}；124 = 到时正常截断）=="
 ls -la "${OUT}" 2>/dev/null | head -6
+
+# ⚠️ 结尾必须显式 exit（问题清单「低」）：原来最后一句是 ls，
+# 于是无论录包成没成、rc 恒 0，调用方用 $? 判不出来。
+# 这里只把「真的没录成」当失败：124 是按时截断，属正常。
+if [ "${RC}" -ne 0 ] && [ "${RC}" -ne 124 ]; then
+    echo "ERROR: 录包异常退出（rc=${RC}）" >&2
+    exit 1
+fi
+if [ ! -f "${OUT}/metadata.yaml" ]; then
+    echo "ERROR: 没有生成 ${OUT}/metadata.yaml，包不完整。" >&2
+    exit 1
+fi
+exit 0

@@ -90,6 +90,15 @@ echo
 python3 "${TOOLS_DIR}/goal_check.py" "${OUT}" "${GOAL_X}" "${GOAL_Y}" \
     --yaw "${GOAL_YAW}" --json "${LOG_DIR}/goal_check.json"
 CHECK_RC=$?
-if [ "${CHECK_RC}" -ne 0 ]; then
-    echo "（判定未通过，rc=${CHECK_RC}）"
+
+# action 返回码只做参考：判「到了没有」一律看真值，不看 action。
+# 但 124（超时）值得单独标一下 —— 实测出现过「真值到了、action 没来得及报成功」。
+if [ "${ACTION_RC}" -eq 124 ]; then
+    echo "注：action 在 ${TIMEOUT_S}s 内没结束（rc=124），判定以上面的真值为准。"
 fi
+
+# ⚠️ 必须显式 exit：`set -uo pipefail` 没有 -e，而 bash 对「条件为假的 if
+# 复合语句」返回 0 —— 原来结尾是 `if [ rc -ne 0 ]; then echo; fi`，于是
+# goal_check 判不通过（甚至 rc=2 完全没数据）时，本脚本自己仍然 exit 0，
+# 任何用 ||、&&、$? 串联的自动化都会把「未通过」记成通过（问题清单 H3）。
+exit "${CHECK_RC}"

@@ -165,48 +165,28 @@ controller_server:
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25
       yaw_goal_tolerance: 0.25
-    # DWB parameters
+    # RegulatedPurePursuit parameters (replaced DWB due to TF time sync issues)
     FollowPath:
-      plugin: "dwb_core::DWBLocalPlanner"
-      debug_trajectory_details: True
-      min_vel_x: 0.0
-      min_vel_y: 0.0
-      max_vel_x: 0.26
-      max_vel_y: 0.0
-      max_vel_theta: 1.0
-      min_speed_xy: 0.0
-      max_speed_xy: 0.26
-      min_speed_theta: 0.0
-      # Add high threshold velocity for turtlebot 3 issue.
-      # https://github.com/ROBOTIS-GIT/turtlebot3_simulations/issues/75
-      acc_lim_x: 2.5
-      acc_lim_y: 0.0
-      acc_lim_theta: 3.2
-      decel_lim_x: -2.5
-      decel_lim_y: 0.0
-      decel_lim_theta: -3.2
-      vx_samples: 20
-      vy_samples: 5
-      vtheta_samples: 20
-      sim_time: 1.7
-      linear_granularity: 0.05
-      angular_granularity: 0.025
-      transform_tolerance: 0.2
-      xy_goal_tolerance: 0.25
-      trans_stopped_velocity: 0.25
-      short_circuit_trajectory_evaluation: True
-      stateful: True
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      BaseObstacle.scale: 0.02
-      PathAlign.scale: 32.0
-      PathAlign.forward_point_distance: 0.1
-      GoalAlign.scale: 24.0
-      GoalAlign.forward_point_distance: 0.1
-      PathDist.scale: 32.0
-      GoalDist.scale: 24.0
-      RotateToGoal.scale: 32.0
-      RotateToGoal.slowing_factor: 5.0
-      RotateToGoal.lookahead_time: -1.0
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.26
+      lookahead_dist: 0.6
+      min_lookahead_dist: 0.3
+      max_lookahead_dist: 0.9
+      use_time_based_lookahead: false
+      rotate_to_heading_angular_vel: 0.8
+      max_allowed_time_to_collision: 1.0
+      use_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: false
+      regulated_linear_scaling_min_radius: 0.9
+      regulated_linear_scaling_min_speed: 0.15
+      use_rotate_to_heading: true
+      allow_reversing: false
+      max_angular_accel: 1.2
+      transform_tolerance: 1.0
+      goal_dist_tol: 0.25
+      control_duration: 0.02
+      use_collision_detection: true
+      max_allowed_linear_accel: 0.5
 
 controller_server_rclcpp_node:
   ros__parameters:
@@ -408,10 +388,30 @@ waypoint_follower:
 #   scan_topic=/scan、transform_publish_period=0.05），图一条都建不出来。
 #   用小节点对照验过：裸键 → base_footprint；全限定键 → 生效。
 #
+# ⚠️ 2026-10-11 在**真 nav2_bringup 通路**上把这件事测死了（不用仿真：参数在
+#   节点构造时就定好，与有没有 scan 无关）：起 nav2_scaled.launch.py slam:=True，
+#   30 s 后 `ros2 param get /robot1/slam_toolbox base_frame`：
+#
+#     | 键的写法                     | base_frame     | scan_topic | launch |
+#     |------------------------------|----------------|------------|--------|
+#     | 只有裸键 `slam_toolbox:`      | base_footprint | /scan      | 存活   |
+#     | 裸键空壳 + `/robot1/slam_toolbox:` | **base_link** | **velodyne** | **存活** |
+#
+#   所以：**两键缺一不可**，而且**不会**像下面那条 FIX 注释担心的那样「把命名空间
+#   拼成 /robot1//robot1/ 导致 bringup 全挂」—— 实测 launch 全程存活。
+#   那条 FIX 注释（2026-09-24）已被推翻，留着当历史，别再照它改回裸键。
+#
 # 所以：下面这个空壳只为满足 (1)，真正的参数在 (2)。
 slam_toolbox:
+  ros__parameters: {}          # 空壳，不要往这里加参数，加了也不生效
+                               # （2026-10-11 实测：裸键下的参数全部被丢弃）
+# 已推翻的旧注释，保留备查：
+#   FIX 2026-09-24: RewrittenYaml按namespace加root_key，顶层键须用相对名；
+#   写/robot1/slam_toolbox会拼成/robot1//robot1/，rcl解析失败、bringup全挂。
+#   （2026-10-11 实测否掉了：两键版在真 bringup 通路上参数生效且 launch 存活。）
+
+/robot1/slam_toolbox:
   ros__parameters:
-    # FIX 2026-09-24: RewrittenYaml按namespace加root_key，顶层键须用相对名；    # 写/robot1/slam_toolbox会拼成/robot1//robot1/，rcl解析失败、bringup全挂。
     use_sim_time: True
     solver_plugin: solver_plugins::CeresSolver
     ceres_linear_solver: SPARSE_NORMAL_CHOLESKY

@@ -30,6 +30,12 @@ FILTERED_TOPIC = "/robot1/odometry/filtered"
 # 出口标准（P1）
 STATIC_LIMIT_M = 0.02
 GOAL_ERROR_LIMIT_M = 0.30
+# 出口标准写的是「静止 **120 s** 时虚假位移 ≤ 0.02 m」。原来只要 ≥2 个样本就给
+# pass，不看时长 —— 仓库里的 static120.json 实际只有 86.8 s 也照样 pass
+# （问题清单 M4）。时长也要判。
+STATIC_MIN_DURATION_S = 120.0
+# 必需话题：没有它就无法判定；缺了要 rc=2，不能「样本不足，跳过」了事
+REQUIRED_TOPICS = (GT_TOPIC,)
 
 
 def stamp_seconds(header):
@@ -47,7 +53,7 @@ def yaw_from_quaternion(q):
     )
 
 
-def read_bag(bag_path, robot_name):
+def read_bag(bag_path):
     """返回 {来源: [(t, x, y, yaw)]}。"""
     reader = SequentialReader()
     reader.open(
@@ -143,7 +149,7 @@ def main():
     parser.add_argument("--json", dest="json_out")
     args = parser.parse_args()
 
-    tracks, counts = read_bag(args.bag, args.robot)
+    tracks, counts = read_bag(args.bag)
 
     report = {
         "bag": args.bag,
@@ -157,11 +163,19 @@ def main():
     print(f"robot: {args.robot}")
     print(f"消息数: {counts}\n")
 
+    # 哪些轨迹根本没录到 —— 必须显式记下来并影响退出码。
+    # 原来只是打印「样本不足，跳过」、static_test 里干脆没这一项、JSON 无标记，
+    # 于是「没录到」和「没这项指标」在报告里长得一样（问题清单 M3）。
+    absent = [k for k in ("ground_truth", "odom", "filtered")
+              if len(tracks[k]) < 2]
+    report["tracks_absent"] = absent
+
     for key in ("ground_truth", "odom", "filtered"):
         stats = summarize(tracks[key])
         report["tracks"][key] = stats
         if stats is None:
-            print(f"[{key}] 样本不足（{len(tracks[key])} 条），跳过")
+            print(f"[{key}] ⚠️ 没录到（{len(tracks[key])} 条）—— "
+                  f"这条轨迹的判据**不适用**，不是通过")
             continue
         print(
             f"[{key}] n={stats['sample_count']} 时长={stats['duration_s']}s "
@@ -170,22 +184,43 @@ def main():
             f"路径长={stats['path_length_m']}m"
         )
 
-    # 静止测试：物理上没动时，odom/EKF 报出来的最大偏离就是「虚假位移」
-    print("\n== 静止测试判定（限值 %.2f m）==" % STATIC_LIMIT_M)
+    # 静止测试：物理上没动时，odom/EKF 报出来的最大偏离就是「虚假位移」。
+    # 时长也要判：出口标准是「静止 **120 s**」，原来只要 ≥2 个样本就给 pass。
+    print("\n== 静止测试判定（限值 %.2f m，时长需 ≥ %.0f s）=="
+          % (STATIC_LIMIT_M, STATIC_MIN_DURATION_S))
+    # 时长按**仿真时间**算（消息头的时间戳）。这个项目反复在挂钟/仿真时间上
+    # 栽过（RTF 0.3 时同一段录制两种口径差 3 倍），所以写清楚口径。
+    print("（时长按消息头的仿真时间算，不是挂钟）")
+    verdicts = []
     for key in ("ground_truth", "odom", "filtered"):
         stats = report["tracks"].get(key)
         if not stats:
+            report["static_test"][key] = {"pass": None,
+                                          "reason": "没录到，判据不适用"}
+            print(f"  {key:14s} —— 没录到，判据不适用（不是通过）")
             continue
-        ok = stats["max_excursion_m"] <= STATIC_LIMIT_M
+        dur_ok = stats["duration_s"] >= STATIC_MIN_DURATION_S
+        exc_ok = stats["max_excursion_m"] <= STATIC_LIMIT_M
+        ok = dur_ok and exc_ok
         report["static_test"][key] = {
             "max_excursion_m": stats["max_excursion_m"],
+            "duration_s": stats["duration_s"],
+            "min_duration_s": STATIC_MIN_DURATION_S,
             "limit_m": STATIC_LIMIT_M,
             "pass": ok,
         }
+        why = []
+        if not exc_ok:
+            why.append("超过位移限值")
+        if not dur_ok:
+            why.append(f"时长不足（{stats['duration_s']}s < "
+                       f"{STATIC_MIN_DURATION_S:.0f}s）")
         print(
-            f"  {key:14s} 最大偏离={stats['max_excursion_m']:.4f} m "
-            f"→ {'通过' if ok else '超过限值'}"
+            f"  {key:14s} 最大偏离={stats['max_excursion_m']:.4f} m  "
+            f"时长={stats['duration_s']}s → "
+            f"{'通过' if ok else '不通过：' + '、'.join(why)}"
         )
+        verdicts.append(ok)
 
     # 与真值对比。
     # ⚠️ 必须按**位移**比，不能按绝对坐标比：odom 以自身起点为原点（(0,0)），
@@ -220,11 +255,43 @@ def main():
                 f"限值 {GOAL_ERROR_LIMIT_M} m）"
             )
 
+    # 退出码要能区分三种情况（原来恒 0，问题清单 M3）：
+    #   2 = 必需话题（真值）没录到 —— 这轮没验到，不给结论
+    #   1 = 判了，且有不通过的项
+    #   0 = 判了，全过
+    missing_required = [k for k in REQUIRED_TOPICS if k in absent]
+    if missing_required:
+        verdict = 2
+        report["verdict"] = "数据不足，未判定"
+        print(f"\n**未判定**：必需话题没录到 {missing_required} —— 这轮什么都没验到，"
+              f"不要当成通过。")
+    elif absent:
+        # 缺轨迹不能让结论变成「通过」。原来的表现是：odom/EKF 没录到 →
+        # 只剩 ground_truth 一项（真值对自己当然 pass）→ 整体显示通过 ——
+        # README 坑 #2（话题名写错导致 odom 没录到）正是这个场景（问题清单 M3）。
+        verdict = 1
+        report["verdict"] = "判据不完整"
+        print(f"\n**不通过（判据不完整）**：{'、'.join(absent)} 没录到，"
+              f"P1 出口标准里那条「虚假位移」验的是 odom/EKF，不是真值自己 —— "
+              f"缺了就说明这轮没验到，不能算过。")
+    elif verdicts and not all(verdicts):
+        verdict = 1
+        report["verdict"] = "不通过"
+        print("\n**不通过**：静止测试有项未达标（见上）。")
+    else:
+        verdict = 0
+        report["verdict"] = "通过"
+        print("\n**通过**：已判的项全部达标。")
+    if absent:
+        print(f"（注意：{'、'.join(absent)} 没录到，相关判据不适用 —— "
+              f"报告里记的是 null 而不是 0）")
+
     if args.json_out:
         with open(args.json_out, "w", encoding="utf-8") as fh:
             json.dump(report, fh, ensure_ascii=False, indent=2)
         print(f"\n报告已写入 {args.json_out}")
+    return verdict
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

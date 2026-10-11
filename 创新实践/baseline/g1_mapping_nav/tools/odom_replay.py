@@ -229,10 +229,10 @@ def replay(bag_path, fk_dir, variant):
     return traj, gt, odom
 
 
-def summarize(traj, gt, label):
+def summarize(traj, label):
     if len(traj) < 2:
         print(f"[{label}] 样本不足")
-        return None
+        return None, None
     _, x0, y0 = traj[0]
     _, xn, yn = traj[-1]
     net = math.hypot(xn - x0, yn - y0)
@@ -241,7 +241,15 @@ def summarize(traj, gt, label):
         for i in range(1, len(traj))
     )
     print(f"[{label}] 净位移={net:.4f} m  路径长={path:.4f} m  n={len(traj)}")
-    return net
+    return net, path
+
+
+# 复现器与实测 odom 的允许相对误差。
+# 问题清单 M6：这个复现器与 QuadrupedOdometryNode.py 逐行一致，但**复现精度只有
+# ~12%**（实测 2.042 m vs 2.317 m）。原来 summarize 只并排打印、不比较，
+# 于是「在离线复现器上把漂移压下去了」这句话的分辨率到底有多大，看不出来。
+# 超过这个阈值就说明复现器本身不可信，基于它的改动结论也要打折扣。
+REPRO_TOL_REL = 0.05
 
 
 def main():
@@ -261,18 +269,40 @@ def main():
     traj, gt, odom = replay(args.bag, args.fk_path, args.variant)
 
     print(f"variant = {args.variant}")
-    summarize(traj, gt, "replay")
+    net_replay, _ = summarize(traj, "replay")
+    net_odom = None
     if len(odom) >= 2:
-        summarize(
-            [(o[0], o[1], o[2]) for o in odom], gt, "实测 odom"
-        )
+        net_odom, _ = summarize([(o[0], o[1], o[2]) for o in odom], "实测 odom")
+    net_gt = None
     if len(gt) >= 2:
         _, gx0, gy0, _ = gt[0]
         _, gxn, gyn, _ = gt[-1]
-        print(
-            f"[真值]     净位移={math.hypot(gxn - gx0, gyn - gy0):.4f} m"
-        )
+        net_gt = math.hypot(gxn - gx0, gyn - gy0)
+        print(f"[真值]     净位移={net_gt:.4f} m")
+
+    # ── 复现可信度：这一步才是这个工具存在的意义 ──
+    # 先用 --variant current 验「复现器本身写得对不对」，再看别的 variant 的改善量。
+    # 前者不过，后者的数字就不能当真（问题清单 M6）。
+    print()
+    if net_replay is None or net_odom is None:
+        print("⚠️ 净位移缺一项（replay 或实测 odom 样本不足），复现可信度未判定。")
+        return 2
+    diff = net_replay - net_odom
+    rel = abs(diff) / net_odom if net_odom > 1e-9 else float("inf")
+    print(f"复现 vs 实测：{net_replay:.4f} vs {net_odom:.4f} m  "
+          f"差 {diff:+.4f} m（{rel * 100:.1f}%）  容差 {REPRO_TOL_REL * 100:.0f}%")
+    if args.variant == "current":
+        if rel <= REPRO_TOL_REL:
+            print("✅ 复现器忠实（variant=current 与实测一致），可以用它试修法。")
+            return 0
+        print(f"❌ 复现器不忠实：差 {rel * 100:.1f}% > 容差 {REPRO_TOL_REL * 100:.0f}%。"
+              f"\n   此时**不要**用它的绝对值下结论 —— 路径长/净位移的相对改善"
+              f"还可以看，"
+              f"但「改好了多少米」不可信。")
+        return 1
+    print("（提示：先用 --variant current 确认复现器忠实，再比较其它 variant。）")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

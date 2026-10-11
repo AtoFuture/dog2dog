@@ -79,5 +79,16 @@ timeout 25 ros2 topic pub --once /robot1/initialpose \
 orientation: {x: 0.0, y: 0.0, z: ${QZ}, w: ${QW}}}, \
 covariance: [0.25,0,0,0,0,0, 0,0.25,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0.07]}}" \
     >"${LOG_DIR}/initialpose.log" 2>&1
+PUB_RC=$?
+
+# ⚠️ 必须检查发布结果（问题清单「低」）：原来无论成败都打「已发布」并 exit 0，
+# 话题名写错或 AMCL 没起来时，失败要到下游
+# `AMCL cannot publish a pose` / `Timed out waiting for transform` 才暴露。
+if [ "${PUB_RC}" -ne 0 ]; then
+    echo "ERROR: 发布 /robot1/initialpose 失败（rc=${PUB_RC}）。" >&2
+    echo "       最常见原因：AMCL 没起来（没人订阅，--once 会一直等到超时）。" >&2
+    tail -3 "${LOG_DIR}/initialpose.log" >&2
+    exit 1
+fi
 
 echo "已发布 /robot1/initialpose"

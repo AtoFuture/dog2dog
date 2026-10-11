@@ -49,6 +49,19 @@
 现在死区判在 Nav2 域，并且给一个最低可执行速度——因为这台狗**根本没有「慢速」**：
 实测 cmd 0.02 就已经是 0.206 m/s，比它更慢的指令只会让它原地蹬腿。
 所以只要 Nav2 说要动，就直接给到 `linear_min`。
+
+## ⚠️ 角速度补偿在 |az| > 0.6 之后会被裁平（问题清单 M5）
+
+`angular_scale = 1.667` 是照着「实测偏航增益约 0.60」取的倒数补偿，但
+`az × 1.667` 一旦超过 `angular_max = 1.0`（即输入 |az| > 0.6）就被 `_clip` 截断，
+补偿**凭空消失**——那一整段的偏航增益退回 0.60，转得比 Nav2 以为的慢 40%。
+
+线速度那条的副作用上面写了，这条原来没写。实测影响面不小：
+amcl_G5 那个包里 694 条指令有 **163 条**被裁，goal_G5 里 802 条有 **288 条**。
+
+要用到 >0.6 的角速度（急转、原地掉头）时，得先想清楚这段怎么办：
+要么把 `angular_scale` 调到让常用段不越界，要么接受它并记住 Nav2 的
+「rad/s」在这一段是虚的。
 """
 
 import math
@@ -70,6 +83,10 @@ class CmdVelScaler(Node):
         self.declare_parameter("nav_deadband", 0.005)
         self.declare_parameter("angular_scale", 1.667)
         self.declare_parameter("angular_max", 1.0)
+        self.declare_parameter("linear_accel", 0.060)
+        self.declare_parameter("linear_decel", 0.100)
+        self.declare_parameter("angular_accel", 2.0)
+        self.declare_parameter("ramp_rate", 50.0)
 
         input_topic = str(self.get_parameter("input_topic").value)
         output_topic = str(self.get_parameter("output_topic").value)
@@ -79,17 +96,29 @@ class CmdVelScaler(Node):
         self._nav_deadband = float(self.get_parameter("nav_deadband").value)
         self._angular_scale = float(self.get_parameter("angular_scale").value)
         self._angular_max = float(self.get_parameter("angular_max").value)
+        self._linear_accel = float(self.get_parameter("linear_accel").value)
+        self._linear_decel = float(self.get_parameter("linear_decel").value)
+        self._angular_accel = float(self.get_parameter("angular_accel").value)
+        ramp_rate = float(self.get_parameter("ramp_rate").value)
 
         self._pub = self.create_publisher(Twist, output_topic, 10)
         self._sub = self.create_subscription(
             Twist, input_topic, self._on_cmd, 10
         )
+
+        self._target_lx = 0.0
+        self._target_az = 0.0
+        self._current_lx = 0.0
+        self._current_az = 0.0
+        self._dt = 1.0 / ramp_rate
+        self._timer = self.create_timer(self._dt, self._ramp_loop)
         self._last_logged = None
         self.get_logger().info(
-            f"速度缩放就绪：{input_topic} → {output_topic}；"
+            f"速度缩放就绪（带渐变）：{input_topic} → {output_topic}；"
             f"linear×{self._linear_scale}（{self._linear_min}~{self._linear_max}），"
             f"nav 死区 {self._nav_deadband}，"
-            f"angular×{self._angular_scale}（上限 {self._angular_max}）"
+            f"angular×{self._angular_scale}（上限 {self._angular_max}），"
+            f"渐变 accel={self._linear_accel} decel={self._linear_decel} @ {ramp_rate:.0f}Hz"
         )
 
     def _clip(self, value, limit):
@@ -101,33 +130,48 @@ class CmdVelScaler(Node):
             return 0.0
         scaled = nav_value * self._linear_scale
         if abs(scaled) < self._linear_min:
-            # 机器人没有「慢速」档：比 linear_min 更小的指令它只会原地蹬腿。
             scaled = math.copysign(self._linear_min, nav_value)
         return self._clip(scaled, self._linear_max)
 
-    def _on_cmd(self, msg: Twist) -> None:
+    def _ramp_step(self, current: float, target: float, accel: float, decel: float) -> float:
+        """将 current 向 target 线性逼近一步，加速用 accel、减速用 decel。"""
+        diff = target - current
+        if abs(diff) < 1e-6:
+            return target
+        rate = decel if abs(target) < abs(current) else accel
+        max_step = rate * self._dt
+        if abs(diff) <= max_step:
+            return target
+        return current + math.copysign(max_step, diff)
+
+    def _ramp_loop(self) -> None:
         out = Twist()
-
-        # 线速度：缩放 + 最低可执行速度 + 限幅
-        out.linear.x = self._linear(msg.linear.x)
-        out.linear.y = self._linear(msg.linear.y)
+        self._current_lx = self._ramp_step(
+            self._current_lx, self._target_lx, self._linear_accel, self._linear_decel
+        )
+        self._current_az = self._ramp_step(
+            self._current_az, self._target_az, self._angular_accel, self._angular_accel
+        )
+        out.linear.x = self._current_lx
+        out.linear.y = 0.0
         out.linear.z = 0.0
-
-        # 角速度：补偿实测增益后裁剪（cmd_vel_pub 也会裁一次）
-        az = msg.angular.z * self._angular_scale
         out.angular.x = 0.0
         out.angular.y = 0.0
-        out.angular.z = self._clip(az, self._angular_max)
-
+        out.angular.z = self._current_az
         self._pub.publish(out)
 
         summary = (
-            f"nav=({msg.linear.x:.3f}, az={msg.angular.z:.3f}) → "
-            f"sim=({out.linear.x:.4f}, az={out.angular.z:.3f})"
+            f"target=({self._target_lx:.4f}, az={self._target_az:.3f}) → "
+            f"cur=({self._current_lx:.4f}, az={self._current_az:.3f})"
         )
         if summary != self._last_logged:
             self.get_logger().info(summary)
             self._last_logged = summary
+
+    def _on_cmd(self, msg: Twist) -> None:
+        self._target_lx = self._linear(msg.linear.x)
+        az = msg.angular.z * self._angular_scale
+        self._target_az = self._clip(az, self._angular_max)
 
 
 def main():

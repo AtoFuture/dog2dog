@@ -97,6 +97,16 @@ python3 "${TOOLS_DIR}/cmd_vel_scaler.py" --ros-args \
     -p use_sim_time:=true >"${LOG_DIR}/cmd_vel_scaler.log" 2>&1 &
 SCALER_PID=$!
 echo "   pid=${SCALER_PID}"
+# 存活自检（问题清单「低」）：原来只记了个 pid 就不管了。
+# 这个项目有「节点静默死掉」的前科（控制器进程被 SIGKILL、launch 没有 respawn），
+# 缩放器真死了的话 Nav2 的输出就没人转发，表现是狗一步不动。
+sleep 3
+if ! kill -0 "${SCALER_PID}" 2>/dev/null; then
+    echo "ERROR: 速度缩放器起来 3 秒内就退出了，狗不会动。日志尾部：" >&2
+    tail -5 "${LOG_DIR}/cmd_vel_scaler.log" >&2
+    exit 1
+fi
+echo "   存活 ✓"
 
 echo "== 3/3 起 Nav2（我们自己那份 launch）=="
 LAUNCH_ARGS=("map:=${MAP}")
@@ -116,3 +126,5 @@ RC=$?
 kill "${SCALER_PID}" 2>/dev/null
 wait "${SCALER_PID}" 2>/dev/null
 echo "== Nav2 退出（rc=${RC}）=="
+# 显式回传（问题清单「低」）：原来最后一句是 echo，rc 恒 0。
+exit "${RC}"

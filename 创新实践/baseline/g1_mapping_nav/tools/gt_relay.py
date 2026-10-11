@@ -46,7 +46,9 @@ class GroundTruthRelay(Node):
         self.declare_parameter("output_topic", GT_OUTPUT_TOPIC)
         self.declare_parameter("frame_id", "world")
         self.declare_parameter("child_frame_id", "base_link")
-        self.declare_parameter("publish_tf", False)
+        # 原来这里还有个 `publish_tf` 参数：声明了但代码从不读它，
+        # 传 true 既不发 TF 也不报错（问题清单「低」）。要么实现要么删，
+        # 这里选择删掉 —— 本节点的唯一职责是给真值打仿真时间戳。
 
         self._robot_name = str(self.get_parameter("robot_name").value)
         input_topic = str(self.get_parameter("input_topic").value)
