@@ -8,7 +8,7 @@ raw map_saver PGM: 0=occupied, 205=unknown, 254=free。
 import argparse, os, csv, sys
 import numpy as np
 
-OCC_THR, FREE_THR = 100, 200
+OCC_THR, FREE_THR = 100, 250  # nav2 map_saver: 0=occ,205=unknown,254=free
 
 
 def read_pgm(path):
