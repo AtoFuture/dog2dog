@@ -49,8 +49,10 @@ def generate_launch_description():
 
     # ---------- 多机器人全局话题重映射 ----------
     remappings=[
-            ("/tf", "tf"),
-            ("/tf_static", "tf_static"),
+            # NOTE(2026-10-07): /tf 与 /tf_static 不再做命名空间重映射。
+            # TF 必须发布到全局 /tf：tf2_echo / view_frames / Nav2(tf2_ros) 都监听全局 /tf。
+            # 旧的 ("/tf","tf") 会把整个 TF 树关进 /robot1/tf，导致 Nav2 与所有诊断工具都看不到 TF。
+            # 多机器人场景应使用 frame 前缀，而不是给 /tf 加命名空间。
             ("/scan", "scan"),
             ("/odom", "odometry/filtered")
         ]
@@ -205,7 +207,10 @@ def generate_launch_description():
                 # 本节点仍照常发 /robot1/odom 话题（EKF 的 odom0 还要吃它），只是不发 TF。
                 #
                 # 和 GZ_HEADLESS 一个套路：不设 = 与上游一字不差，不影响别人。
-                'enable_odom_tf': os.environ.get('G1_SINGLE_ODOM_TF', '') in ('', '0'),
+                # NOTE(2026-10-07): TF 唯一发布者 = EKF（ekf.yaml publish_tf: true）。
+                # 本节点默认不发 TF，彻底消除"双发布"与"无人发布"两种非法状态。
+                # 若要改回由本节点发布：设 G1_ODOM_NODE_TF=1，并把 ekf.yaml 的 publish_tf 改回 false。
+                'enable_odom_tf': os.environ.get('G1_ODOM_NODE_TF', '0') == '1',
             }],
             remappings=remappings
         )
@@ -253,8 +258,10 @@ def generate_launch_description():
             remappings=remappings)
 
         robot_control = GroupAction([
-            SetRemap(src="/tf", dst="tf"),
-            SetRemap(src="/tf_static", dst="tf_static"),
+            # NOTE(2026-10-07): 移除组级 /tf、/tf_static 重映射。
+            # 这两行会把组内所有子节点（含 EKF）的 TF 重新关回 /robot1/tf，
+            # 是 Nav2 / tf2_echo 看不到 TF 的真正原因（比 remappings 列表更隐蔽）。
+            # EKF 现为 odom->base_link 的唯一发布者，必须发到全局 /tf。
             joint_state_broadcaster,
             joint_group_controller,
             controller,
