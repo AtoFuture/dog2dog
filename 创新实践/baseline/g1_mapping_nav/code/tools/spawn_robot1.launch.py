@@ -11,8 +11,8 @@ def generate_launch_description():
         get_package_share_directory('go2_description'), 'xacro', 'robot_VLP_D435i.xacro')
     robot_desc = xacro.process_file(xacro_file, mappings={'robot_name': namespace}).toxml()
     remappings = [
-        ("/tf", "tf"),
-        ("/tf_static", "tf_static"),
+        # NOTE(2026-10-07): /tf、/tf_static 保持全局。tf2 的广播者与监听者都用绝对 /tf，
+        # 若把 rsp 的静态 TF 重映射进命名空间，slam_toolbox 会找不到 base_link->lidar，丢弃全部 scan。
         ("/scan", "scan"),
         ("/odom", "odometry/filtered"),
     ]

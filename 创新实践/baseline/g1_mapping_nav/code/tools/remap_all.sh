@@ -15,14 +15,16 @@ export IGN_GAZEBO_SYSTEM_PLUGIN_PATH=/opt/ros/humble/lib:\$IGN_GAZEBO_SYSTEM_PLU
 # ---- 容器自适应：GPU 修复后用 ros-gui（RTF 高）；否则 ros + 软渲染兜底 ----
 LOG=/tmp/remap_all.log
 echo "=== remap start $(date) ===" > $LOG
-if timeout 60 ~/.enroot/ros-gui bash -lc 'true' >/dev/null 2>&1; then
-  CONT="~/.enroot/ros-gui"
+# 默认走软件渲染：GPU 路径当前在 spawn 时必崩（Ogre Hlms::createDatablock）。
+# 需要 GPU 时显式: USE_GPU_RENDER=1 bash /tmp/remap_all.sh 12
+if [ "${USE_GPU_RENDER:-0}" = "1" ] && timeout 60 ~/.enroot/ros-gui bash -lc 'true' >/dev/null 2>&1; then
+  CONT="$HOME/.enroot/ros-gui"
   BASE="$CORE"
   RENDER_MODE="GPU (ros-gui, RTF expected >1.0)"
 else
-  CONT="~/.enroot/ros"
+  CONT="$HOME/.enroot/ros"
   BASE="$CORE; export DISPLAY=:99 LIBGL_ALWAYS_SOFTWARE=1 MESA_GL_VERSION_OVERRIDE=3.3; unset EGL_PLATFORM"
-  RENDER_MODE="SOFTWARE (ros+Xvfb, RTF ~0.5)"
+  RENDER_MODE="SOFTWARE (ros+Xvfb+llvmpipe)"
 fi
 echo "[MODE] $RENDER_MODE" | tee -a $LOG
 REMAP="-r __ns:=/robot1 -p use_sim_time:=True -r /scan:=scan -r /odom:=odometry/filtered"
@@ -30,8 +32,6 @@ REMAP="-r __ns:=/robot1 -p use_sim_time:=True -r /scan:=scan -r /odom:=odometry/
 WS="/home/wy/go2_sim_ws/ROS2-Gazebo-GO2"
 TOOLS="/tmp/dog2dog_push/创新实践/baseline/g1_mapping_nav/code/tools"
 R() { $CONT bash -lc "$BASE; $1"; }
-LOG=/tmp/remap_all.log
-echo "=== remap start $(date) ===" > $LOG
 
 # ---- 0a. 自愈：/tmp 被清空则重新克隆工具（仓库公开，无需 token）----
 if [ ! -d "$TOOLS" ]; then
@@ -64,6 +64,15 @@ if [ "$(pgrep -cf 'ign gazebo -s')" != "1" ]; then
   [ "$SEGV" != "0" ] && { echo "  FATAL: gazebo crashed" | tee -a $LOG; exit 1; }
 fi
 
+# ---- 1b. parameter_bridge（gazebo<->ROS 桥；缺了它 /clock /scan /imu 全断）----
+step "bridges"
+if [ "$(pgrep -cf '[p]arameter_bridge')" = "0" ]; then
+  nohup $CONT bash -lc "$BASE; exec /opt/ros/humble/lib/ros_gz_bridge/parameter_bridge --ros-args -p config_file:=$WS/install/gazebo_sim/share/gazebo_sim/config/gz_bridge.yaml -p use_sim_time:=True" > /tmp/br1.log 2>&1 &
+  nohup $CONT bash -lc "$BASE; exec /opt/ros/humble/lib/ros_gz_bridge/parameter_bridge /robot1/imu_plugin/out@sensor_msgs/msg/Imu@gz.msgs.IMU /robot1/scan@sensor_msgs/msg/LaserScan@gz.msgs.LaserScan /robot1/velodyne@sensor_msgs/msg/LaserScan@gz.msgs.LaserScan /robot1/velodyne_imu@sensor_msgs/msg/Imu@gz.msgs.IMU /robot1/tf@tf2_msgs/msg/TFMessage@gz.msgs.Pose_V /robot1/joint_states@sensor_msgs/msg/JointState@gz.msgs.Model --ros-args -r __node:=ros_gz_bridge -r __ns:=/robot1 -p use_sim_time:=True" > /tmp/br2.log 2>&1 &
+  sleep 5
+fi
+echo "  bridges=$(pgrep -cf '[p]arameter_bridge')" | tee -a $LOG
+
 # ---- 2. 暂停→spawn（若无机器人）----
 step "check robot"
 HASROBOT=$(R "timeout 30 ign topic -e -t /world/world_demo/pose/info -n 1 2>/dev/null | grep -c robot1_my_bot")
@@ -75,9 +84,9 @@ if [ "$HASROBOT" = "0" ]; then
   sleep 55
   tail -1 /tmp/spawn_auto.log | cut -c1-120 | tee -a $LOG
   step "spawners"
-  nohup $CONT bash -lc "$BASE; exec ros2 run controller_manager spawner joint_state_broadcaster --controller-manager /robot1/controller_manager --controller-manager-timeout 120 --switch-timeout 60 --ros-args $REMAP" > /tmp/sp_jsb_auto.log 2>&1 &
+  nohup $CONT bash -lc "$BASE; exec ros2 run controller_manager spawner joint_state_broadcaster --controller-manager /robot1/controller_manager --controller-manager-timeout 600 --switch-timeout 180 --ros-args $REMAP" > /tmp/sp_jsb_auto.log 2>&1 &
   sleep 5
-  nohup $CONT bash -lc "$BASE; exec ros2 run controller_manager spawner joint_group_controller --controller-manager /robot1/controller_manager --controller-manager-timeout 120 --switch-timeout 60 --ros-args $REMAP" > /tmp/sp_jgc_auto.log 2>&1 &
+  nohup $CONT bash -lc "$BASE; exec ros2 run controller_manager spawner joint_group_controller --controller-manager /robot1/controller_manager --controller-manager-timeout 600 --switch-timeout 180 --ros-args $REMAP" > /tmp/sp_jgc_auto.log 2>&1 &
   sleep 80
   grep -c 'Configured and activated' /tmp/sp_jsb_auto.log /tmp/sp_jgc_auto.log | tee -a $LOG
 fi
@@ -122,6 +131,36 @@ if ! grep -q "raw_odom.: [1-9]" /tmp/qodom.txt 2>/dev/null; then
   sleep 25
   echo "  after: $(cat /tmp/qodom.txt 2>/dev/null)" | tee -a $LOG
 fi
+
+# ---- 4b. slam_toolbox + map_relay ----
+step "slam+relay"
+if [ "$(pgrep -cf '[a]sync_slam')" = "0" ]; then
+  nohup $CONT bash -lc "$BASE; exec ros2 run slam_toolbox async_slam_toolbox_node --ros-args --params-file /opt/ros/humble/share/slam_toolbox/config/mapper_params_online_async.yaml -p use_sim_time:=true -p scan_topic:=scan -p map_frame:=map -p base_frame:=base_link -p odom_frame:=odom -p minimum_travel_distance:=0.0 -p minimum_travel_heading:=0.0 -r __ns:=/robot1 -r /scan:=scan -r /odom:=odometry/filtered" > /tmp/slam.log 2>&1 &
+  nohup $CONT bash -lc "$BASE; exec python3 -u $TOOLS/map_relay2.py" > /tmp/relay.log 2>&1 &
+  sleep 8
+fi
+echo "  slam=$(pgrep -cf '[a]sync_slam') relay=$(pgrep -cf '[m]ap_relay')" | tee -a $LOG
+
+# ---- 4c. TF 验证（本次修复核心）----
+step "verify TF"
+cat > /tmp/_tfc.py <<'PYEOF'
+import rclpy, threading, time
+from tf2_msgs.msg import TFMessage
+res = {'n': 0, 'pairs': set()}
+def cb(m):
+    res['n'] += 1
+    for t in m.transforms:
+        res['pairs'].add(t.header.frame_id + '->' + t.child_frame_id)
+rclpy.init(); nd = rclpy.create_node('tfc')
+nd.create_subscription(TFMessage, '/tf', cb, 10)
+threading.Thread(target=rclpy.spin, args=(nd,), daemon=True).start()
+time.sleep(12)
+open('/tmp/_tfc.txt', 'w').write('n=%d pairs=%s' % (res['n'], sorted(res['pairs'])[:8]))
+PYEOF
+rm -f /tmp/_tfc.txt
+nohup $CONT bash -lc "$BASE; exec python3 -u /tmp/_tfc.py" > /dev/null 2>&1 &
+sleep 22
+echo "  TF: $(cat /tmp/_tfc.txt 2>/dev/null)" | tee -a $LOG
 
 # ---- 5. TROT 模式 ----
 step "TROT"
