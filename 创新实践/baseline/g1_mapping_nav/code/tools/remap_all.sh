@@ -25,7 +25,8 @@ else
   RENDER_MODE="SOFTWARE (ros+Xvfb, RTF ~0.5)"
 fi
 echo "[MODE] $RENDER_MODE" | tee -a $LOG
-REMAP="-r __ns:=/robot1 -p use_sim_time:=True -r /tf:=tf -r /tf_static:=tf_static -r /scan:=scan -r /odom:=odometry/filtered"
+REMAP="-r __ns:=/robot1 -p use_sim_time:=True -r /scan:=scan -r /odom:=odometry/filtered"
+# NOTE: 不要给 /tf、/tf_static 加命名空间重映射——TF 必须是全局话题（Nav2/tf2_echo 只读 /tf）
 WS="/home/wy/go2_sim_ws/ROS2-Gazebo-GO2"
 TOOLS="/tmp/dog2dog_push/创新实践/baseline/g1_mapping_nav/code/tools"
 R() { $CONT bash -lc "$BASE; $1"; }
@@ -112,7 +113,7 @@ echo "  before: $(cat /tmp/qodom.txt 2>/dev/null)" | tee -a $LOG
 if ! grep -q "raw_odom.: [1-9]" /tmp/qodom.txt 2>/dev/null; then
   step "RESTART odom+ekf+cvp (odom dead)"
   pkill -9 -f QuadrupedOdometryNode; pkill -9 -f ekf_node; pkill -9 -f cmd_vel_pub; sleep 4
-  nohup $CONT bash -lc "$BASE; exec python3 $WS/install/quadropted_controller/lib/quadropted_controller/QuadrupedOdometryNode.py --ros-args -r __node:=odom -r __ns:=/robot1 -p use_sim_time:=True -p base_frame_id:=base_link -p odom_frame_id:=odom $REMAP" > /tmp/odom2.log 2>&1 &
+  nohup $CONT bash -lc "$BASE; exec python3 $WS/install/quadropted_controller/lib/quadropted_controller/QuadrupedOdometryNode.py --ros-args -r __node:=odom -r __ns:=/robot1 -p use_sim_time:=True -p base_frame_id:=base_link -p odom_frame_id:=odom -p enable_odom_tf:=false $REMAP" > /tmp/odom2.log 2>&1 &
   nohup $CONT bash -lc "$BASE; exec ros2 run robot_localization ekf_node --ros-args -r __node:=ekf_filter_node -r __ns:=/robot1 -p use_sim_time:=True --params-file $WS/install/gazebo_sim/share/gazebo_sim/config/ekf.yaml $REMAP" > /tmp/ekf2.log 2>&1 &
   nohup $CONT bash -lc "$BASE; exec python3 $WS/install/quadropted_controller/lib/quadropted_controller/cmd_vel_pub.py --ros-args -r __node:=cmd_vel_pub -r __ns:=/robot1 -p use_sim_time:=True $REMAP" > /tmp/cvp2.log 2>&1 &
   sleep 30
