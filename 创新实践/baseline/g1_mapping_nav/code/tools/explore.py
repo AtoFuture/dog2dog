@@ -102,8 +102,11 @@ class Explorer(Node):
     def turn_deg(self, deg):
         target = norm(self.yaw + math.radians(deg))
         self.note('TURN %+d from yaw=%.3f' % (deg, self.yaw))
-        t_end = time.time() + 40.0
+        t_end = time.time() + 55.0
         while time.time() < t_end:
+            if abs(self.roll_deg) > 30 or abs(self.pitch_deg) > 30:
+                self.note('  !! tilt roll=%.1f pitch=%.1f - stop turn' % (self.roll_deg, self.pitch_deg))
+                break
             err = norm(target - self.yaw)
             if abs(err) < TURN_TOL:
                 break
