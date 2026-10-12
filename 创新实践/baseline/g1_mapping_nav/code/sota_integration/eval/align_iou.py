@@ -177,12 +177,20 @@ def main():
             P.append([x, y]); Q.append([gx, gy])
     P, Q = np.array(P), np.array(Q)
     print(f"[traj] paired={len(P)}")
-    R, t = umeyama2d(P, Q)
-    yaw = math.degrees(math.atan2(R[1, 0], R[0, 0]))
-    print(f"[traj] world<-map: yaw={yaw:.2f}deg  t=({t[0]:.3f},{t[1]:.3f})  "
-          f"|t|={np.hypot(*t):.2f}m")
+
+    # 锚点法(robust)：用起点位姿对确定 SE(2)。避免"近似共线轨迹"导致 Umeyama 旋转退化
+    # (实测退化会给出 ~100deg 的伪旋转,残差却=0)。
+    K = min(200, len(estd))
+    de = np.radians(np.array([e[3] for e in estd[:K]]) - np.array([g[3] for g in gtd[:K]]))
+    yaw = math.degrees(math.atan2(np.mean(np.sin(de)), np.mean(np.cos(de))))  # 循环均值
+    R = np.array([[math.cos(math.radians(yaw)), -math.sin(math.radians(yaw))],
+                  [math.sin(math.radians(yaw)),  math.cos(math.radians(yaw))]])
+    t = Q.mean(0) - R @ P.mean(0)
+    print(f"[traj] world<-map (anchor): yaw={yaw:.2f}deg  t=({t[0]:.3f},{t[1]:.3f})  "
+          f"|t|={np.hypot(*t):.2f}m  K={K}")
     resid = Q - (P @ R.T + t)
-    print(f"[traj] fit residual RMSE={np.sqrt((resid**2).sum(1).mean())*100:.2f} cm")
+    print(f"[traj] residual RMSE={np.sqrt((resid**2).sum(1).mean())*100:.2f} cm  "
+          f"(median drift={np.median(np.hypot(*(resid.T)))*100:.2f} cm)")
 
     # ---- 把 SDF 墙(世界) 反变换到 map 帧，栅格化到 est 网格 ----
     y = yaml.safe_load(open(a.est_yaml))
