@@ -27,7 +27,7 @@ class GtStamped(Node):
         self.model = args.model.lstrip("/")
         self.mode = args.mode
         qos = QoSProfile(depth=20, history=HistoryPolicy.KEEP_LAST,
-                         reliability=ReliabilityPolicy.BEST_EFFORT)
+                         reliability=ReliabilityPolicy.RELIABLE)
         self.pub = self.create_publisher(PoseStamped, args.out_topic, qos)
         self.create_subscription(TFMessage, args.in_topic, self.on_pose, qos)
         self.create_subscription(Clock, "/clock", self.on_clock, qos)

@@ -28,6 +28,7 @@ class Fixer(Node):
         p('el_min_deg', -15.0)
         p('el_max_deg', 15.0)
         p('scan_period', 0.1)
+        p('time_scale', 1.0)   # 0.0 -> 关闭去畸变(单时间戳)
         p('out_frame', '')
         g = self.get_parameter
         self.int_ = g('in_topic').value
@@ -36,6 +37,7 @@ class Fixer(Node):
         self.el0 = np.deg2rad(g('el_min_deg').value)
         self.el1 = np.deg2rad(g('el_max_deg').value)
         self.T = float(g('scan_period').value)
+        self.ts = float(g('time_scale').value)
         self.of = g('out_frame').value
         self.pub = self.create_publisher(PointCloud2, self.outt, SENSOR_QOS)
         self.create_subscription(PointCloud2, self.int_, self.cb, SENSOR_QOS)
@@ -73,7 +75,7 @@ class Fixer(Node):
         out = np.zeros(n, dtype=np.dtype([('x', '<f4'), ('y', '<f4'), ('z', '<f4'),
                                           ('i', '<f4'), ('ring', '<u2'), ('t', '<f4')]))
         out['x'], out['y'], out['z'], out['i'] = x, y, z, inten
-        out['ring'], out['t'] = ring.astype(np.uint16), t
+        out['ring'], out['t'] = ring.astype(np.uint16), (t * self.ts)
 
         o = PointCloud2()
         o.header = m.header
