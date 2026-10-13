@@ -53,6 +53,29 @@ ros2 run point_lio pointlio_mapping --ros-args \
 - **运动中的跟踪验证**：两次尝试均被**共享机资源争抢**打断（观测到内存仅剩 1 GB、load 33、7 个用户；我们的 gz 进程被 SIGKILL）。需在机器空闲时补做：TROT + 驱动，比较 `/aft_mapped_to_init` 与 GT 的 ATE。
 - **接入 SLAM**：将 LIO 的 `odom→base_link` 接入 slam_toolbox（并关掉 EKF 的 `publish_tf`，保证单一 TF 发布者），再重建地图、观察星芒是否消除。
 
+## KISS-ICP（纯雷达）尝试：已就绪，待安静环境验证
+
+由于 Point-LIO 在**运动中反复发散**（z 通道 →万米级，三轮实验：`use_imu_as_input` 两种模式 + 关去畸变均未解决），按"绕开 IMU 传播"的思路改试 **KISS-ICP**（纯 LiDAR ICP，无 IMU、零调参）。
+
+| 项 | 结果 |
+|---|---|
+| 编译 | ✅ 成功（仅 **12 MB**）。注意：其 Sophus 子模块要求 **CMake ≥ 3.24**，容器是 3.22 → 用 `pip install --user 'cmake>=3.28'` 提供新 cmake（`~/.local/bin/cmake`）即可 |
+| 输入话题 | ⚠️ **关键坑**：KISS-ICP 的输入是**硬编码相对名 `pointcloud_topic`**（不是 `topic` 参数）。必须用 **remap**：`-r pointcloud_topic:=/robot1/velodyne/points`。原先写 `-p topic:=...` 被**静默忽略** → 订阅到不存在的话题 → 无任何里程计输出 |
+| 去畸变开关 | 参数名是 **`data.deskew`**（不是 `deskew`） |
+| 其他参数 | `base_frame`、`publish_odom_tf`、`lidar_odom_frame` 有效；输出话题 `/kiss/odometry` |
+| 验证 | ❌ **被环境阻断**：bringup 阶段 `gz server` 再次卡死（`ign service ... pause:false` 服务超时——这是当日**第 3 次** gz 卡死），控制器未激活 → 测试卡在启动阶段 |
+
+**验证用脚本**：`eval/kiss_test.sh`（静止 20 s + 驱动 40 s + GT 对比）。机器空闲后即可一键重跑。
+
+## 环境阻断说明（重要）
+
+当日下午至今，共享机长期处于 **load 20–33、7 个在线用户、物理内存仅剩 ~1 GB**（队友 `nnUNetv2_train` ×3 等训练任务），并多次观测到**第二个 gz server**（他人 `multi_room` 世界）。在此条件下：
+
+- `gz server` **卡死/被杀 3 次**（服务不响应、SIGKILL）
+- Point-LIO / KISS-ICP 的**运动验证**均因此未能完成
+
+> 结论：**LIO/KISS 的收敛验证受限于机器负载，而非方案本身**。所有前置与脚本已就绪，需在**机器空闲窗口**完成最终验证。
+
 ## 附：进程隔离
 
 共享机上存在**第二个 gz server**（他人 `multi_room` 世界）。已为本项目 gz session 设置 **`IGN_PARTITION=go2wy` / `GZ_PARTITION=go2wy`** 以隔离（脚本内）。注意：这**不是** LIO 发散的原因（隔离后仍发散 → 才定位到 `use_imu_as_input`）。
