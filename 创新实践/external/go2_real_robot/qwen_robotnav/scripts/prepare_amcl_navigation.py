@@ -41,6 +41,7 @@ def main():
     config['behavior_server']['ros__parameters']['global_frame'] = 'odom'
     config['velocity_smoother']['ros__parameters']['odom_topic'] = '/robot1/odometry/filtered'
     controller = config['controller_server']['ros__parameters']
+    controller['odom_topic'] = '/robot1/odometry/filtered'
     controller['controller_frequency'] = 10.0
     controller['progress_checker'].update(required_movement_radius=0.1, movement_time_allowance=30.0)
     controller['FollowPath']['desired_linear_vel'] = 0.20

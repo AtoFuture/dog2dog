@@ -129,6 +129,8 @@ class VisionDetector(Node):
     def __init__(self) -> None:
         super().__init__("vision_detector")
         self._declare_params()
+        if not 0 <= self.get_parameter("mask_depth_margin_px").value <= 16:
+            raise ValueError("mask_depth_margin_px must be 0..16")
 
         self._bridge = CvBridge()
         self.tf_buffer = Buffer()
@@ -341,6 +343,7 @@ class VisionDetector(Node):
         d("anchor", "center")     # center | bottom
         d("max_dispersion_m", 3.0)
         d("min_valid_pixels", 10)
+        d("mask_depth_margin_px", 2)
 
         # --- 坐标变换 ---
         d("map_frame", "map")
@@ -498,6 +501,7 @@ class VisionDetector(Node):
                 min_valid_pixels=self.get_parameter("min_valid_pixels").value,
                 max_dispersion_m=self.get_parameter("max_dispersion_m").value,
                 anchor=self.get_parameter("anchor").value,
+                mask_margin_px=int(self.get_parameter("mask_depth_margin_px").value),
             )
             if res is None:
                 # 深度不可信（被遮挡、框里混了远近两个面）—— 丢弃而不是硬报一个坐标

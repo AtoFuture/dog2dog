@@ -125,6 +125,7 @@ def main():
     parser.add_argument('--expected-domain',type=int,required=True)
     parser.add_argument('--mission-brain',action='store_true')
     parser.add_argument('--perception',action='store_true')
+    parser.add_argument('--recon-task',action='store_true')
     parser.add_argument('--goals',type=int,default=5)
     parser.add_argument('--exploration-timeout',type=float,default=600)
     args=parser.parse_args()
@@ -132,28 +133,32 @@ def main():
         parser.error('Use a matching isolated simulator ROS domain')
     if not os.environ.get('IGN_PARTITION') or args.goals<1:
         parser.error('Set IGN_PARTITION and a positive --goals')
+    if args.recon_task and not args.perception:parser.error('--recon-task requires --perception')
     root=args.output_dir.resolve();project=Path(__file__).resolve().parents[4]
     if not (root/'slam_navigation.launch.py').exists():
         parser.error('Generate --localization slam into --output-dir first')
     rclpy.init(args=['--ros-args','-p','use_sim_time:=true','-p','require_mission_state:=true',
         '-p','require_navigation_handoff:=true','-p','enable_navigation_transmission:=true',
+        '-p','recon_output_dir:='+str(root),'-p','minimum_exploration_goals:='+str(args.goals),
         '-p','battery_topic:=/frontier_trial/battery','-p','map_topic:=/robot1/map',
         '-p','use_mission_brain:='+str(args.mission_brain).lower(),
         '-p','nav_action:=/robot1/navigate_to_pose','-p','tick_period_s:=0.75','-p','min_goal_distance_m:=0.5',
         '-r','/tf:=/robot1/tf','-r','/tf_static:=/robot1/tf_static'],signal_handler_options=SignalHandlerOptions.NO)
-    monitor=Monitor();g3=G3StateMachineNode();explorer=None;brain=None
+    monitor=Monitor();g3=G3StateMachineNode();explorer=None;brain=None;recon=None
     executor=SingleThreadedExecutor();executor.add_node(monitor);executor.add_node(g3)
-    children=[];logs=[];report={};baseline=None;home=None;anchor=None
+    children=[];logs=[];report={};baseline=None;home=None;anchor=None;recorder=None
 
     def start(command,name):
         stream=(root/name).open('w');logs.append(stream)
         child=subprocess.Popen(command,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
         children.append(child);return child
 
-    def spin_until(condition,timeout):
+    def spin_until(condition,timeout,check_recorder=True):
         end=time.monotonic()+timeout
         while time.monotonic()<end:
             executor.spin_once(timeout_sec=.05)
+            if check_recorder and recorder is not None and recorder.poll() is not None:
+                raise RuntimeError('Recorder exited before validation finished; inspect bag.log')
             if condition():return True
         return False
 
@@ -161,19 +166,23 @@ def main():
         if args.mission_brain:
             from g3_integration_eval.mission_brain_node import MissionBrainNode
             brain=MissionBrainNode();executor.add_node(brain)
+        if args.recon_task:
+            from g3_integration_eval.recon_task_node import ReconTaskNode
+            recon=ReconTaskNode();executor.add_node(recon)
         start(['/opt/ros/humble/lib/ros_gz_bridge/parameter_bridge',
             '/world/world_demo/pose/info@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
             '--ros-args','-r','__node:=frontier_truth_evaluation',
             '-r','/world/world_demo/pose/info:=/frontier_trial/gt_pose'],'gt_bridge.log')
         if not spin_until(lambda:monitor.poses and .18<monitor.poses[-1][3]<.35 and time.monotonic()-monitor.scan_at<1,75):
             raise RuntimeError('Simulator sensors or standing posture unavailable')
-        start(['ros2','bag','record','--include-hidden-topics','-o',str(root/'bag'),'/clock','/robot1/map','/robot1/tf','/robot1/tf_static',
-               '/robot1/velodyne','/robot1/odometry/filtered','/robot1/cmd_vel','/exploration/events',
+        recorder=start(['ros2','bag','record','--include-hidden-topics','-o',str(root/'bag'),'/clock','/robot1/map','/robot1/tf','/robot1/tf_static',
+               '/robot1/velodyne','/robot1/odometry/filtered','/robot1/cmd_vel','/deepseek/nav_cmd','/robot1/cmd_vel_nav','/frontier_trial/scaled_cmd','/exploration/events',
                '/mission_state','/g3/state','/g3/return_event','/frontier_trial/gt_pose','/frontier_trial/battery',
                '/robot1/navigate_to_pose/_action/status','/robot1/navigate_to_pose/_action/feedback',
                '/navigation/handoff_request','/navigation/handoff_ack',
                '/exploration/candidates','/mission/context','/brain/decision',
-               '/detections_3d','/detections_snapshot','/mission/detection_evidence','/perception/status'],'bag.log')
+               '/detections_3d','/detections_snapshot','/mission/detection_evidence','/perception/status','/mission/recon_status',
+               *(['/robot1/rgbd_d435/image','/robot1/rgbd_d435/depth_image','/robot1/rgbd_d435/camera_info'] if args.recon_task else [])],'bag.log')
         start(['ros2','launch',str(root/'slam_navigation.launch.py')],'nav2.log')
         start(['python3',str(project/'baseline/g1_mapping_nav/tools/cmd_vel_scaler.py'),
             '--ros-args','-p','use_sim_time:=true','-p','input_topic:=/deepseek/nav_cmd',
@@ -207,21 +216,29 @@ def main():
                 '-p','use_sim_time:=true','-p','color_topic:=/robot1/rgbd_d435/image',
                 '-p','depth_topic:=/robot1/rgbd_d435/depth_image',
                 '-p','camera_info_topic:=/robot1/rgbd_d435/camera_info',
-                '-p','weights:='+str(project/'baseline/g2_vision_explore/yolo26n.pt'),
+                '-p','weights:='+str(project/'baseline/g2_vision_explore'/('yolo26n-seg.pt' if args.recon_task else 'yolo26n.pt')),
                 '-p','tf_fallback_to_latest:=false',
                 '-r','/tf:=/robot1/tf','-r','/tf_static:=/robot1/tf_static'],'detector.log')
+        started=time.monotonic()
+        if args.recon_task:
+            monitor.battery();monitor.command_pub.publish(String(data='EXPLORE'))
+            spin_until(lambda:bool(recon.targets),30)
         explorer=VisionExplorer();executor.add_node(explorer)
-        monitor.running=True;monitor.battery();monitor.command_pub.publish(String(data='EXPLORE'))
+        monitor.running=True;monitor.battery()
+        if not args.recon_task:monitor.command_pub.publish(String(data='EXPLORE'))
         print(json.dumps({'phase':'exploring','home_map':home,'truth_start':baseline[1:],
                           'initial_known_area_m2':initial_area}),flush=True)
-        started=time.monotonic()
         def explored():
             if monitor.states and monitor.states[-1][1]=='estop':raise RuntimeError('G3 entered ESTOP during exploration')
+            if args.recon_task:
+                if recon.state in ('failed','interrupted'):raise RuntimeError('Recon task '+recon.state)
+                return recon.return_requested
             return sum(e['status']=='succeeded' and e['geodesic_dist_m']>=.75 for e in monitor.events)>=args.goals
         if not spin_until(explored,args.exploration_timeout):raise RuntimeError('Insufficient successful frontier goals before deadline')
         # Exercise an active/late-accepted frontier cancellation at low-battery handoff.
-        spin_until(lambda:explorer._attempt is not None or explorer._brain_pending is not None,3)
-        monitor.battery_level=.1;monitor.battery()
+        if not args.recon_task:
+            spin_until(lambda:explorer._attempt is not None or explorer._brain_pending is not None,3)
+            monitor.battery_level=.1;monitor.battery()
         def returned():
             if any(e['status'] in ('aborted','canceled','rejected','server_unavailable') for e in monitor.returns):
                 raise RuntimeError('Battery RETURN failed')
@@ -237,11 +254,13 @@ def main():
             known_area_growth_m2=final_area-initial_area)
     except (Exception,KeyboardInterrupt) as exc:
         report=dict(success=False,error=str(exc))
+        if recon is not None and recon.state not in ('returned','failed','interrupted'):
+            recon._transition('failed')
     finally:
         monitor.running=False;monitor.pub.publish(Twist())
         if explorer is not None:explorer.stop_navigation()
         g3._navigator.cancel_current_goal(reason='trial_shutdown')
-        spin_until(lambda:False,2)
+        spin_until(lambda:False,2,check_recorder=False)
         if monitor.latest_map is not None:
             m=monitor.latest_map
             np.save(root/'map.npy',np.asarray(m.data,dtype=np.int8).reshape(m.info.height,m.info.width))
@@ -252,7 +271,7 @@ def main():
                          '-t','/robot1/map','--ros-args','-p','use_sim_time:=true',
                          '-p','map_subscribe_transient_local:=true','-p','save_map_timeout:=10.0',
                          '-p','free_thresh_default:=0.196'],'map_saver.log')
-            spin_until(lambda:saver.poll() is not None,20)
+            spin_until(lambda:saver.poll() is not None,20,check_recorder=False)
         for child in reversed(children):
             if child.poll() is None:os.killpg(child.pid,signal.SIGINT)
         for child in children:
@@ -278,6 +297,17 @@ def main():
         if args.mission_brain and not any(e['status']=='brain_selected' and not e['fallback'] for e in monitor.events):
             report['success']=False
             report['error']='No real DeepSeek decision reached navigation'
+        if baseline is not None and monitor.poses:
+            report.setdefault('truth_home_error_m',math.hypot(monitor.poses[-1][1]-baseline[1],monitor.poses[-1][2]-baseline[2]))
+        report['recording_complete']=(root/'bag/metadata.yaml').is_file()
+        report['recorder_exit_code']=recorder.returncode if recorder is not None else None
+        if not report['recording_complete']:
+            report['success']=False;report.setdefault('error','Recording did not finalize metadata')
+        report['return_trigger']=('recon_objective_completed' if recon is not None and recon.return_requested else 'not_triggered') if args.recon_task else 'simulated_low_battery'
+        if args.recon_task:
+            report['recon_mission']=json.loads((root/'mission_report.json').read_text()) if (root/'mission_report.json').exists() else {'state':'not_started'}
+            if report['recon_mission']['state']!='returned':
+                report['success']=False;report.setdefault('error','Recon mission did not confirm RETURN success')
         report['perception_enabled']=args.perception
         report['perception_status']=monitor.perception[-1] if monitor.perception else None
         if args.perception and not (monitor.perception and monitor.perception[-1]['stats']['frames']>0 and monitor.perception[-1]['map_tf_available']):
@@ -297,7 +327,7 @@ def main():
             minimum_front_range_m=monitor.minimum_front if math.isfinite(monitor.minimum_front) else None,
             final_zero_command_published=True)
         (root/'report.json').write_text(json.dumps(report,indent=2));print(json.dumps(report),flush=True)
-        for node in [explorer,brain,g3,monitor]:
+        for node in [explorer,recon,brain,g3,monitor]:
             if node is not None:executor.remove_node(node);node.destroy_node()
         executor.shutdown();rclpy.shutdown()
     return 0 if report['success'] else 1

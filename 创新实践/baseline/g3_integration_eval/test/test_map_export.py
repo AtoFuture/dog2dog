@@ -27,13 +27,14 @@ def test_nav2_trinary_export_preserves_unknown_cells(tmp_path):
     msg.info.resolution=.05;msg.info.origin.orientation.w=1.;msg.data=[-1,0,100,-1]
     pub.publish(msg)
     prefix=tmp_path/'saved'
+    log=(tmp_path/'map_saver.log').open('w')
     child=subprocess.Popen(['ros2','run','nav2_map_server','map_saver_cli','-f',str(prefix),'-t',topic,
         '--ros-args','-p','map_subscribe_transient_local:=true','-p','free_thresh_default:=0.196'],
-        stdout=subprocess.DEVNULL,stderr=subprocess.STDOUT)
+        stdout=log,stderr=subprocess.STDOUT)
     try:
         deadline=time.monotonic()+10
         while child.poll() is None and time.monotonic()<deadline:rclpy.spin_once(node,timeout_sec=.1)
-        assert child.poll()==0
+        assert child.poll()==0, (tmp_path/'map_saver.log').read_text()
         saved=load_map(prefix.with_suffix('.yaml'))
         assert saved.free_thresh==pytest.approx(.196)
         unknown=sum(saved.free_thresh <= 1-v/255 <= saved.occupied_thresh for v in saved.data)
@@ -44,4 +45,5 @@ def test_nav2_trinary_export_preserves_unknown_cells(tmp_path):
             child.send_signal(signal.SIGINT)
             try:child.wait(timeout=5)
             except subprocess.TimeoutExpired:child.kill();child.wait()
+        log.close()
         node.destroy_node();rclpy.shutdown()

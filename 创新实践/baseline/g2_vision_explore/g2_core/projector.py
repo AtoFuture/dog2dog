@@ -393,6 +393,7 @@ def project_depth_bbox(
     min_valid_pixels: int = 10,
     max_dispersion_m: float = 3.0,
     anchor: str = "center",
+    mask_margin_px: int = 0,
 ) -> ProjectionResult | None:
     """用深度图把一个检测框解算成相机系三维点。
 
@@ -407,6 +408,8 @@ def project_depth_bbox(
         可选的实例分割掩膜（bool，与原图同形状）。**强烈建议提供** ——
         掩膜内的深度采样严格优于框内的统计启发式，且对遮挡更鲁棒。
         （``yolo26*-seg.pt`` 是 COCO 预训练权重，零训练成本。）
+    mask_margin_px : int
+        内缩分割掩膜的边缘像素，避免轮廓外的背景深度混入；太细目标会被丢弃。
     min_valid_pixels : int
         有效深度像素少于此值则丢弃该检测（目标被严重遮挡时深度不可信）。
     max_dispersion_m : float
@@ -485,6 +488,13 @@ def project_depth_bbox(
                 f"  直接在 DetectorConfig 里开 retina_masks=True，或先把掩膜 resize 回原图。\n"
                 f"  继续跑下去会用原图坐标切到错误的像素，而且不报错。"
             )
+        if not isinstance(mask_margin_px, int) or not 0 <= mask_margin_px <= 16:
+            raise ValueError('mask_margin_px must be an integer in 0..16')
+        if mask_margin_px:
+            import cv2
+            kernel = np.ones((2*mask_margin_px+1,2*mask_margin_px+1),np.uint8)
+            mask = cv2.erode(mask.astype(np.uint8), kernel,
+                             borderType=cv2.BORDER_CONSTANT,borderValue=0)>0
         valid &= mask[y1:y2, x1:x2].astype(bool)
 
     if valid.sum() < min_valid_pixels:

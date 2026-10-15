@@ -604,3 +604,17 @@ def test_keypoints_to_torso_3d_uses_the_near_end_by_default():
     assert torso is not None, f"应当能取到躯干，实际失败：{why}"
     assert torso.shoulder_mid[2] == pytest.approx(1.5, abs=0.05), \
         "肩中点深度应当是人的 1.5 m，而不是背景的 3.0 m"
+
+
+def test_eroding_segmentation_boundary_rejects_background_without_relaxing_quality():
+    from g2_core.projector import CameraIntrinsics, project_depth_bbox
+    depth=np.full((32,32),9.,dtype=np.float32)
+    mask=np.zeros((32,32),dtype=bool);mask[5:27,5:27]=True
+    depth[7:25,7:25]=3.
+    args=dict(depth_m=depth,intrinsics=CameraIntrinsics(100,100,16,16),
+              bbox_xyxy=(5,5,27,27),mask=mask,max_dispersion_m=3.)
+    assert project_depth_bbox(**args) is None
+    result=project_depth_bbox(**args,mask_margin_px=2)
+    assert result is not None and result.point[2]==pytest.approx(3.)
+    mask[:]=False;mask[5:27,15:17]=True
+    assert project_depth_bbox(**args,mask_margin_px=2) is None

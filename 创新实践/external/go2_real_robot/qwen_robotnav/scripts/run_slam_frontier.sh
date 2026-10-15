@@ -3,7 +3,7 @@
 set -euo pipefail
 if [[ "${1:-}" == "--help" ]]; then
     echo 'Usage: run_slam_frontier.sh [OUTPUT_DIR] [GOALS=5] [--prepare-only]'
-    echo 'Environment: SLAM_ROS_DOMAIN_ID, SLAM_IGN_PARTITION, G1_SIM_WORKSPACE, G1_ROS_WRAPPER, G1_GPU_WRAPPER, SLAM_MISSION_BRAIN=1, SLAM_PERCEPTION=1, SLAM_MAX_RANGE'
+    echo 'Environment: SLAM_ROS_DOMAIN_ID, SLAM_IGN_PARTITION, G1_SIM_WORKSPACE, G1_ROS_WRAPPER, G1_GPU_WRAPPER, SLAM_MISSION_BRAIN=1, SLAM_PERCEPTION=1, SLAM_MAX_RANGE, SLAM_RECON_TASK=1, SLAM_RECON_PERSON_MODEL'
     exit 0
 fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,10 +24,14 @@ done
 mkdir -p "${OUTPUT_DIR}"
 OUTPUT_DIR="$(realpath "${OUTPUT_DIR}")"
 "${ROS_WRAPPER}" bash -c '
+set -e
 export PYTHONPATH="$1/..:${PYTHONPATH:-}"
 python3 "$1/prepare_simulator_launch.py" --single-odom-tf --sim-workspace "$3" --output-dir "$2"
 python3 "$1/prepare_amcl_navigation.py" --localization slam --sim-workspace "$3" --output-dir "$2" --slam-max-range "$4"
-' _ "${SCRIPT_DIR}" "${OUTPUT_DIR}" "${SIM_WORKSPACE}" "${SLAM_MAX_RANGE:-4.0}"
+if [[ "$6" == "1" ]]; then
+    python3 "$1/prepare_recon_scene.py" --world "$3/src/gazebo_sim/world/warehouse.sdf" --person-model "$5" --output-dir "$2"
+fi
+' _ "${SCRIPT_DIR}" "${OUTPUT_DIR}" "${SIM_WORKSPACE}" "${SLAM_MAX_RANGE:-4.0}" "${SLAM_RECON_PERSON_MODEL:-}" "${SLAM_RECON_TASK:-0}"
 if [[ "${3:-}" == "--prepare-only" ]]; then
     echo "Prepared: ${OUTPUT_DIR}"
     exit 0
@@ -47,6 +51,8 @@ node.destroy_node();rclpy.shutdown()
 if others:raise SystemExit("Selected ROS domain is in use; choose another SLAM_ROS_DOMAIN_ID")
 PY
 ' _ "${TRIAL_DOMAIN}" "${SIM_WORKSPACE}"
+TRIAL_WORLD=warehouse.sdf
+if [[ "${SLAM_RECON_TASK:-0}" == "1" ]]; then TRIAL_WORLD="${OUTPUT_DIR}/recon_warehouse.sdf"; fi
 setsid "${GPU_WRAPPER}" bash -c '
 source "$1/install/setup.bash"
 export ROS_DOMAIN_ID="$3" IGN_PARTITION="$4" RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
@@ -54,8 +60,8 @@ export CYCLONEDDS_URI="file://$1/src/docker/cyclonedds.xml"
 export GZ_HEADLESS=1 GZ_SIM_RESOURCE_PATH="$1/src/gazebo_sim/models"
 if [[ -f /tmp/gz_egl/10_nvidia.json ]]; then export __EGL_VENDOR_LIBRARY_FILENAMES=/tmp/gz_egl/10_nvidia.json; fi
 export PYTHONPATH="$5/..:${PYTHONPATH:-}"
-exec ros2 launch "$2/gazebo_nav2.launch.py" sensors:=true world:=warehouse.sdf
-' _ "${SIM_WORKSPACE}" "${OUTPUT_DIR}" "${TRIAL_DOMAIN}" "${TRIAL_PARTITION}" "${SCRIPT_DIR}" >"${OUTPUT_DIR}/simulator.log" 2>&1 &
+exec ros2 launch "$2/gazebo_nav2.launch.py" sensors:=true world:="$6"
+' _ "${SIM_WORKSPACE}" "${OUTPUT_DIR}" "${TRIAL_DOMAIN}" "${TRIAL_PARTITION}" "${SCRIPT_DIR}" "${TRIAL_WORLD}" >"${OUTPUT_DIR}/simulator.log" 2>&1 &
 SIM_GROUP=$!
 VALIDATION_GROUP=""
 cleanup() {
@@ -99,8 +105,9 @@ if [[ "$8" == "1" ]]; then
     BRAIN_ARGS=(--mission-brain)
 fi
 if [[ "$9" == "1" ]]; then BRAIN_ARGS+=(--perception); fi
+if [[ "${10}" == "1" ]]; then BRAIN_ARGS+=(--recon-task); fi
 exec python3 "$6/validate_slam_frontier.py" "${BRAIN_ARGS[@]}" --output-dir "$2" --expected-domain "$3" --goals "$7"
-' _ "${SIM_WORKSPACE}" "${OUTPUT_DIR}" "${TRIAL_DOMAIN}" "${TRIAL_PARTITION}" "${PROJECT_DIR}" "${SCRIPT_DIR}" "${GOALS}" "${SLAM_MISSION_BRAIN:-0}" "${SLAM_PERCEPTION:-0}" >"${OUTPUT_DIR}/trial.log" 2>&1 &
+' _ "${SIM_WORKSPACE}" "${OUTPUT_DIR}" "${TRIAL_DOMAIN}" "${TRIAL_PARTITION}" "${PROJECT_DIR}" "${SCRIPT_DIR}" "${GOALS}" "${SLAM_MISSION_BRAIN:-${SLAM_RECON_TASK:-0}}" "${SLAM_PERCEPTION:-${SLAM_RECON_TASK:-0}}" "${SLAM_RECON_TASK:-0}" >"${OUTPUT_DIR}/trial.log" 2>&1 &
 VALIDATION_GROUP=$!
 if wait "${VALIDATION_GROUP}"; then
     TRIAL_STATUS=0
@@ -116,7 +123,8 @@ export PYTHONPATH="$3/baseline/g3_integration_eval:${PYTHONPATH:-}"
 export MPLCONFIGDIR=/tmp/slam-frontier-mpl
 python3 "$1/evaluate_slam_frontier.py" "$2" --reference-map "$4/src/navigation2/maps/warehouse_map.yaml"
 python3 "$1/plot_slam_frontier.py" "$2"
-' _ "${SCRIPT_DIR}" "${OUTPUT_DIR}" "${PROJECT_DIR}" "${SIM_WORKSPACE}"
+if [[ "$5" == "1" ]]; then python3 "$1/evaluate_recon_mission.py" "$2"; fi
+' _ "${SCRIPT_DIR}" "${OUTPUT_DIR}" "${PROJECT_DIR}" "${SIM_WORKSPACE}" "${SLAM_RECON_TASK:-0}"
 fi
 echo "Artifacts: ${OUTPUT_DIR}"
 exit "${TRIAL_STATUS}"

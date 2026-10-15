@@ -28,6 +28,7 @@ setup(
             "g3_integration_eval.unitree_battery_bridge_node:main",
             "sim_battery = g3_integration_eval.sim_battery_node:main",
             "evaluate_bag = g3_integration_eval.evaluate_bag:main",
+            "recon_task = g3_integration_eval.recon_task_node:main",
             "detection_evidence = g3_integration_eval.detection_evidence_node:main",
             "mission_brain = g3_integration_eval.mission_brain_node:main",
         ],

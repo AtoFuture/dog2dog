@@ -1,0 +1,67 @@
+{
+  "source": "https://fuel.gazebosim.org/1.0/OpenRobotics/models/Standing%20person",
+  "version": 3,
+  "license": "CC0-1.0",
+  "files": [
+    {
+      "path": "/materials/textures/eyebrow001.png",
+      "sha256": "b2b15dd52470d6d073d18ebf56bcb1f3b45567cd42a2c75557c0ed2adc0f1ec1",
+      "bytes": 238358
+    },
+    {
+      "path": "/materials/textures/green_eye.png",
+      "sha256": "97b79fb62dde7211c142ce398b9506d42a74bdc478230e90ec69377ffdce4e22",
+      "bytes": 682300
+    },
+    {
+      "path": "/materials/textures/jeans01_normals.png",
+      "sha256": "2aa953834fa0bcf240fe069dc1ef283d801573e077bc5f9da04847370e9837d1",
+      "bytes": 4017244
+    },
+    {
+      "path": "/materials/textures/jeans_basic_diffuse.png",
+      "sha256": "c4b2f9126873078ecf8a3678e28622196fa6cb47e131b6067d6ffe81919b0ca6",
+      "bytes": 4501616
+    },
+    {
+      "path": "/materials/textures/male02_diffuse_black.png",
+      "sha256": "37c166c53575369f57cf233e775f87ef225b3fe9f66ff7ba34b3abb12dcd46be",
+      "bytes": 4040719
+    },
+    {
+      "path": "/materials/textures/teeth.png",
+      "sha256": "d0afb57869c6fbb56b98f5efc4aec629ee7593e70d8dd2bfb9de923acfb65f43",
+      "bytes": 1799930
+    },
+    {
+      "path": "/materials/textures/tshirt02_normals.png",
+      "sha256": "f31407a3f8ae20736f8f9693906f6ad64569032bc4afd0798c305526fa51d33d",
+      "bytes": 319746
+    },
+    {
+      "path": "/materials/textures/tshirt02_texture.png",
+      "sha256": "932e21f76307fda21692a3b4db03fcddc68127d410b4ccbf9fb5cf95ecfbc1b1",
+      "bytes": 72189
+    },
+    {
+      "path": "/materials/textures/young_lightskinned_male_diffuse.png",
+      "sha256": "4233a4e1e2d423daf8e5aa25521df93253be54b0ab6490147afae39b076f4fcb",
+      "bytes": 4448702
+    },
+    {
+      "path": "/meshes/standing.dae",
+      "sha256": "bc20dd2cd005d70a35627e38cb52d4c84f3d66034b196efa28e11b10b3295c15",
+      "bytes": 4514010
+    },
+    {
+      "path": "/model.config",
+      "sha256": "5867d0c4417ded2c20d6d70857ac638eb5c16b460a0af3140dc9552c2f9e5a34",
+      "bytes": 350
+    },
+    {
+      "path": "/model.sdf",
+      "sha256": "bd2499f97a041d557881c2303a6b314c15df6e7f16f34413d19ee97834720cec",
+      "bytes": 1075
+    }
+  ]
+}

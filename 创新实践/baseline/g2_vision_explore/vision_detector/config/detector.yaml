@@ -22,6 +22,7 @@
     # ---- 三维解算 ----
     anchor: center       # center | bottom（倒地检测推荐 bottom）
     max_dispersion_m: 3.0   # 实测：真实目标中位 1.58 m，0.5 会全灭。见 projector 的说明
+    mask_depth_margin_px: 2  # Exclude uncertain segmentation boundaries from depth sampling
     min_valid_pixels: 10
 
     # ---- 坐标变换 ----

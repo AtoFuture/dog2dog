@@ -376,3 +376,27 @@ G3 把 `/detections_3d` 与 `/detections_snapshot` 持久化为 `detections/evid
 过程中 2 次 Nav2 失败后重选，参考地图覆盖率 26.94%，最差成功目标位置误差 0.513 米。
 本地照片正例已验证实际 YOLO → 三维消息 → G3 JPEG 证据记录，其中深度/TF 为合成输入，不能作为真实 RGB-D 精度证明。
 完整证据与已知限制见 [DeepSeek 排序和检测联调](docs/deepseek-frontier-perception-validation.md)。
+
+## 带三维人员目标的侦查任务
+
+```bash
+python3 ./scripts/fetch_recon_person.py /tmp/go2_person_asset
+SLAM_RECON_TASK=1 SLAM_RECON_PERSON_MODEL=/tmp/go2_person_asset \
+  SLAM_ROS_DOMAIN_ID=200 ./scripts/run_slam_frontier.sh /tmp/go2_recon_run 1
+```
+
+人物模型采用 OpenRobotics 的 CC0 Standing person 第 3 版，资产由 SHA256 清单固定，
+无需把大型网格与贴图提交到仓库。场景使用独立 warehouse 副本，模型位置只供离线评测。
+本模式自动开启 DeepSeek frontier 排序、同源 RGB-D 和分割检测，默认内缩掩膜 2 像素以排除轮廓边缘的背景深度；质量阈值保持不变。
+
+任务为确认一名 person：同一非零跟踪 ID、置信度至少 0.5、两次不同采集时刻、
+间隔不超过 10 秒、位置差不超过 0.75 米，并且两条观测都有可配对 JPEG。
+完成指定数量的有效探索目标后，G3 任务节点发出 RETURN，走导航权交接和 Nav2 返航，
+以匹配的真实 RETURN action 成功终态确认任务完成。该流程独立于低电量返航验证。
+
+输出包含 `mission_report.json`、`mission_report.md`、`recon_validation.json`、
+JPEG 证据、原始 RGB-D bag 和按确认观测时间戳提取的彩色图/深度数组。
+离线验收核对人物平面位置误差、抓拍可解码、原始 RGB-D 帧及返航误差。
+Z 属于当前 map 坐标系，尚未标定为离地高度；本实验不证明全身三维重建精度或多人检出率。
+
+完整实测：人员平面误差约 0.14 米、返航误差约 0.28 米，任务总用时约 120 秒，录包中的 action 与任务终态均已核对。见 [人员侦查验收报告](docs/recon-person-validation.md)。
