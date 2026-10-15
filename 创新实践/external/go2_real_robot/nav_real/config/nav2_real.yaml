@@ -1,0 +1,235 @@
+# Nav2 参数（Go2 探索模式：无 map_server / AMCL，slam_toolbox 提供 map->odom + /map）
+# 机器人约束（来自 W1/W2 裁决）：
+#   - CHAMP gait 层限速 max_linear_velocity_x=0.3 -> Nav2 速度上限 0.25 留余量
+#   - 速度接口非全向（cmd_vel vy 会被忽略），转向慢（max_ang 0.5 rad/s）
+#   - 唯一可信 odom 是 FAST-LIO /Odometry（controller_server remap odom->/Odometry）
+# use_sim_time 全链 true（yaml 直填，不经 RewrittenYaml）
+bt_navigator:
+  ros__parameters:
+    use_sim_time: false
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /baiyanggo/webrtc/odom
+    bt_loop_duration: 10
+    default_server_timeout: 30      # 重仿真，action/服务响应慢
+    wait_for_service_timeout: 2000
+    default_bt_xml_filename: "/opt/ros/foxy/share/nav2_bt_navigator/behavior_trees/navigate_w_replanning_and_recovery.xml"
+    plugin_lib_names:
+      - nav2_back_up_action_bt_node
+      - nav2_clear_costmap_service_bt_node
+      - nav2_compute_path_to_pose_action_bt_node
+      - nav2_distance_controller_bt_node
+      - nav2_distance_traveled_condition_bt_node
+      - nav2_follow_path_action_bt_node
+      - nav2_goal_reached_condition_bt_node
+      - nav2_goal_updated_condition_bt_node
+      - nav2_goal_updater_node_bt_node
+      - nav2_initial_pose_received_condition_bt_node
+      - nav2_is_battery_low_condition_bt_node
+      - nav2_is_stuck_condition_bt_node
+      - nav2_navigate_to_pose_action_bt_node
+      - nav2_pipeline_sequence_bt_node
+      - nav2_rate_controller_bt_node
+      - nav2_recovery_node_bt_node
+      - nav2_reinitialize_global_localization_service_bt_node
+      - nav2_round_robin_node_bt_node
+      - nav2_speed_controller_bt_node
+      - nav2_spin_action_bt_node
+      - nav2_time_expired_condition_bt_node
+      - nav2_transform_available_condition_bt_node
+      - nav2_truncate_path_action_bt_node
+      - nav2_wait_action_bt_node
+      # Foxy 实测可用全部 24 个（Humble 的 through_poses/smooth_path 等在此不存在，
+      # 引用会导致 bt_navigator configure 期动态库加载失败 -> lifecycle 中止）
+
+controller_server:
+  ros__parameters:
+    use_sim_time: false
+    # BYY修复⑪ 控制频率对齐反馈带宽：utlidar/EKF 位姿有效更新 ~15-20Hz 且有滞后，
+    # 10Hz 控制环会在旧反馈上连续叠加修正（社区经验 3.0 防打转），取 4Hz 折中
+    controller_frequency: 4.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.5          # 重仿真偶发 TF 晚到，宽限
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.1   # 必须远小于最近 frontier 距离：首目标曾只有 0.3m，
+                                       # 0.4m 半径数学上不可能 -> 误报 Failed to make progress
+      movement_time_allowance: 15.0
+    general_goal_checker:
+      stateful: True
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.22   # 四足步态终点过冲 5~10cm + LIO/真值 ~1.5cm 漂移，0.15 过紧
+                                # （上轮 W 房目标在 0.15 外徘徊不收敛，遗留问题②）。
+                                # 防"秒完成死循环"已由 explore_lite min_frontier_distance=1.5
+                                # 兜底（被选 frontier 必然 >1.5m 远 > 0.22 容差），不再依赖本参数
+      yaw_goal_tolerance: 6.28  # 不检查终点朝向（2π=永真）。RPP+RotationShim(Humble 无
+                                # rotate_to_goal_heading) 无法在路径终点做纯原地转向对齐目标
+                                # 航向：上轮 W 房目标 yaw=0 而接近方向朝西(-π)，xy 已达但
+                                # yaw 永差 π -> SimpleGoalChecker stateful 锁定 xy 后 RPP 绕
+                                # 目标点打转（探针实测 0.7~1.4m 盘旋）-> 超时。探索/frontier
+                                # 场景终点朝向无意义，直接放开
+    FollowPath:
+      # 真机 Foxy 无 RotationShim，RPP 单打（狗经 sport Move 自带转向能力）
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      # --- RPP ---
+      desired_linear_vel: 0.20
+      lookahead_dist: 0.6
+      min_lookahead_dist: 0.3
+      max_lookahead_dist: 0.9
+      lookahead_time: 1.5
+      transform_tolerance: 0.5
+      use_velocity_scaled_lookahead_dist: false
+      min_approach_linear_velocity: 0.08
+      approach_velocity_scaling_dist: 0.6
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 2.0
+      use_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: true
+      cost_scaling_dist: 0.3
+      cost_scaling_gain: 1.0
+      inflation_cost_scaling_factor: 3.0
+      stateful: true
+      # BYY修复⑧ 转向柔化：狗的 utlidar 航向反馈在快速旋转时滞后(扫描匹配延迟)，
+      # RPP 默认 1.8rad/s 快转一转就过冲180°→±π级来回摆(实测 t15s 后 ±180° 振荡)。
+      # 慢转 + 低角加速度让反馈跟得上闭环。
+      rotate_to_heading_angular_vel: 0.5
+      max_angular_accel: 0.8
+      rotate_to_heading_min_angle: 2.6  # >π/2: 实际禁用原地旋转,全曲率转向(防打转保险)
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      use_sim_time: false
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_link
+      rolling_window: true
+      width: 4
+      height: 4
+      resolution: 0.05
+      robot_radius: 0.35
+      plugins: ["obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan
+        scan:
+          topic: /scan
+          data_type: "LaserScan"
+          clearing: True
+          marking: True
+          raytrace_max_range: 4.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 3.5
+          obstacle_min_range: 0.0
+          inf_is_valid: True
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 2.0
+        inflation_radius: 0.45   # BYY修复①：原 0.6=门洞半宽，膨胀带填满 1.2m 门洞
+                                  # （中心代价 119/253），跨房 frontier 被成本压制、机器人不出 C 房。
+                                  # 0.45>robot_radius 0.35 仍保安全，门洞中心代价归 0
+      always_send_full_costmap: True
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      use_sim_time: false
+      update_frequency: 1.0
+      publish_frequency: 0.5
+      global_frame: map
+      robot_base_frame: base_link
+      robot_radius: 0.35
+      resolution: 0.05
+      track_unknown_space: true
+      # BYY修复②：体素地图是狗在 odom 系持续累积的占据图，对它做扫描匹配会把
+      # 真实运动"吸收"成漂移（标定实测：狗转90°，SLAM 的 map 位姿纹丝不动）。
+      # 定位改用狗自身 utlidar 里程计（map≡odom 静态 TF），全局图改滚动窗口。
+      rolling_window: true
+      width: 12
+      height: 12
+      plugins: ["obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan
+        scan:
+          topic: /scan
+          data_type: "LaserScan"
+          clearing: True
+          marking: True
+          raytrace_max_range: 6.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 5.0
+          obstacle_min_range: 0.0
+          inf_is_valid: True
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 2.0
+        inflation_radius: 0.5    # BYY修复①同步收窄（全局图）
+      always_send_full_costmap: True
+
+planner_server:
+  ros__parameters:
+    use_sim_time: false
+    expected_planner_frequency: 1.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_navfn_planner/NavfnPlanner"
+      tolerance: 0.5                # frontier 目标点可能落在未知区边缘，允许就近可行点
+      use_astar: false
+      allow_unknown: true           # 探索关键：允许穿越未知区
+
+smoother_server:
+  ros__parameters:
+    use_sim_time: false
+    smoother_plugins: ["simple_smoother"]
+    simple_smoother:
+      plugin: "nav2_smoother::SimpleSmoother"
+      tolerance: 1.0e-10
+      max_its: 1000
+      do_refinement: True
+
+behavior_server:
+  ros__parameters:
+    use_sim_time: false
+    costmap_topic: local_costmap/costmap_raw
+    footprint_topic: local_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
+    spin:
+      plugin: "nav2_behaviors/Spin"
+    backup:
+      plugin: "nav2_behaviors/BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors/DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    global_frame: odom
+    robot_base_frame: base_link
+    transform_tolerance: 0.3
+    simulate_ahead_time: 1.5
+    max_rotational_vel: 0.35        # 腿式慢转
+    min_rotational_vel: 0.15
+    rotational_acc_lim: 0.6
+
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: false
+    smoothing_frequency: 20.0
+    scale_velocities: False
+    feedback: "OPEN_LOOP"           # 不用 CHAMP /odom（已被裁决不可信）
+    max_velocity: [0.25, 0.0, 0.4]  # gait 上限 0.3，留余量
+    min_velocity: [0.0, 0.0, -0.4]  # min_x=0 禁倒车
+    max_accel: [0.3, 0.0, 0.6]      # 软加速度（腿式）
+    max_decel: [-0.4, 0.0, -0.8]
+    odom_topic: "/baiyanggo/webrtc/odom"
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0

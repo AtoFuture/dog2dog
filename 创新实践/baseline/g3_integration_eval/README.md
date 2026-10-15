@@ -130,6 +130,9 @@ ros2 run g3_integration_eval evaluate_bag /path/to/bag \
 - observed goal 的唯一终态为 `SUCCEEDED / ABORTED / CANCELED` 时才进入导航成功率分母；没有终态记为 `incomplete`，同一 UUID 出现多个不同终态记为 `conflict` 并排除。
 - 导航成功率定义为 `SUCCEEDED / (SUCCEEDED + ABORTED + CANCELED)`。若本次 bag 没有 observed goal 到达终态，则输出 `unavailable`，而不是误报 `0%`。
 - `/g3/return_event` 将 G3 `RETURN` 尝试与 Nav2 goal UUID 明确关联。离线评估按 `attempt_id` 去重：preview 不进入成功率分母；真实发送后的成功、取消、中止、拒绝、server unavailable 与发送/回调错误进入分母。旧 bag 不含该话题时，`return_success_rate` 仍保持 `unavailable`，原因是 `no_explicit_return_goal_marker`。
+- 标准录包清单包含轻量的 `/detections_3d`。`/detections_snapshot` 携带 JPEG 图像，默认不录以控制 bag 体积；确需保存图像证据时，可在启动录包脚本前设置 `G3_RECORD_DETECTIONS_SNAPSHOT=1`。
+- `return_navigation.attempt_durations` 按 `attempt_id` 输出每次 RETURN 从 `waiting_for_server` 到唯一终态的耗时。`metrics.return_duration` 给出成功 RETURN 的平均、最短、最长耗时；开始/终态或事件时间戳缺失、终态冲突时，该 attempt 标为 `unavailable` 并附原因，不根据 bag 总时长推测。
+- `state_statistics` 汇总 `/g3/state` 与 `/mission_state` 的消息状态计数、相邻状态切换和切换边界完整的停留时长。停留时间使用 rosbag 存储时间戳，bag 结束时仍处于当前状态的区间保持未完成，不计入时长汇总。
 
 Nav2 使用 namespace 时，录包和评测必须传入同一 action 名称。例如 G1 的
 `/robot1/navigate_to_pose`：

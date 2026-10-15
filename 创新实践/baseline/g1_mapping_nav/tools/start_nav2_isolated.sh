@@ -92,6 +92,19 @@ if [ "${STATE}" != "active" ]; then
     fi
 fi
 
+echo "   确认 joint_state_broadcaster 已激活（N5: spawner 间歇失败致 odom 不发）"
+JSB_STATE="$(timeout 20 ros2 service call "${CTRL_MGR}/list_controllers" \
+    controller_manager_msgs/srv/ListControllers 2>/dev/null \
+    | grep -oE "name='joint_state_broadcaster', state='[a-z]+'" \
+    | sed -E "s/.*state='([a-z]+)'.*/\1/")"
+if [ "${JSB_STATE}" != "active" ]; then
+    echo "   joint_state_broadcaster 状态：${JSB_STATE:-查不到} → 激活"
+    timeout 30 ros2 service call "${CTRL_MGR}/switch_controller" \
+        controller_manager_msgs/srv/SwitchController \
+        "{activate_controllers: [joint_state_broadcaster], strictness: 1}" \
+        >"${LOG_DIR}/activate_jsb.log" 2>&1
+fi
+
 echo "== 2/3 起速度缩放器 =="
 python3 "${TOOLS_DIR}/cmd_vel_scaler.py" --ros-args \
     -p use_sim_time:=true >"${LOG_DIR}/cmd_vel_scaler.log" 2>&1 &

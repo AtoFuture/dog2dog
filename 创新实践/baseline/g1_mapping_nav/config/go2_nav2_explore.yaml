@@ -1,0 +1,160 @@
+# Nav2 探索模式配置（无先验图，从真机 nav2_real.yaml 吸收，2026-10-12）
+# 与 go2_nav2.yaml（定位模式）的关键区别：
+#   1. global_costmap rolling_window=true（无 static_layer，不卡等 /map）
+#   2. 无 AMCL（slam_toolbox 提供 map→odom TF）
+#   3. slam_toolbox minimum_travel_distance=0（静止也消化扫描，防地图孔洞）
+#   4. controller_frequency=4.0（对齐真机反馈带宽）
+#
+# 使用：ros2 launch nav2_bringup navigation_launch.py --ros-args --params-file go2_nav2_explore.yaml
+# （用 navigation_launch 非 bringup_launch：后者强制要 map 参数）
+
+bt_navigator:
+  ros__parameters:
+    use_sim_time: True
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /robot1/odom
+    bt_loop_duration: 10
+    default_server_timeout: 30
+    wait_for_service_timeout: 2000
+
+controller_server:
+  ros__parameters:
+    use_sim_time: True
+    controller_frequency: 4.0       # 真机反馈 ~15-20Hz，4Hz 折中防旧反馈叠加
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.5
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.1
+      movement_time_allowance: 15.0
+    general_goal_checker:
+      stateful: True
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.22
+      yaw_goal_tolerance: 6.28      # 探索终点朝向无意义，放开
+    FollowPath:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.20
+      lookahead_dist: 0.6
+      min_lookahead_dist: 0.3
+      max_lookahead_dist: 0.9
+      lookahead_time: 1.5
+      transform_tolerance: 0.5
+      use_velocity_scaled_lookahead_dist: false
+      min_approach_linear_velocity: 0.08
+      approach_velocity_scaling_dist: 0.6
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 2.0
+      use_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: true
+      cost_scaling_dist: 0.3
+      cost_scaling_gain: 1.0
+      inflation_cost_scaling_factor: 3.0
+      stateful: true
+      rotate_to_heading_angular_vel: 0.5
+      max_angular_accel: 0.8
+      rotate_to_heading_min_angle: 2.6  # >π/2 禁用原地旋转，防打转
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      use_sim_time: True
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_link
+      rolling_window: true
+      width: 4
+      height: 4
+      resolution: 0.05
+      robot_radius: 0.35
+      plugins: ["obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan
+        scan:
+          topic: /scan
+          data_type: "LaserScan"
+          clearing: True
+          marking: True
+          raytrace_max_range: 4.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 3.5
+          obstacle_min_range: 0.0
+          inf_is_valid: True
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 2.0
+        inflation_radius: 0.45
+      always_send_full_costmap: True
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      use_sim_time: True
+      update_frequency: 1.0
+      publish_frequency: 0.5
+      global_frame: map
+      robot_base_frame: base_link
+      robot_radius: 0.35
+      resolution: 0.05
+      track_unknown_space: true
+      # 探索模式关键：滚动窗口，无 static_layer
+      # 体素地图是 odom 系持续累积的占据图，对它做扫描匹配会把真实运动吸收成漂移。
+      # 用滚动窗口避免 static_layer 等不到 /map 卡住。
+      rolling_window: true
+      width: 12
+      height: 12
+      plugins: ["obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan
+        scan:
+          topic: /scan
+          data_type: "LaserScan"
+          clearing: True
+          marking: True
+          raytrace_max_range: 6.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 5.0
+          obstacle_min_range: 0.0
+          inf_is_valid: True
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 2.0
+        inflation_radius: 0.5
+      always_send_full_costmap: True
+
+planner_server:
+  ros__parameters:
+    use_sim_time: True
+    expected_planner_frequency: 1.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_navfn_planner/NavfnPlanner"
+      tolerance: 0.5
+      use_astar: false
+      allow_unknown: true           # 探索关键：允许穿越未知区
+
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: True
+    smoothing_frequency: 20.0
+    scale_velocities: False
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.25, 0.0, 0.4]
+    min_velocity: [0.0, 0.0, -0.4]  # 禁倒车
+    max_accel: [0.3, 0.0, 0.6]      # 软加速度（腿式）
+    max_decel: [-0.4, 0.0, -0.8]
+    odom_topic: "/robot1/odom"
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0

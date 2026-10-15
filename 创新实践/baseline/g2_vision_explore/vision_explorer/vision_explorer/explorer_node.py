@@ -142,6 +142,8 @@ def select_and_report(
     grid: GridMap | None,
     robot_xy: tuple[float, float],
     now: float,
+    *,
+    on_status=None,
 ) -> Goal | None:
     """选一个目标点，并把结果**如实**回报给状态机。返回要发的目标（没有则 ``None``）。
 
@@ -166,14 +168,20 @@ def select_and_report(
     if grid is None:
         # 地图还没到 —— 稍后再试，**不是**探完了。
         sm.on_select_failed(False)
+        if on_status is not None:
+            on_status(None)
         return None
 
     result = selector.select(grid, robot_xy, now)
     if result.status is SelectStatus.GOAL:
         sm.on_goal_sent()
+        if on_status is not None:
+            on_status(SelectStatus.GOAL)
         return result.goal
 
     sm.on_select_failed(result.status is SelectStatus.NO_FRONTIER)
+    if on_status is not None:
+        on_status(result.status)
     return None
 
 
@@ -197,6 +205,13 @@ class VisionExplorer(Node):
         self._goal: Goal | None = None          # 在飞的那个目标
         self._goal_sent_at: float = -math.inf
         self._mission_state: str = MISSION_EXPLORING
+
+        self._small_frontiers_count = 0
+        self._no_candidate_count = 0
+        self._no_pose_count = 0
+        self._last_anomaly_count = 0
+        self._last_select_status: SelectStatus | None = None
+        self._frontier_threshold_adapted = False
 
         self._nav = ActionClient(self, NavigateToPose, p["nav_action"])
         self._goal_handle = None
@@ -231,17 +246,37 @@ class VisionExplorer(Node):
             ("max_nav_timeout_s", 120.0),
             ("robot_frame", "base_link"),
             ("map_frame", "map"),
+            ("min_frontier_area_m2", 0.0),
             # 选点本身的参数由 ExplorerParams 声明（阈值、权重、TTL…）
         ])
 
     def _p(self) -> dict:
         return {n: self.get_parameter(n).value for n in (
             "map_topic", "mission_state_topic", "nav_action", "tick_period_s",
-            "max_nav_timeout_s", "robot_frame", "map_frame")}
+            "max_nav_timeout_s", "robot_frame", "map_frame",
+            "min_frontier_area_m2")}
 
     # ------------------------------------------------------------------
     # 订阅回调
     # ------------------------------------------------------------------
+    def _adapt_frontier_threshold(self, resolution: float) -> None:
+        p = self._p()
+        configured = float(p["min_frontier_area_m2"])
+        if configured > 0.0:
+            self._selector.params.min_frontier_area_m2 = configured
+            self.get_logger().info(
+                f"frontier 阈值: min_frontier_area_m2={configured:.4f} m² "
+                f"(用户配置)"
+            )
+            return
+        min_door_width_m = 0.8
+        auto_threshold = min_door_width_m * resolution
+        self._selector.params.min_frontier_area_m2 = auto_threshold
+        self.get_logger().info(
+            f"frontier 阈值自适应: min_frontier_area_m2={auto_threshold:.4f} m² "
+            f"(门宽 {min_door_width_m} m × 分辨率 {resolution:.3f} m/格)"
+        )
+
     def _on_map(self, msg: OccupancyGrid) -> None:
         """``OccupancyGrid`` → :class:`GridMap`。
 
@@ -255,6 +290,9 @@ class VisionExplorer(Node):
             self.get_logger().error(f"地图解析失败，丢弃这一帧：{exc}")
             return
         self._grid_stamp = self._now()
+        if not self._frontier_threshold_adapted:
+            self._adapt_frontier_threshold(self._grid.resolution)
+            self._frontier_threshold_adapted = True
         # DONE 是终止态，不会自己出来 —— 但**新地图可能带来新 frontier**
         # （典型场景：探索到一半失联，G1 重新建图后又有可探区域了）。
         # ``revive()`` 的 docstring 说的就是这个用法。没有新 frontier 时
@@ -291,12 +329,53 @@ class VisionExplorer(Node):
         # Command.NONE：什么都不做（绝大多数 tick 都是这个）
 
     def _select_and_send(self, now: float) -> None:
+        self._last_select_status = None
         goal = select_and_report(
-            self._selector, self._sm, self._grid, self._robot_xy(), now)
+            self._selector, self._sm, self._grid, self._robot_xy(), now,
+            on_status=self._record_select_status)
         if goal is not None:
             self._send_goal(goal, now)
         else:
-            self.get_logger().debug(f"本轮没发点（{self._sm.phase.value}）")
+            self._track_select_failure()
+
+    def _record_select_status(self, status) -> None:
+        self._last_select_status = status
+
+    def _track_select_failure(self) -> None:
+        status = self._last_select_status
+        if status is None:
+            self.get_logger().debug("本轮没发点（无地图）")
+        elif status is SelectStatus.SMALL_FRONTIERS:
+            self._small_frontiers_count += 1
+            if self._small_frontiers_count == 1:
+                self.get_logger().warning(
+                    f"frontier 簇全部小于阈值 "
+                    f"({self._selector.params.min_frontier_area_m2:.4f} m²)"
+                )
+            elif self._small_frontiers_count % 10 == 0:
+                self.get_logger().warning(
+                    f"SMALL_FRONTIERS 已连续 {self._small_frontiers_count} 次"
+                )
+        elif status is SelectStatus.NO_CANDIDATE:
+            self._no_candidate_count += 1
+            if self._no_candidate_count % 10 == 0:
+                self.get_logger().warning(
+                    f"NO_CANDIDATE 已 {self._no_candidate_count} 次"
+                )
+        elif status is SelectStatus.NO_ROBOT_POSE:
+            self._no_pose_count += 1
+            if self._no_pose_count % 10 == 0:
+                self.get_logger().warning(
+                    f"NO_ROBOT_POSE 已 {self._no_pose_count} 次"
+                )
+        else:
+            self.get_logger().debug(f"本轮没发点（{status.value}）")
+
+        anomalies = self._sm.anomalies
+        if len(anomalies) > self._last_anomaly_count:
+            for a in anomalies[self._last_anomaly_count:]:
+                self.get_logger().warning(f"状态机异常: {a}")
+            self._last_anomaly_count = len(anomalies)
 
     def _send_goal(self, goal: Goal, now: float) -> None:
         if not self._nav.wait_for_server(timeout_sec=1.0):

@@ -200,7 +200,7 @@ class VisionDetector(Node):
             CameraInfo,
             self.get_parameter("camera_info_topic").value,
             self._on_camera_info,
-            LATCHED_QOS,
+            SENSOR_QOS,
             callback_group=self._vision_group,
         )
 
@@ -234,6 +234,13 @@ class VisionDetector(Node):
     def _report_stats(self) -> None:
         st = self._stat
         if st["frames"] == 0:
+            self.get_logger().warn(
+                f"[统计] 已运行但处理 0 帧 —— 可能原因："
+                f"CameraInfo QoS 不匹配、话题名不对、"
+                f"彩色/深度时间戳同步失败（slop={self.get_parameter('sync_slop_s').value}s）。"
+                f"检查 `ros2 topic info {self.get_parameter('camera_info_topic').value} --verbose` "
+                f"的 Publisher QoS 是否为 BEST_EFFORT。"
+            )
             return
         self.get_logger().info(
             f"[统计] 处理 {st['frames']} 帧 ｜ 检测 {st['dets']} 个 ｜ "

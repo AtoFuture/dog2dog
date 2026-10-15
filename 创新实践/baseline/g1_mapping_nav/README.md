@@ -83,7 +83,7 @@
 
 | 项 | 状态 |
 |---|---|
-| **P1 第 5 项：边跑边建图** | `--slam` 通路已搭好，**无任何运行验证**；且 `config/go2_nav2.yaml` 里 slam 参数的键名有两套互相矛盾的说法（见 §未提交改动 第 4 条） |
+| **P1 第 5 项：边跑边建图** | `--slam` 通路已搭好，**无任何运行验证**；slam 键名已定论用裸键（见 §未提交改动 第 4 条 / 问题清单 N1），但 SLAM 模式参数是否生效未验证 |
 | 足端里程计本身的修复 | 只做了**隔离**（判据改真值），算法没修。原地蹬腿时虚报可达 **83 倍** |
 | costmap 是否异常 | ❓ 未单独量 |
 | 路径效率 | 1.10 m 直线走了 3.86 m（绕 3.5 倍） |
@@ -103,9 +103,7 @@
 | 4 | `config/go2_nav2.yaml` | 末尾 `slam_toolbox:` 段 | **键名两套说法冲突**，见下 |
 | 5 | `maps/live_warehouse_20260919.yaml` | `free_thresh` 0.25 → **0.196** | 0.25 会把 10.5% 未知区静默判成可通行；**P2 的 frontier 依赖未知栅格**，图里没有未知就没有 frontier |
 
-另有两个新文件一并入库：`config/go2_nav2.yaml.bak.20260924`（09-24 那版 slam
-键名写法，保留它是为了解 §第 4 条那个未决问题时可 diff 对照）、
-`tools/map_growth.py`（P1 第 5 项的判据工具）。
+另有一个新文件一并入库：`tools/map_growth.py`（P1 第 5 项的判据工具）。
 
 ### 第 1 条与历史记录冲突，以第 1 条为准
 
@@ -120,9 +118,8 @@
 但紧接着的 FIX 注释说「顶层键须用**相对名**，写 `/robot1/slam_toolbox` 会拼成
 `/robot1//robot1/`，rcl 解析失败、bringup 全挂」；而实际 yaml 是**裸键写真参数**。
 
-两套说法都自称实测过，`.bak.20260924` 保存的是「空壳 + 全限定键」那版。
-**在跑 SLAM 验证之前必须先定这一条**，否则会静默退回 slam_toolbox 代码默认值
-（`base_frame=base_footprint`、`scan_topic=/scan`），图一条都建不出来。
+两套说法都自称实测过。**2026-10-11 已定论：用裸键 `slam_toolbox:`**（见问题清单 N1，AMCL 模式 bringup 存活；SLAM 模式参数是否生效未验证）。
+**SLAM 建图仍未验收**——裸键下参数可能被 `RewrittenYaml` 丢弃（退回默认 `base_frame=base_footprint`），需 `ros2 param get /robot1/slam_toolbox base_frame` 验证。
 
 ---
 
@@ -153,8 +150,7 @@
 ### 修过的一个 bug
 - ⚠️ **这条结论已被推翻（2026-09-25），不要照做。** 原文：`config/go2_nav2.yaml` 里
   local/global costmap 的 `topic: /velodyne`（绝对名）在 `/robot1` 命名空间下订阅不到，
-  改为相对名 `topic: velodyne`。diff 见 `config/go2_nav2.fix.diff`
-  （install 下是软链，改 src 即生效，无需 rebuild）。
+  改为相对名 `topic: velodyne`。
   **实测：改成相对名之后，costmap 节点把它解析成 `/robot1/local_costmap/velodyne`
   ——那是个无发布者的空话题，于是 local_costmap 3600/3600 cell 全 free，
   避障彻底失效。正确写法是绝对名 `/robot1/velodyne`**，见本文档 §未提交改动 第 1 条。
@@ -163,7 +159,7 @@
 - `scripts/`：`start_slam.sh`（建图）、`start_nav2.sh`（导航），用法见文件头注释，
   统一用 `nohup ~/.enroot/ros-gui bash <script> > /tmp/<name>.log 2>&1 &` 常驻。
 - `maps/`：当晚实测地图（slam 建的 warehouse 实时图）。
-- `config/`：修复后的 `go2_nav2.yaml` + 原版 bak + diff。
+- `config/`：修复后的 `go2_nav2.yaml`。
 - `logs/`：`drive.log`（运动验证）、`mapsaver.log`（存图）、`nav2.log`（导航 bringup 全日志）。
 
 ### 注意事项
@@ -171,49 +167,6 @@
   必须进容器并加 `--no-daemon`，详见 `scripts/*.sh` 头部的 export。
 - Nav2 的地图话题是命名空间内的 `/robot1/map`（不是全局 `/map`，那是 slam_toolbox 的）。
 - 不要重启 VNC `:2`（会连带杀掉 Gazebo/rviz，2026-09-18/20 两次踩过）；仿真被重启后需重起 nav2 并重发 initialpose。
----
-
-## 实验记录 · 2026-09-19/20（Go2 Gazebo 建图导航联调）
-
-> 环境：ubuntu-SYS-420GP-TNR，ROS Humble，仿真跑在 enroot 容器 `ros+humble`，
-> `ROS_DOMAIN_ID=42`，`RMW=rmw_cyclonedds_cpp`，world=`warehouse.sdf`+sensors。
-
-### 当晚链路（全通）
-
-1. 仿真底座正常：`/robot1/scan`、`/robot1/velodyne`、`/robot1/odom`、`/robot1/tf`、`/clock` 均有流。
-2. 建图：`slam_toolbox`（async，scan:=velodyne，odom:=odom），输出全局 `/map` 718x437@0.05m；
-   遥控狗低速跑约 3 分钟（0.25m/s，方形+旋转），odom 位移 2.42m。
-3. 存图：`map_saver_cli -t /map` 存 `maps/live_warehouse_20260919.*`（有效：free 24.5%，occ 0.6%）。
-4. 导航：停 slam 后起 `navigation2/go2_navigation2.launch.py`（map_server+amcl+planner+controller+bt 全 active）；
-   发 `initialpose(0,0,0/map)` 收敛后发 `goal(1.0,0.0/map)`，日志 `Reached the goal! / Goal succeeded`。
-5. 可视化：`pip install --user websockify` + 克隆 noVNC，`websockify 6080→5902`，
-   浏览器 `http://10.31.112.43:6080/vnc.html` 可看 Gazebo+rviz（含 `/robot1/map` 615x318）。
-
-### 修过的一个 bug
-
-- ⚠️ **这条结论已被推翻（2026-09-25），不要照做。** 原文：`config/go2_nav2.yaml` 里
-  local/global costmap 的 `topic: /velodyne`（绝对名）在 `/robot1` 命名空间下订阅不到，
-  改为相对名 `topic: velodyne`。diff 见 `config/go2_nav2.fix.diff`
-  （install 下是软链，改 src 即生效，无需 rebuild）。
-  **实测：改成相对名之后，costmap 节点把它解析成 `/robot1/local_costmap/velodyne`
-  ——那是个无发布者的空话题，于是 local_costmap 3600/3600 cell 全 free，
-  避障彻底失效。正确写法是绝对名 `/robot1/velodyne`**，见本文档 §未提交改动 第 1 条。
-
-### 目录索引
-
-- `scripts/`：`start_slam.sh`（建图）、`start_nav2.sh`（导航），
-  统一用 `nohup ~/.enroot/ros-gui bash <script> > /tmp/<name>.log 2>&1 &` 常驻。
-- `maps/`：当晚实测地图（slam 建的 warehouse 实时图）。
-- `config/`：修复后的 `go2_nav2.yaml` + 原版 bak + diff。
-- `logs/`：`drive.log`（运动验证）、`mapsaver.log`（存图）、`nav2.log`（导航 bringup 全日志）。
-
-### 注意事项
-
-- 宿主机直接 `ros2 topic list` 看不到仿真话题（缺 cyclonedds 库+daemon 缓存），
-  必须进容器并加 `--no-daemon`，详见 `scripts/*.sh` 头部的 export。
-- Nav2 的地图话题是命名空间内的 `/robot1/map`（不是全局 `/map`，那是 slam_toolbox 的）。
-- 不要重启 VNC `:2`（会连带杀掉 Gazebo/rviz）；仿真被重启后需重起 nav2 并重发 initialpose。
-
 ---
 
 ## 故障复盘 · 2026-09-20 地图抖动（里程计幻觉漂移）
@@ -368,3 +321,66 @@ costmap 报 `Robot is out of bounds` 并膨胀到 1255x72。
 - slam_toolbox 运行中但未产生完整地图（需更多移动）
 - Nav2 stack 运行中（1+ 天），AMCL 定位可能漂移——**建议重启 Nav2 再做端到端验证**
 - load 仍然很高（~59），RTF ~0.34
+---
+
+## 追加 · cross 世界 Nav2 闭环验证结论（必读）
+
+### 链路状态（全部逐段验证通过）
+- cmd_vel (Nav2, lx=0.26@20Hz) → robot_velocity (0.179@20Hz) → joint_commands (@15Hz)：数值链完整
+- AMCL 收敛正常（(0.19,0.04)≈真值），planner 出路径（"Passing new path"），goal 可接单
+- controller 0 math domain error（IK 补丁有效），TF 链完整（odom 已修 base_link）
+
+### 核心发现：TROT 步态持续行走会翻倒
+- Nav2 闭环可开狗走约 0.8m，然后车身前倾 ~25°，腿空转不平移 → "Failed to make progress"
+- 直接 cmd_vel 0.3（→0.21m/s）会直接翻车（ROLL 179°）；降速到 0.12 缩放后仍会在 ~1m 后倾斜
+- CRAWL 模式：发速度不平移（可能该模式速度映射未实现），不能作为替代
+- 初生狗 IMU 全平（0.0/-2.6），排除出生位姿问题；12 关节站立位正常，排除单腿卡死
+
+### 参数备忘（本次最终值）
+- `cmd_vel_pub.py`：x 0.12 / y 0.04（src + install 双写；0.3 会翻车，0.035 太慢）
+- 狗当前状态：倾斜约 38° 趴在出生点东约 1m 处，已 STAND + 零速
+- 世界/地图/代码：`warehouse_cross.sdf`（md5 一致）、cross_warehouse_20260920、IK 补丁均在位
+
+### 下一步建议（步态专项，非远程联调）
+1. 查 TROT 步幅/频率参数（可能在 TrotGaitController），降速降步幅找稳定包线
+2. 查 default_height（重心高度）与地面摩擦系数
+3. 验证 CRAWL 的速度映射是否实现
+4. 考虑给 controller 加"翻倒检测→自动 STAND"保护
+5. 在 Gazebo GUI 里肉眼看一次翻倒过程（比盲调快十倍）
+---
+
+## 追加 · 步态专项 round 1（IMU 补偿闭环 + 稳定包线初探）
+
+### 根因：IMU 姿态补偿开环
+- `USE_IMU=True`，但 `state.imu_roll/imu_pitch` 只在 `StateCommand` 里初始化为 0，从没有任何地方更新
+- PID 补偿每周期跑在 (0,0) 上 → 恒输出 ~0 → 开环行走，扰动累积 → 持续前倾翻倒
+- **修复**（`robot_controller_gazebo.py`，src + install 双写）：加 `imu_plugin/out` 订阅，
+  每控制周期把四元数解算的 roll/pitch 写入 `state`。`ast` 语法校验通过。
+
+### 调参一览（全部双写生效中）
+| 参数 | 原值 | 现值 | 结论 |
+|---|---|---|---|
+| default_height | 0.25 | 0.21 | 降重心，有效 |
+| stance_time | 0.04 | 0.04（0.08 试过，跑废，已回滚） | 0.08 使步态几乎不平移 |
+| z_leg_lift | 0.14 | 0.10 | 少晃，有效 |
+| 脚摩擦 mu | 0.6 | 1.0（xacro，install 软链） | 牵引改善 |
+| cmd_vel 缩放 | 0.3/0.1 | 0.12/0.04 | 0.3 会翻车 |
+| IK sqrt 保护 | — | max(0,…) 两处 | 0 math domain error |
+
+### 验证数据
+- 65s 慢速试跑：跑前水平（0.0/-0.0）→ 跑后 ROLL 0.0 / PITCH 5.5°（此前同条件 25~29°）
+- 位移 (-0.15m，方向不稳定，见下），0 math domain error
+- CRAWL 模式发速度不平移（该模式速度映射疑似未实现），暂不可用
+
+### 新发现的环境坑
+- 世界会被暂停（疑似队友 GUI 操作）：RTF 0.007 时先 `pause: false` 解开
+- `ign` 只在 enroot 容器内有；裸起 server 必须 source ROS 环境 + export GZ_SIM_SYSTEM_PLUGIN_PATH，否则 ros2_control 插件加载失败
+- spawner 在高负载下激活失败率高，`--switch-timeout 60` 是钥匙
+- 同一 world 起多个 gz server 会互相干扰（曾同时 3 个），动手前先 `pgrep` 清零
+- 多次 kill server 会带崩 ROS 侧节点连接，需整套重起；spawn 时先 pause 物理防瘫倒
+- EKF 会被 sim 时间跳变 wedged（0% CPU 静默），重启恢复
+
+### 待解
+1. 平移速度只有理论值 ~1/5，且前进方向不稳定（±x 来回），需低负载窗口 + GUI 目检一次完整行走
+2. 足里程计漂移大（±2x），AMCL 融合前先别信 odom
+3. Nav2 端到端等步态稳定后再跑（上次 0.8m 后倾倒失败）

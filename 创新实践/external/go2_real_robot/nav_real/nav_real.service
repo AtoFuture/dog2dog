@@ -1,0 +1,17 @@
+[Unit]
+Description=BaiyangGo real-robot Nav2 stack (sensing+Nav2, no motion by default)
+After=network-online.target baiyanggo-webrtc-bridge.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PYTHONPATH=/home/unitree/baiyanggo_webrtc_bridge
+Environment=RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+Environment=CYCLONEDDS_URI=file:///home/unitree/cyclonedds_ws/cyclonedds.xml
+ExecStartPre=/bin/sleep 20
+ExecStart=/bin/bash -c 'source /opt/ros/foxy/setup.bash && source /home/unitree/cyclonedds_ws/install/setup.bash && exec bash /home/unitree/nav_real/run_nav_real.sh'
+Restart=on-failure
+RestartSec=20
+
+[Install]
+WantedBy=default.target

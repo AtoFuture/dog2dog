@@ -1,0 +1,40 @@
+version: "3.8"
+
+services:
+  qwen-robotnav:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.nav
+      args:
+        # Override BASE_IMAGE for JetPack 6 / Go2 side:
+        # BASE_IMAGE: nvcr.io/nvidia/l4t-jetpack:r36.4.3
+        BASE_IMAGE: ${BASE_IMAGE:-nvcr.io/nvidia/l4t-jetpack:r40.2}
+    image: qwen-robotnav:latest
+    container_name: qwen-robotnav
+    privileged: true
+    network_mode: host
+    ipc: host
+    stdin_open: true
+    tty: true
+    runtime: nvidia
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-http://100.113.176.95:8000}
+      - VLLM_API_KEY=${VLLM_API_KEY:-}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /dev:/dev:rw
+      - /run/udev:/run/udev:rw
+      - ../qwen_robotnav:/workspace/qwen_robotnav/qwen_robotnav:rw
+      - ../ros2_ws:/workspace/qwen_robotnav/ros2_ws:rw
+      - ../tests:/workspace/qwen_robotnav/tests:rw
+      - ../scripts:/workspace/qwen_robotnav/scripts:rw
+      - ./entrypoint.sh:/workspace/qwen_robotnav/entrypoint.sh:ro
+      - ./fastrtps.xml:/workspace/qwen_robotnav/docker/fastrtps.xml:ro
+    working_dir: /workspace/qwen_robotnav
+    command: /bin/bash

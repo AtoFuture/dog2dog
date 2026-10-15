@@ -1,0 +1,15 @@
+# Overlay image: add Cyclone DDS to the existing qwen-robotnav:go2 image.
+# Cyclone DDS is more stable than Fast-DDS on Jetson/Go2 deployments.
+FROM qwen-robotnav:go2
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
+# Use USTC mirror for Ubuntu base packages; keep packages.ros.org for ROS packages
+# because the USTC ros2 mirror is missing some arm64 debs for Foxy.
+RUN sed -i 's|http://ports.ubuntu.com/ubuntu-ports|https://mirrors.ustc.edu.cn/ubuntu-ports|g' \
+        /etc/apt/sources.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ros-foxy-rmw-cyclonedds-cpp \
+    && rm -rf /var/lib/apt/lists/*

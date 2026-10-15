@@ -8,6 +8,7 @@ TOPIC_FILE="${G3_DIR}/config/rosbag_topics.txt"
 EXPERIMENT_NAME="${1:-experiment}"
 NAVIGATE_ACTION="${G3_NAVIGATE_ACTION:-${2:-/robot1/navigate_to_pose}}"
 BATTERY_TOPIC="${G3_BATTERY_TOPIC:-${3:-/robot1/battery_state}}"
+RECORD_DETECTIONS_SNAPSHOT="${G3_RECORD_DETECTIONS_SNAPSHOT:-0}"
 BAG_ROOT="${G3_BAG_DIR:-/home/wy/g3_bags}"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 OUTPUT_DIR="${BAG_ROOT}/${EXPERIMENT_NAME}_${TIMESTAMP}"
@@ -26,6 +27,12 @@ fi
 if [[ ! "${BATTERY_TOPIC}" =~ ^/[A-Za-z0-9_/-]+$ ]] \
     || [[ "${BATTERY_TOPIC}" == */ ]]; then
     echo "ERROR: battery topic must be an absolute ROS name without a trailing slash" >&2
+    exit 2
+fi
+
+if [[ "${RECORD_DETECTIONS_SNAPSHOT}" != "0" \
+    && "${RECORD_DETECTIONS_SNAPSHOT}" != "1" ]]; then
+    echo "ERROR: G3_RECORD_DETECTIONS_SNAPSHOT must be 0 or 1" >&2
     exit 2
 fi
 
@@ -50,6 +57,12 @@ for index in "${!TOPICS[@]}"; do
     esac
 done
 
+# Snapshots contain JPEG payloads and are intentionally opt-in to keep the
+# default evaluation bag focused on compact Detection3D records.
+if [[ "${RECORD_DETECTIONS_SNAPSHOT}" == "1" ]]; then
+    TOPICS+=(/detections_snapshot)
+fi
+
 if [[ ${#TOPICS[@]} -eq 0 ]]; then
     echo "ERROR: topic list is empty" >&2
     exit 1
@@ -61,6 +74,7 @@ echo "Experiment : ${EXPERIMENT_NAME}"
 echo "ROS domain : ${ROS_DOMAIN_ID:-unset}"
 echo "Nav action : ${NAVIGATE_ACTION}"
 echo "Battery    : ${BATTERY_TOPIC}"
+echo "Snapshots  : ${RECORD_DETECTIONS_SNAPSHOT}"
 echo "Output     : ${OUTPUT_DIR}"
 echo "Topics     : ${#TOPICS[@]}"
 echo

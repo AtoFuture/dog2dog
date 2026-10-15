@@ -25,8 +25,11 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from tf2_msgs.msg import TFMessage
+from tf2_ros import TransformBroadcaster
+from geometry_msgs.msg import TransformStamped
+from sensor_msgs.msg import LaserScan
 
-GT_INPUT_TOPIC = "/world/world_demo/pose/info"
+GT_INPUT_TOPIC = "/g1/gt_pose"
 GT_OUTPUT_TOPIC = "/g1/ground_truth"
 
 
@@ -44,8 +47,9 @@ class GroundTruthRelay(Node):
         self.declare_parameter("robot_name", "robot1_my_bot")
         self.declare_parameter("input_topic", GT_INPUT_TOPIC)
         self.declare_parameter("output_topic", GT_OUTPUT_TOPIC)
-        self.declare_parameter("frame_id", "world")
+        self.declare_parameter("frame_id", "gt_odom")
         self.declare_parameter("child_frame_id", "base_link")
+        self.declare_parameter("scan_topic", "/robot1/velodyne")
         # 原来这里还有个 `publish_tf` 参数：声明了但代码从不读它，
         # 传 true 既不发 TF 也不报错（问题清单「低」）。要么实现要么删，
         # 这里选择删掉 —— 本节点的唯一职责是给真值打仿真时间戳。
@@ -64,16 +68,25 @@ class GroundTruthRelay(Node):
         )
 
         self._pub = self.create_publisher(Odometry, output_topic, qos)
+        self._tf_broadcaster = TransformBroadcaster(self)
         self._sub = self.create_subscription(
             TFMessage, input_topic, self._on_pose, qos
+        )
+        scan_topic = str(self.get_parameter("scan_topic").value)
+        self._scan_stamp = None
+        self._sub_scan = self.create_subscription(
+            LaserScan, scan_topic, self._on_scan, 10
         )
 
         self._seen = 0
         self._last_warn = 0
         self.get_logger().info(
             f"真值中转就绪：{input_topic} → {output_topic}"
-            f"（robot_name={self._robot_name}）"
+            f"（robot_name={self._robot_name}，scan同步={scan_topic}）"
         )
+
+    def _on_scan(self, msg: LaserScan) -> None:
+        self._scan_stamp = msg.header.stamp
 
     def _on_pose(self, msg: TFMessage) -> None:
         for transform in msg.transforms:
@@ -81,7 +94,11 @@ class GroundTruthRelay(Node):
                 continue
 
             out = Odometry()
-            out.header.stamp = self.get_clock().now().to_msg()
+            sim_now = self.get_clock().now().to_msg()
+            if self._scan_stamp is not None:
+                out.header.stamp = self._scan_stamp
+            else:
+                out.header.stamp = sim_now
             out.header.frame_id = self._frame_id
             out.child_frame_id = self._child_frame_id
             out.pose.pose.position.x = transform.transform.translation.x
@@ -96,6 +113,13 @@ class GroundTruthRelay(Node):
             out.pose.covariance[28] = 1e-6
             out.pose.covariance[35] = 1e-6
             self._pub.publish(out)
+
+            tf_msg = TransformStamped()
+            tf_msg.header.stamp = out.header.stamp
+            tf_msg.header.frame_id = self._frame_id
+            tf_msg.child_frame_id = self._child_frame_id
+            tf_msg.transform = transform.transform
+            self._tf_broadcaster.sendTransform(tf_msg)
 
             self._seen += 1
             if self._seen == 1:

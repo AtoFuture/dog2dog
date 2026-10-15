@@ -1,0 +1,36 @@
+# slam_toolbox 在线异步建图（探索模式定位源: 提供 map->odom TF + /map 占据栅格）
+# 输入: /scan (pointcloud_to_laserscan 输出, frame=base_link)
+# 输入: TF odom->base_link (sim/scripts/lio_tf_relay.py 从 FAST-LIO /Odometry 转发)
+# 输出: /map (transient_local) + TF map->odom
+#
+# 选型说明: 探索无先验地图, 不用 map_server+AMCL; slam_toolbox 建图同时给出 map->odom,
+# Nav2 全局系直接用 map (global_costmap static_layer 订阅 /map), 是探索模式标准链路。
+slam_toolbox:
+  ros__parameters:
+    use_sim_time: false
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: NONE
+    base_frame: base_link
+    odom_frame: odom
+    map_frame: map
+    scan_topic: /scan
+    mode: mapping
+    debug_logging: false
+    throttle_scans: 1
+    transform_publish_period: 0.1      # 10Hz map->odom 足够（重仿真省 CPU）
+    map_update_interval: 2.0           # 2s 出一次全图 /map, 兼顾 explore_lite frontier 与 CPU
+    resolution: 0.05
+    max_laser_range: 12.0              # 场地对角 ~20m, 12m 覆盖房间级观测
+    minimum_time_interval: 0.4
+    minimum_travel_distance: 0.0   # 0 = 静止也持续消化扫描。karto 置 free 需多次观测，
+                                   # 若只在移动后处理，单帧扫描只在机器人近旁(角密度高)
+                                   # 出 free —— 地图带内部孔洞，frontier 贴脚边落在 goal
+                                   # 容差内 -> explore 秒完成死循环（联调踩坑 #1）
+    minimum_travel_rotation: 0.0
+    transform_timeout: 0.3
+    tf_buffer_duration: 30.0
+    stack_size_to_use: 40000000

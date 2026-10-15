@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>baiyanggo_webrtc_bridge</name>
+  <version>0.1.0</version>
+  <description>Go2 内置雷达 WebRTC→ROS2 桥（位姿/体素点云/自诊断）</description>
+  <maintainer email="shuuyou@outlook.com">Shuuyou</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

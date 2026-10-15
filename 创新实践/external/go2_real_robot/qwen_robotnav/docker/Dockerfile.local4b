@@ -1,0 +1,87 @@
+# Local Qwen3-VL-4B inference container for Jetson Orin NX (JetPack 7.2).
+# Uses Ubuntu 24.04 and mounts host JetPack 7.2 drivers/CUDA libraries.
+ARG BASE_IMAGE=ubuntu:24.04
+FROM ${BASE_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV WORKSPACE=/workspace/qwen_robotnav
+
+# APT mirror (Tsinghua) to speed up builds in China
+RUN rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list && \
+    printf '%s\n' \
+        'deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports noble main restricted universe multiverse' \
+        'deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports noble-updates main restricted universe multiverse' \
+        'deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports noble-backports main restricted universe multiverse' \
+        'deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports noble-security main restricted universe multiverse' \
+        > /etc/apt/sources.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        git \
+        wget \
+        curl \
+        ca-certificates \
+        python3-pip \
+        python3-dev \
+        python3-venv \
+        libopencv-dev \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender-dev \
+        libgomp1 \
+        vim \
+        nano \
+        aria2 \
+        git-lfs \
+        && rm -rf /var/lib/apt/lists/*
+
+# Python dependencies. We install a Jetson-suitable torch wheel first,
+# then transformers/qwen-vl-utils for local Qwen3-VL inference.
+RUN python3 -m pip install --break-system-packages --no-cache-dir \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    torch==2.6.0 \
+    torchvision==0.21.0 \
+    torchaudio==2.6.0 \
+    --index-url https://download.pytorch.org/whl/cpu 2>/dev/null || \
+    python3 -m pip install --break-system-packages --no-cache-dir \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple \
+        torch torchvision torchaudio
+
+RUN python3 -m pip install --break-system-packages --no-cache-dir \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    transformers>=4.57.0 \
+    accelerate \
+    qwen-vl-utils==0.0.14 \
+    openai>=1.0.0 \
+    opencv-python \
+    numpy \
+    scipy \
+    pillow \
+    pyyaml \
+    pytest \
+    pytest-asyncio
+
+WORKDIR ${WORKSPACE}
+COPY qwen_robotnav ./qwen_robotnav
+COPY tests ./tests
+COPY scripts ./scripts
+
+ENV PYTHONPATH="${WORKSPACE}:${WORKSPACE}/qwen_robotnav:${PYTHONPATH}"
+
+# Model is NOT downloaded during build. It will be downloaded at runtime
+# and cached in /workspace/qwen_robotnav/.modelscope (mounted from host).
+ENV MODELSCOPE_CACHE=/workspace/qwen_robotnav/.modelscope
+ENV LOCAL_VLM_MODEL=Qwen/Qwen3-VL-4B-Instruct
+# Offline mode avoids unnecessary HF Hub lookups once weights are cached locally.
+ENV TRANSFORMERS_OFFLINE=1
+ENV HF_HUB_OFFLINE=1
+RUN python3 -m pip install --break-system-packages --no-cache-dir \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    modelscope
+
+CMD ["/bin/bash"]

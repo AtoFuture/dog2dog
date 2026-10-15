@@ -86,7 +86,9 @@ class CmdVelScaler(Node):
         self.declare_parameter("linear_accel", 0.060)
         self.declare_parameter("linear_decel", 0.100)
         self.declare_parameter("angular_accel", 2.0)
+        self.declare_parameter("angular_decel", 2.0)
         self.declare_parameter("ramp_rate", 50.0)
+        self.declare_parameter("cmd_timeout", 1.0)
 
         input_topic = str(self.get_parameter("input_topic").value)
         output_topic = str(self.get_parameter("output_topic").value)
@@ -99,7 +101,9 @@ class CmdVelScaler(Node):
         self._linear_accel = float(self.get_parameter("linear_accel").value)
         self._linear_decel = float(self.get_parameter("linear_decel").value)
         self._angular_accel = float(self.get_parameter("angular_accel").value)
+        self._angular_decel = float(self.get_parameter("angular_decel").value)
         ramp_rate = float(self.get_parameter("ramp_rate").value)
+        self._cmd_timeout = float(self.get_parameter("cmd_timeout").value)
 
         self._pub = self.create_publisher(Twist, output_topic, 10)
         self._sub = self.create_subscription(
@@ -111,6 +115,7 @@ class CmdVelScaler(Node):
         self._current_lx = 0.0
         self._current_az = 0.0
         self._dt = 1.0 / ramp_rate
+        self._last_cmd_time = self.get_clock().now()
         self._timer = self.create_timer(self._dt, self._ramp_loop)
         self._last_logged = None
         self.get_logger().info(
@@ -145,12 +150,16 @@ class CmdVelScaler(Node):
         return current + math.copysign(max_step, diff)
 
     def _ramp_loop(self) -> None:
+        now = self.get_clock().now()
+        if (now - self._last_cmd_time).nanoseconds * 1e-9 > self._cmd_timeout:
+            self._target_lx = 0.0
+            self._target_az = 0.0
         out = Twist()
         self._current_lx = self._ramp_step(
             self._current_lx, self._target_lx, self._linear_accel, self._linear_decel
         )
         self._current_az = self._ramp_step(
-            self._current_az, self._target_az, self._angular_accel, self._angular_accel
+            self._current_az, self._target_az, self._angular_accel, self._angular_decel
         )
         out.linear.x = self._current_lx
         out.linear.y = 0.0
@@ -169,6 +178,7 @@ class CmdVelScaler(Node):
             self._last_logged = summary
 
     def _on_cmd(self, msg: Twist) -> None:
+        self._last_cmd_time = self.get_clock().now()
         self._target_lx = self._linear(msg.linear.x)
         az = msg.angular.z * self._angular_scale
         self._target_az = self._clip(az, self._angular_max)

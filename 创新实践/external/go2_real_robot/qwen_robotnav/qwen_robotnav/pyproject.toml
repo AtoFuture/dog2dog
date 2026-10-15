@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qwen-robotnav"
+version = "0.1.0"
+description = "Qwen-RobotNav parameterised navigation model for embodied agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Shuuyou", email = "shuuyou@hdu.edu.cn"},
+]
+dependencies = [
+    "openai>=1.0.0",
+    "opencv-python",
+    "numpy",
+    "scipy",
+    "pillow",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["qwen_robotnav*"]

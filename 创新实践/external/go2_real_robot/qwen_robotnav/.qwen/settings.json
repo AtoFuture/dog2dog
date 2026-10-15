@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uname *)",
+      "Bash(cat *)",
+      "Bash(true)",
+      "Bash(python3 *)",
+      "Bash(free *)",
+      "Bash(nproc)",
+      "WebFetch(github.com)",
+      "WebFetch(huggingface.co)",
+      "Bash(mkdir *)",
+      "Bash(touch *)",
+      "Bash(docker *)",
+      "Bash(docker compose version)",
+      "Bash(docker info)",
+      "Bash(sudo *)",
+      "Bash(do *)",
+      "Bash(done)",
+      "Bash(dpkg *)",
+      "Bash(apt *)",
+      "Bash(ls *)",
+      "Bash(find *)",
+      "Bash(sg *)",
+      "Bash(sleep *)",
+      "WebFetch(qwen.ai)",
+      "Bash(curl *)",
+      "Bash(ping *)",
+      "Bash(ip *)"
+    ]
+  },
+  "$version": 4
+}

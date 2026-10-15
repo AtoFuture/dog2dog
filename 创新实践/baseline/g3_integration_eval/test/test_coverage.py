@@ -33,7 +33,7 @@ def write_map(
                 "origin": list(origin),
                 "negate": 0,
                 "occupied_thresh": 0.65,
-                "free_thresh": 0.25,
+                "free_thresh": 0.1,
             }
         ),
         encoding="utf-8",

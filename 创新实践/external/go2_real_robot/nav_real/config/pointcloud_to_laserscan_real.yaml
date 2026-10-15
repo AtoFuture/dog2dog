@@ -1,0 +1,24 @@
+# 点云 → 2D 扫描（真机版）：/baiyanggo/webrtc/voxel_map → /scan
+# 高度窗（odom 系，地面≈0）: [0.30, 0.85]
+#   - BYY修复③：实测狗静止时地面点会因高度估计漂移上浮到 z=0.17~0.28（1m内139点），
+#     下沿0.15会把"漂移地板"当障碍 → 幻影墙堵死规划。0.30 起步可滤掉漂移地板；
+#     墙体下半段/沙袋/桌沿(≥0.4)仍在窗内。
+pointcloud_to_laserscan:
+  ros__parameters:
+    # BYY修复⑥：LaserScan 的射线起点=帧原点。之前留空(odom世界系)导致代价地图把
+    # 射线起点当成世界原点(0,0)——狗离开原点后"Sensor origin out of map bounds"、
+    # 清障射线永不发射，幻影障碍只进不出 → RPP 碰撞检查全否 → 零速卡死。
+    # 必须用 base_link 系：射线起点=狗自身，标记/清障语义才成立。
+    target_frame: base_link
+    transform_tolerance: 0.1
+    min_height: -5.0            # 直通：桥接器已做自适应地板滤波，此处不再卡高度
+    max_height: 5.0
+    angle_min: -3.1415926
+    angle_max: 3.1415926
+    angle_increment: 0.0087     # ~0.5°，720 bins
+    scan_time: 0.12             # 匹配实测 ~9Hz 体素云
+    range_min: 0.3
+    range_max: 8.0              # 体素图有效量程 ~5m，留余量
+    use_inf: true
+    inf_epsilon: 1.0
+    use_sim_time: false

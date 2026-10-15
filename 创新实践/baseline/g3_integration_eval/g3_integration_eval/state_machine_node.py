@@ -60,6 +60,7 @@ class G3StateMachineNode(Node):
         self.declare_parameter("home_x", 0.0)
         self.declare_parameter("home_y", 0.0)
         self.declare_parameter("home_yaw", 0.0)
+        self.declare_parameter("battery_timeout_sec", 30.0)
 
         command_topic = str(self.get_parameter("command_topic").value)
         state_topic = str(self.get_parameter("state_topic").value)
@@ -81,6 +82,10 @@ class G3StateMachineNode(Node):
 
         self._state = State.STANDBY
         self._battery_fault_active = False
+        self._last_battery_time = self.get_clock().now()
+        self._battery_timeout_sec = float(
+            self.get_parameter("battery_timeout_sec").value
+        )
         self._state_publisher = self.create_publisher(String, state_topic, 10)
         self._mission_state_publisher = self.create_publisher(
             String,
@@ -137,6 +142,9 @@ class G3StateMachineNode(Node):
             "G2 mission-state bridge: "
             f"topic={mission_state_topic}, qos=transient_local"
         )
+        self.get_logger().info(
+            f"battery timeout watchdog: timeout={self._battery_timeout_sec:.1f}s"
+        )
         if domain_id == "42":
             if transmission_enabled:
                 self.get_logger().warning(
@@ -146,6 +154,9 @@ class G3StateMachineNode(Node):
                 self.get_logger().warning(
                     "Shared Domain 42 detected; navigation remains preview-only"
                 )
+        self._battery_watchdog_timer = self.create_timer(
+            5.0, self._check_battery_timeout
+        )
         self._publish_state()
 
     def _on_command(self, message: String) -> None:
@@ -186,6 +197,7 @@ class G3StateMachineNode(Node):
             return
 
         self._battery_fault_active = False
+        self._last_battery_time = self.get_clock().now()
 
         event = battery_return_event(
             self._state,
@@ -285,6 +297,37 @@ class G3StateMachineNode(Node):
                 f"RETURN navigation event: status={status}, goal_id={goal_id}, "
                 f"attempt_id={event['attempt_id']}"
             )
+
+        if self._state is State.RETURN:
+            if status == "succeeded":
+                self.get_logger().info(
+                    "RETURN succeeded; transitioning to STANDBY"
+                )
+                self._apply_event(Event.STANDBY, source="return_succeeded")
+            elif status in {
+                "aborted", "canceled", "rejected",
+                "server_unavailable", "send_error", "goal_response_error",
+                "result_error", "cancel_error", "cancel_rejected", "unknown",
+            }:
+                self.get_logger().error(
+                    f"RETURN failed (status={status}); transitioning to ESTOP"
+                )
+                self._apply_event(Event.ESTOP, source=f"return_failed:{status}")
+
+    def _check_battery_timeout(self) -> None:
+        if self._state is not State.EXPLORE:
+            return
+        if self._last_battery_time is None:
+            return
+        elapsed_sec = (
+            (self.get_clock().now() - self._last_battery_time).nanoseconds * 1e-9
+        )
+        if elapsed_sec > self._battery_timeout_sec:
+            self.get_logger().error(
+                f"电量话题超时 {elapsed_sec:.1f}s > "
+                f"{self._battery_timeout_sec:.1f}s; 进入 ESTOP"
+            )
+            self._apply_event(Event.ESTOP, source="battery_timeout")
 
     def _publish_state(self) -> None:
         message = String()

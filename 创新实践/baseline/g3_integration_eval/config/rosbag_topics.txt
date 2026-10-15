@@ -8,6 +8,7 @@
 /robot1/map_updates
 /robot1/scan
 /robot1/velodyne
+/detections_3d
 /robot1/plan
 /robot1/local_plan
 /robot1/cmd_vel

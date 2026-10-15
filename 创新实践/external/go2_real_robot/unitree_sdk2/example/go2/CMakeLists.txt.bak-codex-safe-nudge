@@ -1,0 +1,75 @@
+# add_executable(go2_trajectory_follow go2_trajectory_follow.cpp)
+# target_link_libraries(go2_trajectory_follow unitree_sdk2)
+
+add_executable(go2_sport_client go2_sport_client.cpp)
+target_link_libraries(go2_sport_client unitree_sdk2)
+
+add_executable(go2_low_level go2_low_level.cpp)
+target_link_libraries(go2_low_level unitree_sdk2)
+
+add_executable(go2_stand_example go2_stand_example.cpp)
+target_link_libraries(go2_stand_example unitree_sdk2)
+
+
+add_executable(go2_robot_state_client go2_robot_state_client.cpp)
+target_link_libraries(go2_robot_state_client unitree_sdk2)
+
+add_executable(go2_video_client go2_video_client.cpp)
+target_link_libraries(go2_video_client unitree_sdk2)
+
+add_executable(go2_capture_image go2_capture_image.cpp)
+target_link_libraries(go2_capture_image unitree_sdk2)
+
+add_executable(go2_service_status go2_service_status.cpp)
+target_link_libraries(go2_service_status unitree_sdk2)
+
+add_executable(go2_motion_status go2_motion_status.cpp)
+target_link_libraries(go2_motion_status unitree_sdk2)
+
+add_executable(go2_motion_select go2_motion_select.cpp)
+target_link_libraries(go2_motion_select unitree_sdk2)
+
+add_executable(go2_simple_test go2_simple_test.cpp)
+target_link_libraries(go2_simple_test unitree_sdk2)
+
+add_executable(go2_posture_control go2_posture_control.cpp)
+target_link_libraries(go2_posture_control unitree_sdk2)
+
+add_executable(go2_posture_official_test go2_posture_official_test.cpp)
+target_link_libraries(go2_posture_official_test unitree_sdk2)
+
+add_executable(go2_speed_control go2_speed_control.cpp)
+target_link_libraries(go2_speed_control unitree_sdk2)
+
+add_executable(go2_distance_control go2_distance_control.cpp)
+target_link_libraries(go2_distance_control unitree_sdk2)
+
+add_executable(go2_linear_move go2_linear_move.cpp)
+target_link_libraries(go2_linear_move unitree_sdk2)
+
+add_executable(go2_turn_angle go2_turn_angle.cpp)
+target_link_libraries(go2_turn_angle unitree_sdk2)
+
+add_executable(go2_rectangle_route go2_rectangle_route.cpp)
+target_link_libraries(go2_rectangle_route unitree_sdk2)
+
+add_executable(go2_leg_lift_test go2_leg_lift_test.cpp)
+target_link_libraries(go2_leg_lift_test unitree_sdk2)
+
+add_executable(go2_handshake go2_handshake.cpp)
+target_link_libraries(go2_handshake unitree_sdk2)
+
+add_executable(go2_navigation go2_navigation.cpp)
+target_link_libraries(go2_navigation unitree_sdk2)
+
+add_executable(go2_lidar_switch go2_lidar_switch.cpp)
+target_link_libraries(go2_lidar_switch unitree_sdk2)
+
+add_executable(go2_vui_client go2_vui_client.cpp)
+target_link_libraries(go2_vui_client unitree_sdk2)
+
+add_executable(go2_slam_navigation go2_slam_navigation.cpp)
+target_link_libraries(go2_slam_navigation unitree_sdk2)
+
+add_executable(go2_lidar_navigation go2_lidar_navigation.cpp)
+target_link_libraries(go2_lidar_navigation unitree_sdk2)

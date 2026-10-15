@@ -21,3 +21,12 @@
 .env
 .env.*
 !.env.example
+
+# Local worktrees, transfer archives and runtime files
+/worktrees/
+*.bundle
+*.log
+.runtime/
+.codeartsdoer/
+/codearts-start.sh
+.qwen/settings.json

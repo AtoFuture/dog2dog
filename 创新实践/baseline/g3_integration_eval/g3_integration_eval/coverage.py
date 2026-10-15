@@ -9,9 +9,12 @@ from pathlib import Path
 import yaml
 
 
-FREE_PIXEL = 254
-UNKNOWN_PIXEL = 205
-OCCUPIED_PIXEL = 0
+PIXEL_FREE = "free"
+PIXEL_OCCUPIED = "occupied"
+PIXEL_UNKNOWN = "unknown"
+
+DEFAULT_FREE_THRESH = 0.196
+DEFAULT_OCCUPIED_THRESH = 0.65
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,9 @@ class MapData:
     origin_y: float
     origin_yaw: float
     yaml_path: Path
+    free_thresh: float = DEFAULT_FREE_THRESH
+    occupied_thresh: float = DEFAULT_OCCUPIED_THRESH
+    negate: bool = False
 
 
 @dataclass(frozen=True)
@@ -124,7 +130,33 @@ def load_map(yaml_path) -> MapData:
         origin_y=float(origin[1]),
         origin_yaw=float(origin[2]),
         yaml_path=yaml_path,
+        free_thresh=float(config.get("free_thresh", DEFAULT_FREE_THRESH)),
+        occupied_thresh=float(config.get("occupied_thresh", DEFAULT_OCCUPIED_THRESH)),
+        negate=bool(config.get("negate", False)),
     )
+
+
+def _classify_pixel(
+    pixel: int,
+    *,
+    free_thresh: float,
+    occupied_thresh: float,
+    negate: bool,
+) -> str:
+    """Classify a PGM pixel as free/occupied/unknown per ROS map YAML semantics.
+
+    occupancy probability = 1 - pixel/255 (or pixel/255 if negate).
+    > occupied_thresh → occupied; < free_thresh → free; else → unknown.
+    """
+    if negate:
+        occ_prob = pixel / 255.0
+    else:
+        occ_prob = 1.0 - pixel / 255.0
+    if occ_prob > occupied_thresh:
+        return PIXEL_OCCUPIED
+    if occ_prob < free_thresh:
+        return PIXEL_FREE
+    return PIXEL_UNKNOWN
 
 
 def calculate_coverage(
@@ -167,7 +199,12 @@ def calculate_coverage(
                 + reference_col
             ]
 
-            if reference_pixel != FREE_PIXEL:
+            if _classify_pixel(
+                reference_pixel,
+                free_thresh=reference.free_thresh,
+                occupied_thresh=reference.occupied_thresh,
+                negate=reference.negate,
+            ) != PIXEL_FREE:
                 continue
 
             reference_free += 1
@@ -211,14 +248,21 @@ def calculate_coverage(
                 slam_row * slam.width + slam_col
             ]
 
-            if slam_pixel == UNKNOWN_PIXEL:
+            slam_class = _classify_pixel(
+                slam_pixel,
+                free_thresh=slam.free_thresh,
+                occupied_thresh=slam.occupied_thresh,
+                negate=slam.negate,
+            )
+
+            if slam_class == PIXEL_UNKNOWN:
                 continue
 
             observed_reference_free += 1
 
-            if slam_pixel == FREE_PIXEL:
+            if slam_class == PIXEL_FREE:
                 observed_as_free += 1
-            elif slam_pixel == OCCUPIED_PIXEL:
+            elif slam_class == PIXEL_OCCUPIED:
                 observed_as_occupied += 1
 
     if reference_free == 0:

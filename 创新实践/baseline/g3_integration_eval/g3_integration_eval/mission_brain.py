@@ -138,10 +138,34 @@ def _json_from_model_text(raw: str) -> Mapping[str, Any]:
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         text = "\n".join(lines).strip()
+
     try:
         value = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise BrainProviderError("model output is not valid JSON") from exc
+    except json.JSONDecodeError:
+        value = None
+
+    if value is None:
+        import re
+        match = re.search(r"\{[\s\S]*\}", text)
+        if match:
+            try:
+                value = json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+
+    if value is None:
+        import re
+        match = re.search(r"\[[\s\S]*\]", text)
+        if match:
+            try:
+                arr = json.loads(match.group())
+                if isinstance(arr, list) and arr and isinstance(arr[0], dict):
+                    value = arr[0]
+            except json.JSONDecodeError:
+                pass
+
+    if value is None:
+        raise BrainProviderError("model output is not valid JSON")
     if not isinstance(value, dict):
         raise BrainProviderError("model output must be a JSON object")
     return value

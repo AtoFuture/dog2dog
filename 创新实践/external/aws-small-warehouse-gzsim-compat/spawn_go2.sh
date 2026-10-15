@@ -14,9 +14,13 @@ exec /home/wy/.enroot/ros-gui bash -lc '
   export ROS_DOMAIN_ID="$3"
   export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
   export CYCLONEDDS_URI="file://$1/src/docker/cyclonedds.xml"
+
+  # Unpause world
   ign service -s /world/default/control \
     --reqtype ignition.msgs.WorldControl \
     --reptype ignition.msgs.Boolean \
     --timeout 3000 --req "pause: false" >/dev/null
+  echo "[spawn_go2] World unpaused, spawning robot..."
+
   exec ros2 launch gazebo_sim gazebo_go2_sensors.launch.py enable_rviz:=false
 ' _ "${go2_ws}" "${partition}" "${domain_id}"

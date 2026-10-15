@@ -1,0 +1,23 @@
+# 点云 → 2D 扫描（真机部署用，从 external/go2_real_robot 吸收，2026-10-12）
+# 仿真不需要（velodyne 直接出 LaserScan）。
+# 真机部署时 L1 体素点云 → /scan 进 costmap。
+#
+# 关键坑（真机踩过）：
+#   target_frame 必须设 base_link —— 留空(odom世界系)会导致射线起点=世界原点(0,0)，
+#   狗离开原点后 "Sensor origin out of map bounds"，清障射线永不发射，
+#   幻影障碍只进不出 → RPP 碰撞检查全否 → 零速卡死。
+pointcloud_to_laserscan:
+  ros__parameters:
+    target_frame: base_link
+    transform_tolerance: 0.1
+    min_height: -5.0            # 直通：桥接器已做自适应地板滤波，此处不再卡高度
+    max_height: 5.0
+    angle_min: -3.1415926
+    angle_max: 3.1415926
+    angle_increment: 0.0087     # ~0.5°，720 bins
+    scan_time: 0.12             # 匹配实测 ~9Hz 体素云
+    range_min: 0.3
+    range_max: 8.0
+    use_inf: true
+    inf_epsilon: 1.0
+    use_sim_time: false

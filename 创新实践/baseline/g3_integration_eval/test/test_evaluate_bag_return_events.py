@@ -65,15 +65,16 @@ def load_evaluator(monkeypatch, topics, messages):
     return importlib.import_module("g3_integration_eval.evaluate_bag")
 
 
-def return_message(attempt_id, status, goal_id=None):
+def return_message(attempt_id, status, goal_id=None, timestamp=None):
+    event = {
+        "attempt_id": attempt_id,
+        "status": status,
+        "goal_id": goal_id,
+    }
+    if timestamp is not None:
+        event["timestamp"] = timestamp
     return SimpleNamespace(
-        data=json.dumps(
-            {
-                "attempt_id": attempt_id,
-                "status": status,
-                "goal_id": goal_id,
-            }
-        )
+        data=json.dumps(event)
     )
 
 
@@ -115,6 +116,13 @@ def test_old_bag_keeps_original_return_unavailable_reason(tmp_path, monkeypatch)
         "value": None,
         "reason": "no_explicit_return_goal_marker",
     }
+    assert report["metrics"]["return_duration"]["available"] is False
+    assert report["metrics"]["return_duration"]["reason"] == (
+        "return_event_topic_missing"
+    )
+    assert report["metrics"]["detection_rate"]["reason"] == (
+        "detection topics not present in this bag"
+    )
 
 
 def test_return_events_produce_offline_success_rate(tmp_path, monkeypatch):
@@ -134,6 +142,77 @@ def test_return_events_produce_offline_success_rate(tmp_path, monkeypatch):
     assert report["metrics"]["return_success_rate"]["value"] == pytest.approx(0.5)
     assert report["return_navigation"]["attempt_count"] == 2
     assert report["return_navigation"]["goal_ids"] == ["goal-a", "goal-b"]
+
+
+def test_return_duration_is_added_to_report_without_changing_success_rate(
+    tmp_path, monkeypatch
+):
+    topic = "/g3/return_event"
+    evaluator = load_evaluator(
+        monkeypatch,
+        {topic: "std_msgs/msg/String"},
+        [
+            (
+                topic,
+                return_message(
+                    "a", "waiting_for_server", timestamp={"sec": 10, "nanosec": 0}
+                ),
+                10_000_000_000,
+            ),
+            (
+                topic,
+                return_message(
+                    "a", "succeeded", timestamp={"sec": 13, "nanosec": 500_000_000}
+                ),
+                13_500_000_000,
+            ),
+        ],
+    )
+
+    report = evaluator.evaluate_bag(str(tmp_path))
+
+    assert report["metrics"]["return_success_rate"]["value"] == pytest.approx(1.0)
+    assert report["metrics"]["return_duration"]["average_seconds"] == pytest.approx(
+        3.5
+    )
+    assert report["return_navigation"]["attempt_durations"][0] == {
+        "attempt_id": "a",
+        "status": "succeeded",
+        "available": True,
+        "duration_seconds": pytest.approx(3.5),
+    }
+
+
+def test_state_topics_report_occurrences_transitions_and_durations(
+    tmp_path, monkeypatch
+):
+    g3_state = "/g3/state"
+    mission_state = "/mission_state"
+    evaluator = load_evaluator(
+        monkeypatch,
+        {
+            g3_state: "std_msgs/msg/String",
+            mission_state: "std_msgs/msg/String",
+        },
+        [
+            (g3_state, SimpleNamespace(data="EXPLORE"), 1_000_000_000),
+            (g3_state, SimpleNamespace(data="RETURN"), 5_000_000_000),
+            (mission_state, SimpleNamespace(data="exploring"), 1_000_000_000),
+            (mission_state, SimpleNamespace(data="returning"), 5_000_000_000),
+        ],
+    )
+
+    report = evaluator.evaluate_bag(str(tmp_path))
+
+    assert report["state_statistics"][g3_state]["state_counts"] == {
+        "EXPLORE": 1,
+        "RETURN": 1,
+    }
+    assert report["state_statistics"][g3_state]["transition_count"] == 1
+    assert report["state_statistics"][g3_state]["duration_summary"][
+        "EXPLORE"
+    ]["average_seconds"] == pytest.approx(4.0)
+    assert report["state_statistics"][mission_state]["transition_count"] == 1
 
 
 def test_malformed_return_event_is_reported_not_fatal(tmp_path, monkeypatch):
