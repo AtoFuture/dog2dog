@@ -65,15 +65,16 @@ def load_evaluator(monkeypatch, topics, messages):
     return importlib.import_module("g3_integration_eval.evaluate_bag")
 
 
-def return_message(attempt_id, status, goal_id=None):
+def return_message(attempt_id, status, goal_id=None, timestamp=None):
+    event = {
+        "attempt_id": attempt_id,
+        "status": status,
+        "goal_id": goal_id,
+    }
+    if timestamp is not None:
+        event["timestamp"] = timestamp
     return SimpleNamespace(
-        data=json.dumps(
-            {
-                "attempt_id": attempt_id,
-                "status": status,
-                "goal_id": goal_id,
-            }
-        )
+        data=json.dumps(event)
     )
 
 
@@ -98,6 +99,27 @@ def nav_status(status, values=range(16)):
     )
 
 
+def detection_3d_message(*, x=1.0, y=2.0, z=0.0, sec=1, nanosec=0):
+    return SimpleNamespace(
+        stamp=SimpleNamespace(sec=sec, nanosec=nanosec),
+        class_name="person",
+        pose=SimpleNamespace(
+            pose=SimpleNamespace(
+                position=SimpleNamespace(x=x, y=y, z=z)
+            )
+        ),
+    )
+
+
+def write_detection_ground_truth(tmp_path, detections):
+    path = tmp_path / "ground_truth.json"
+    path.write_text(
+        json.dumps({"detections": detections}),
+        encoding="utf-8",
+    )
+    return str(path)
+
+
 def test_old_bag_keeps_original_return_unavailable_reason(tmp_path, monkeypatch):
     evaluator = load_evaluator(
         monkeypatch,
@@ -115,6 +137,94 @@ def test_old_bag_keeps_original_return_unavailable_reason(tmp_path, monkeypatch)
         "value": None,
         "reason": "no_explicit_return_goal_marker",
     }
+    assert report["metrics"]["return_duration"]["available"] is False
+    assert report["metrics"]["return_duration"]["reason"] == (
+        "return_event_topic_missing"
+    )
+    assert report["metrics"]["detection_rate"]["reason"] == (
+        "detection topics not present in this bag"
+    )
+
+
+def test_snapshot_only_bag_does_not_enable_detection_metrics(
+    tmp_path, monkeypatch
+):
+    snapshot_topic = "/detections_snapshot"
+    ground_truth = write_detection_ground_truth(
+        tmp_path,
+        [{"t_sec": 1.0, "class": "person", "x": 1.0, "y": 2.0, "z": 0.0}],
+    )
+    evaluator = load_evaluator(
+        monkeypatch,
+        {snapshot_topic: "vision_interfaces/msg/DetectionSnapshot"},
+        [(snapshot_topic, SimpleNamespace(), 1_000_000_000)],
+    )
+
+    report = evaluator.evaluate_bag(
+        str(tmp_path), ground_truth_detections=ground_truth
+    )
+
+    for metric_name in ("detection_rate", "false_positive_rate"):
+        metric = report["metrics"][metric_name]
+        assert metric["available"] is False
+        assert metric["value"] is None
+        assert metric["reason"] == "detection topics not present in this bag"
+    assert report["metrics"]["detection_detail"] == {
+        "ground_truth_count": 1
+    }
+
+
+def test_detection_3d_matches_ground_truth(tmp_path, monkeypatch):
+    detection_topic = "/detections_3d"
+    ground_truth = write_detection_ground_truth(
+        tmp_path,
+        [{"t_sec": 1.0, "class": "person", "x": 1.0, "y": 2.0, "z": 0.0}],
+    )
+    evaluator = load_evaluator(
+        monkeypatch,
+        {detection_topic: "vision_interfaces/msg/Detection3D"},
+        [(detection_topic, detection_3d_message(), 1_000_000_000)],
+    )
+
+    report = evaluator.evaluate_bag(
+        str(tmp_path), ground_truth_detections=ground_truth
+    )
+
+    assert report["metrics"]["detection_rate"]["value"] == pytest.approx(1.0)
+    assert report["metrics"]["false_positive_rate"]["value"] == pytest.approx(
+        0.0
+    )
+    assert report["metrics"]["detection_detail"]["true_positives"] == 1
+
+
+def test_detection_3d_false_positive_is_counted(tmp_path, monkeypatch):
+    detection_topic = "/detections_3d"
+    ground_truth = write_detection_ground_truth(
+        tmp_path,
+        [{"t_sec": 1.0, "class": "person", "x": 1.0, "y": 2.0, "z": 0.0}],
+    )
+    evaluator = load_evaluator(
+        monkeypatch,
+        {detection_topic: "vision_interfaces/msg/Detection3D"},
+        [
+            (detection_topic, detection_3d_message(), 1_000_000_000),
+            (
+                detection_topic,
+                detection_3d_message(x=8.0, y=9.0),
+                1_100_000_000,
+            ),
+        ],
+    )
+
+    report = evaluator.evaluate_bag(
+        str(tmp_path), ground_truth_detections=ground_truth
+    )
+
+    assert report["metrics"]["detection_rate"]["value"] == pytest.approx(1.0)
+    assert report["metrics"]["false_positive_rate"]["value"] == pytest.approx(
+        0.5
+    )
+    assert report["metrics"]["detection_detail"]["false_positives"] == 1
 
 
 def test_return_events_produce_offline_success_rate(tmp_path, monkeypatch):
@@ -134,6 +244,77 @@ def test_return_events_produce_offline_success_rate(tmp_path, monkeypatch):
     assert report["metrics"]["return_success_rate"]["value"] == pytest.approx(0.5)
     assert report["return_navigation"]["attempt_count"] == 2
     assert report["return_navigation"]["goal_ids"] == ["goal-a", "goal-b"]
+
+
+def test_return_duration_is_added_to_report_without_changing_success_rate(
+    tmp_path, monkeypatch
+):
+    topic = "/g3/return_event"
+    evaluator = load_evaluator(
+        monkeypatch,
+        {topic: "std_msgs/msg/String"},
+        [
+            (
+                topic,
+                return_message(
+                    "a", "waiting_for_server", timestamp={"sec": 10, "nanosec": 0}
+                ),
+                10_000_000_000,
+            ),
+            (
+                topic,
+                return_message(
+                    "a", "succeeded", timestamp={"sec": 13, "nanosec": 500_000_000}
+                ),
+                13_500_000_000,
+            ),
+        ],
+    )
+
+    report = evaluator.evaluate_bag(str(tmp_path))
+
+    assert report["metrics"]["return_success_rate"]["value"] == pytest.approx(1.0)
+    assert report["metrics"]["return_duration"]["average_seconds"] == pytest.approx(
+        3.5
+    )
+    assert report["return_navigation"]["attempt_durations"][0] == {
+        "attempt_id": "a",
+        "status": "succeeded",
+        "available": True,
+        "duration_seconds": pytest.approx(3.5),
+    }
+
+
+def test_state_topics_report_occurrences_transitions_and_durations(
+    tmp_path, monkeypatch
+):
+    g3_state = "/g3/state"
+    mission_state = "/mission_state"
+    evaluator = load_evaluator(
+        monkeypatch,
+        {
+            g3_state: "std_msgs/msg/String",
+            mission_state: "std_msgs/msg/String",
+        },
+        [
+            (g3_state, SimpleNamespace(data="EXPLORE"), 1_000_000_000),
+            (g3_state, SimpleNamespace(data="RETURN"), 5_000_000_000),
+            (mission_state, SimpleNamespace(data="exploring"), 1_000_000_000),
+            (mission_state, SimpleNamespace(data="returning"), 5_000_000_000),
+        ],
+    )
+
+    report = evaluator.evaluate_bag(str(tmp_path))
+
+    assert report["state_statistics"][g3_state]["state_counts"] == {
+        "EXPLORE": 1,
+        "RETURN": 1,
+    }
+    assert report["state_statistics"][g3_state]["transition_count"] == 1
+    assert report["state_statistics"][g3_state]["duration_summary"][
+        "EXPLORE"
+    ]["average_seconds"] == pytest.approx(4.0)
+    assert report["state_statistics"][mission_state]["transition_count"] == 1
 
 
 def test_malformed_return_event_is_reported_not_fatal(tmp_path, monkeypatch):
@@ -187,3 +368,25 @@ def test_namespaced_navigation_action_is_evaluated(tmp_path, monkeypatch):
     assert report["metrics"]["navigation_success_rate"][
         "value"
     ] == pytest.approx(1.0)
+
+
+def test_custom_battery_topic_is_evaluated(tmp_path, monkeypatch):
+    topic = "/g3/sim_battery_state"
+    evaluator = load_evaluator(
+        monkeypatch,
+        {topic: "sensor_msgs/msg/BatteryState"},
+        [
+            (topic, SimpleNamespace(percentage=0.30), 1),
+            (topic, SimpleNamespace(percentage=0.20), 2),
+        ],
+    )
+
+    report = evaluator.evaluate_bag(
+        str(tmp_path),
+        battery_topic="g3/sim_battery_state/",
+    )
+
+    assert report["battery"]["topic"] == topic
+    assert report["battery"]["sample_count"] == 2
+    assert report["battery"]["minimum"] == pytest.approx(0.20)
+    assert report["battery"]["maximum"] == pytest.approx(0.30)

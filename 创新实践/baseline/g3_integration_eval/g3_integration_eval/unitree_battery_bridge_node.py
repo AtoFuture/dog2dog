@@ -18,7 +18,7 @@ class UnitreeBatteryBridgeNode(Node):
     def __init__(self) -> None:
         super().__init__("g3_unitree_battery_bridge")
         self.declare_parameter("lowstate_topic", "/lowstate")
-        self.declare_parameter("battery_topic", "/battery_state")
+        self.declare_parameter("battery_topic", "/robot1/battery_state")
 
         lowstate_topic = str(self.get_parameter("lowstate_topic").value)
         battery_topic = str(self.get_parameter("battery_topic").value)

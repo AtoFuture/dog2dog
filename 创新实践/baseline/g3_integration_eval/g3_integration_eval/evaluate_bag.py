@@ -12,14 +12,17 @@ from g3_integration_eval.coverage import calculate_coverage
 from g3_integration_eval.metrics import (
     availability,
     battery_statistics,
+    detection_metrics,
     duration_seconds,
     navigation_statistics,
     return_statistics,
+    return_timing_statistics,
+    state_statistics,
 )
 
 
-BATTERY_TOPIC = "/battery_state"
-DEFAULT_NAVIGATE_ACTION = "/navigate_to_pose"
+BATTERY_TOPIC = "/robot1/battery_state"
+DEFAULT_NAVIGATE_ACTION = "/robot1/navigate_to_pose"
 RETURN_EVENT_TOPIC = "/g3/return_event"
 
 DETECTION_TOPIC = "/detections_3d"
@@ -42,17 +45,30 @@ def navigation_topic_names(action_name: str) -> tuple[str, str, str]:
     )
 
 
+def canonical_topic_name(topic_name: str) -> str:
+    """Return a canonical absolute ROS topic name."""
+    if not isinstance(topic_name, str) or not topic_name.strip():
+        raise ValueError("topic name must not be empty")
+    canonical_name = "/" + topic_name.strip().strip("/")
+    if canonical_name == "/":
+        raise ValueError("topic name must not be root")
+    return canonical_name
+
+
 def evaluate_bag(
     bag_path: str,
     reference_map: str = None,
     slam_map: str = None,
     navigate_action: str = DEFAULT_NAVIGATE_ACTION,
+    battery_topic: str = BATTERY_TOPIC,
+    ground_truth_detections: str = None,
 ) -> dict:
     (
         navigate_action,
         nav_feedback_topic,
         nav_status_topic,
     ) = navigation_topic_names(navigate_action)
+    battery_topic = canonical_topic_name(battery_topic)
 
     bag_dir = Path(bag_path).expanduser().resolve()
 
@@ -94,10 +110,12 @@ def evaluate_bag(
     nav_feedback_msg_type = None
     nav_status_msg_type = None
     return_event_msg_type = None
+    detection_msg_type = None
+    state_msg_types = {}
 
-    if BATTERY_TOPIC in topic_types:
+    if battery_topic in topic_types:
         battery_msg_type = get_message(
-            topic_types[BATTERY_TOPIC]
+            topic_types[battery_topic]
         )
 
     if nav_feedback_topic in topic_types:
@@ -115,10 +133,26 @@ def evaluate_bag(
             topic_types[RETURN_EVENT_TOPIC]
         )
 
+    if DETECTION_TOPIC in topic_types:
+        detection_msg_type = get_message(
+            topic_types[DETECTION_TOPIC]
+        )
+
+    for state_topic in ("/g3/state", "/mission_state"):
+        if state_topic in topic_types:
+            state_msg_types[state_topic] = get_message(
+                topic_types[state_topic]
+            )
+
     observed_nav_goal_ids = set()
     nav_statuses_by_goal = {}
     return_events = []
     invalid_return_events = 0
+    actual_detections = []
+    state_samples = {
+        "/g3/state": [],
+        "/mission_state": [],
+    }
 
     while reader.has_next():
         topic_name, raw_data, timestamp_ns = (
@@ -135,7 +169,7 @@ def evaluate_bag(
         last_timestamp_ns = timestamp_ns
 
         if (
-            topic_name == BATTERY_TOPIC
+            topic_name == battery_topic
             and battery_msg_type is not None
         ):
             message = deserialize_message(
@@ -195,6 +229,37 @@ def evaluate_bag(
                 else:
                     invalid_return_events += 1
 
+        elif topic_name in state_msg_types:
+            message = deserialize_message(
+                raw_data,
+                state_msg_types[topic_name],
+            )
+            state_samples[topic_name].append(
+                (getattr(message, "data", None), timestamp_ns)
+            )
+
+        elif (
+            topic_name == DETECTION_TOPIC
+            and detection_msg_type is not None
+        ):
+            message = deserialize_message(
+                raw_data,
+                detection_msg_type,
+            )
+            t_sec = (
+                message.stamp.sec
+                + message.stamp.nanosec * 1e-9
+            )
+            actual_detections.append({
+                "t_sec": t_sec,
+                "class": message.class_name,
+                "x": float(message.pose.pose.position.x),
+                "y": float(message.pose.pose.position.y),
+                "z": float(message.pose.pose.position.z),
+                "source": getattr(message, "source", ""),
+                "id": int(getattr(message, "id", 0)),
+            })
+
     if (
         first_timestamp_ns is None
         or last_timestamp_ns is None
@@ -212,12 +277,28 @@ def evaluate_bag(
         last_timestamp_ns,
     )
 
+    returns = return_statistics(return_events)
+    return_timing = return_timing_statistics(return_events)
+    state_reports = {}
+    for topic_name, samples in state_samples.items():
+        if topic_name not in topic_types:
+            state_reports[topic_name] = {
+                "available": False,
+                "message_count": 0,
+                "state_counts": {},
+                "transition_count": 0,
+                "transitions": [],
+                "duration_summary": {},
+                "reason": "topic_not_present_in_bag",
+            }
+        else:
+            state_reports[topic_name] = state_statistics(samples)
+
     navigation = navigation_statistics(
         observed_nav_goal_ids,
         nav_statuses_by_goal,
+        return_goal_ids=returns.goal_ids,
     )
-
-    returns = return_statistics(return_events)
 
     navigation_success_metric = availability(
         navigation.success_rate,
@@ -243,10 +324,89 @@ def evaluate_bag(
             ),
         )
 
-    detection_present = (
-        DETECTION_TOPIC in topic_types
-        or DETECTION_SNAPSHOT_TOPIC in topic_types
-    )
+    detection_present = DETECTION_TOPIC in topic_types
+
+    gt_detections = []
+    gt_match_radius_m = 0.5
+    gt_match_time_s = 1.0
+    gt_loaded = False
+
+    if ground_truth_detections is not None:
+        gt_path = Path(ground_truth_detections).expanduser().resolve()
+        if gt_path.exists():
+            with gt_path.open("r", encoding="utf-8") as f:
+                gt_data = json.load(f)
+            gt_detections = gt_data.get("detections", [])
+            gt_match_radius_m = float(
+                gt_data.get("match_radius_m", 0.5)
+            )
+            gt_match_time_s = float(
+                gt_data.get("match_time_s", 1.0)
+            )
+            gt_loaded = True
+        else:
+            raise FileNotFoundError(
+                f"ground-truth file not found: {gt_path}"
+            )
+
+    if gt_loaded and detection_present:
+        det_metrics = detection_metrics(
+            gt_detections,
+            actual_detections,
+            match_radius_m=gt_match_radius_m,
+            match_time_s=gt_match_time_s,
+        )
+        detection_rate_metric = availability(
+            det_metrics.detection_rate,
+            (
+                None
+                if det_metrics.detection_rate is not None
+                else "no ground-truth detections"
+            ),
+        )
+        false_positive_rate_metric = availability(
+            det_metrics.false_positive_rate,
+            (
+                None
+                if det_metrics.false_positive_rate is not None
+                else "no detections in bag"
+            ),
+        )
+        detection_detail = {
+            "ground_truth_count": det_metrics.ground_truth_count,
+            "detection_count": det_metrics.detection_count,
+            "true_positives": det_metrics.true_positives,
+            "false_positives": det_metrics.false_positives,
+            "false_negatives": det_metrics.false_negatives,
+            "match_radius_m": gt_match_radius_m,
+            "match_time_s": gt_match_time_s,
+        }
+    elif gt_loaded and not detection_present:
+        detection_rate_metric = availability(
+            None, "detection topics not present in this bag"
+        )
+        false_positive_rate_metric = availability(
+            None, "detection topics not present in this bag"
+        )
+        detection_detail = {"ground_truth_count": len(gt_detections)}
+    else:
+        detection_rate_metric = availability(
+            None,
+            (
+                "ground-truth detections not provided"
+                if detection_present
+                else "detection topics not present in this bag"
+            ),
+        )
+        false_positive_rate_metric = availability(
+            None,
+            (
+                "ground-truth detections not provided"
+                if detection_present
+                else "detection topics not present in this bag"
+            ),
+        )
+        detection_detail = None
 
     if reference_map is not None and slam_map is not None:
         coverage_result = calculate_coverage(
@@ -324,6 +484,7 @@ def evaluate_bag(
             "canceled": navigation.canceled,
             "incomplete": navigation.incomplete,
             "conflict": navigation.conflict,
+            "preempted": navigation.preempted,
             "terminal_goal_count": (
                 navigation.terminal_goal_count
             ),
@@ -332,6 +493,9 @@ def evaluate_bag(
             ),
             "conflicting_goal_ids": list(
                 navigation.conflicting_goal_ids
+            ),
+            "preempted_goal_ids": list(
+                navigation.preempted_goal_ids
             ),
         },
         "return_navigation": {
@@ -357,8 +521,24 @@ def evaluate_bag(
             "conflicting_attempt_ids": list(
                 returns.conflicting_attempt_ids
             ),
+            "attempt_durations": [
+                {
+                    "attempt_id": attempt.attempt_id,
+                    "status": attempt.status,
+                    "available": attempt.available,
+                    "duration_seconds": attempt.duration_seconds,
+                    **(
+                        {"reason": attempt.reason}
+                        if attempt.reason
+                        else {}
+                    ),
+                }
+                for attempt in return_timing.attempts
+            ],
         },
+        "state_statistics": state_reports,
         "battery": {
+            "topic": battery_topic,
             "sample_count": battery.sample_count,
             "minimum": battery.minimum,
             "maximum": battery.maximum,
@@ -372,26 +552,43 @@ def evaluate_bag(
             "return_success_rate": (
                 return_success_metric
             ),
+            "return_duration": {
+                "available": (
+                    return_timing.available
+                    and RETURN_EVENT_TOPIC in topic_types
+                ),
+                "average_seconds": return_timing.average_seconds,
+                "minimum_seconds": return_timing.minimum_seconds,
+                "maximum_seconds": return_timing.maximum_seconds,
+                "successful_attempt_count": (
+                    return_timing.successful_attempt_count
+                ),
+                "measured_successful_attempt_count": (
+                    return_timing.measured_successful_attempt_count
+                ),
+                "unavailable_successful_attempt_count": (
+                    return_timing.unavailable_successful_attempt_count
+                ),
+                **(
+                    {}
+                    if return_timing.available
+                    and RETURN_EVENT_TOPIC in topic_types
+                    else {
+                        "reason": (
+                            "return_event_topic_missing"
+                            if RETURN_EVENT_TOPIC not in topic_types
+                            else return_timing.reason
+                        )
+                    }
+                ),
+            },
             "ate": availability(
                 None,
                 "ground-truth trajectory not provided",
             ),
-            "detection_rate": availability(
-                None,
-                (
-                    "ground-truth detections not provided"
-                    if detection_present
-                    else "detection topics not present in this bag"
-                ),
-            ),
-            "false_positive_rate": availability(
-                None,
-                (
-                    "ground-truth detections not provided"
-                    if detection_present
-                    else "detection topics not present in this bag"
-                ),
-            ),
+            "detection_rate": detection_rate_metric,
+            "false_positive_rate": false_positive_rate_metric,
+            "detection_detail": detection_detail,
         },
     }
 
@@ -477,6 +674,23 @@ def main():
         ),
     )
 
+    parser.add_argument(
+        "--battery-topic",
+        default=BATTERY_TOPIC,
+        help=(
+            "BatteryState topic evaluated (default: "
+            f"{BATTERY_TOPIC})."
+        ),
+    )
+
+    parser.add_argument(
+        "--ground-truth-detections",
+        help=(
+            "Path to a JSON file with ground-truth detections for "
+            "detection-rate / false-positive-rate computation."
+        ),
+    )
+
     args = parser.parse_args()
 
     if bool(args.reference_map) != bool(args.slam_map):
@@ -490,6 +704,8 @@ def main():
         reference_map=args.reference_map,
         slam_map=args.slam_map,
         navigate_action=args.navigate_action,
+        battery_topic=args.battery_topic,
+        ground_truth_detections=args.ground_truth_detections,
     )
 
     report_file = write_report(
@@ -595,7 +811,18 @@ def main():
         print("Coverage: unavailable")
 
     print("ATE: unavailable")
-    print("Detection metrics: unavailable")
+
+    detection_rate = report["metrics"]["detection_rate"]
+    if detection_rate["available"]:
+        print(f"Detection rate: {detection_rate['value']:.2%}")
+    else:
+        print(f"Detection rate: unavailable ({detection_rate['reason']})")
+
+    fpr = report["metrics"]["false_positive_rate"]
+    if fpr["available"]:
+        print(f"False positive rate: {fpr['value']:.2%}")
+    else:
+        print(f"False positive rate: unavailable ({fpr['reason']})")
 
     print(
         f"Report: {report_file}"

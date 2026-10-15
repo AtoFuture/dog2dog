@@ -67,12 +67,47 @@ ros2 topic hz /xxx   # 关键传感器的实际频率
 ### ③ 低电量返航（第 10–12 周）
 
 - 读电量 → 低于阈值 → 发一个回基站的目标点
-- 当前已实现：订阅可配置 `BatteryState` 话题，仅在 `EXPLORE` 且电量低于阈值时自动切换到 `RETURN`。默认话题为 `/battery_state`，默认阈值为 `0.20`。
+- 当前已实现：订阅可配置 `BatteryState` 话题，仅在 `EXPLORE` 且电量低于阈值时自动切换到 `RETURN`。默认话题为 `/robot1/battery_state`，默认阈值为 `0.20`。
 - `enable_navigation_transmission` 默认值为 `false`：自动返航只生成并打印目标预览，不等待 action server，也不发送 goal。
-- 只有显式设为 `true` 时才等待 `/navigate_to_pose`，发送 home pose，并在 `/g3/return_event` 发布 `std_msgs/String` JSON 事件。事件包含 `attempt_id`、真实 Nav2 `goal_id`（接受/拒绝响应可用后）、触发源、ROS 时间戳、home target 和状态。
-- 状态链包括 `preview / waiting_for_server / server_unavailable / goal_request_sent / accepted / rejected / succeeded / aborted / canceled`，回调异常也会形成明确失败事件，便于 rosbag 离线追踪。
+- 只有显式设为 `true` 时才异步等待 `/robot1/navigate_to_pose`，发送 home pose，并在 `/g3/return_event` 发布 `std_msgs/String` JSON 事件。事件包含 `attempt_id`、真实 Nav2 `goal_id`（接受/拒绝响应可用后）、触发源、ROS 时间戳、home target 和状态。
+- ESTOP 或离开 RETURN 时会取消当前返航 goal；尚未收到 accepted 响应的请求会被标记，若之后迟到 accepted 也会立即取消。取消完成前 ESTOP 不能 reset。
+- 状态链包括 `preview / waiting_for_server / server_unavailable / goal_request_sent / accepted / rejected / cancel_pending / cancel_request_sent / cancel_accepted / cancel_rejected / succeeded / aborted / canceled`，回调异常也会形成明确失败事件，便于 rosbag 离线追踪。
 - **复用接口 02 的 `NavigateToPose`**，不另开通路。G2 的探索目标点和你们的返航点走同一个入口
 - 加一层：返航途中电量继续掉怎么办（降速 / 就近停靠 / 直接趴下）
+
+### 仿真连续耗电与自动返航
+
+G1 自带的 `/robot1/battery_state` 固定为 80%，不能表示真实耗电。联调时启动
+G3 的 `sim_battery`，使用独立话题 `/g3/sim_battery_state`，避免与固定假 BMS
+互相覆盖。节点根据 `/robot1/cmd_vel` 判断是否运动：运动时快速耗电，静止时
+按较慢速率耗电。
+
+```bash
+# 终端 1：连续电量。比例和速率均以 0–1 表示；下面约 30 秒运动后到 20%。
+ros2 run g3_integration_eval sim_battery --ros-args \
+  -p use_sim_time:=true \
+  -p initial_percentage:=0.23 \
+  -p idle_drain_per_sec:=0.0001 \
+  -p moving_drain_per_sec:=0.001
+
+# 终端 2：让 G3 监听连续电量话题并允许真实返航。
+ros2 run g3_integration_eval g3_state_machine --ros-args \
+  -p use_sim_time:=true \
+  -p battery_topic:=/g3/sim_battery_state \
+  -p enable_navigation_transmission:=true
+```
+
+进入 `EXPLORE` 后，电量会逐步下降；严格低于 `0.20` 时，G3 切换到
+`RETURN` 并发送 home goal。录包和评测应使用相同电量话题：
+
+```bash
+bash g3_integration_eval/scripts/record_bag.sh experiment \
+  /robot1/navigate_to_pose /g3/sim_battery_state
+
+ros2 run g3_integration_eval evaluate_bag /path/to/bag \
+  --navigate-action /robot1/navigate_to_pose \
+  --battery-topic /g3/sim_battery_state
+```
 
 ### ④ 指标评测（第 13–16 周）
 
@@ -95,6 +130,9 @@ ros2 topic hz /xxx   # 关键传感器的实际频率
 - observed goal 的唯一终态为 `SUCCEEDED / ABORTED / CANCELED` 时才进入导航成功率分母；没有终态记为 `incomplete`，同一 UUID 出现多个不同终态记为 `conflict` 并排除。
 - 导航成功率定义为 `SUCCEEDED / (SUCCEEDED + ABORTED + CANCELED)`。若本次 bag 没有 observed goal 到达终态，则输出 `unavailable`，而不是误报 `0%`。
 - `/g3/return_event` 将 G3 `RETURN` 尝试与 Nav2 goal UUID 明确关联。离线评估按 `attempt_id` 去重：preview 不进入成功率分母；真实发送后的成功、取消、中止、拒绝、server unavailable 与发送/回调错误进入分母。旧 bag 不含该话题时，`return_success_rate` 仍保持 `unavailable`，原因是 `no_explicit_return_goal_marker`。
+- 标准录包清单包含轻量的 `/detections_3d`。`/detections_snapshot` 携带 JPEG 图像，默认不录以控制 bag 体积；确需保存图像证据时，可在启动录包脚本前设置 `G3_RECORD_DETECTIONS_SNAPSHOT=1`。
+- `return_navigation.attempt_durations` 按 `attempt_id` 输出每次 RETURN 从 `waiting_for_server` 到唯一终态的耗时。`metrics.return_duration` 给出成功 RETURN 的平均、最短、最长耗时；开始/终态或事件时间戳缺失、终态冲突时，该 attempt 标为 `unavailable` 并附原因，不根据 bag 总时长推测。
+- `state_statistics` 汇总 `/g3/state` 与 `/mission_state` 的消息状态计数、相邻状态切换和切换边界完整的停留时长。停留时间使用 rosbag 存储时间戳，bag 结束时仍处于当前状态的区间保持未完成，不计入时长汇总。
 
 Nav2 使用 namespace 时，录包和评测必须传入同一 action 名称。例如 G1 的
 `/robot1/navigate_to_pose`：
@@ -107,7 +145,7 @@ ros2 run g3_integration_eval evaluate_bag /path/to/bag \
   --navigate-action /robot1/navigate_to_pose
 ```
 
-不传参时仍默认使用 `/navigate_to_pose`，兼容无 namespace 的环境。
+合并后的联调环境默认使用 `/robot1/navigate_to_pose`；无 namespace 的环境可显式传入 `/navigate_to_pose`。
 
 ### 返航发送安全开关
 
@@ -137,7 +175,7 @@ home target 仍由 `home_frame / home_x / home_y / home_yaw` 参数配置。
 - 发 G2：`/mission_state`（`standby / exploring / returning / estop`，可靠、瞬态本地 QoS）
 
 G3 同时保留 `/g3/state` 的大写内部状态，避免破坏现有调试工具。仿真直接向
-`/battery_state` 发布 `sensor_msgs/msg/BatteryState`；真机则先运行 G3 自带的
+`/robot1/battery_state` 发布 `sensor_msgs/msg/BatteryState`；真机则先运行 G3 自带的
 `unitree_battery_bridge`，把 Unitree `/lowstate` 中 0–100 的 `bms_state.soc`
 转换成 0–1 的标准电量话题：
 
@@ -200,3 +238,19 @@ ros2 run g3_integration_eval mission_brain
 - 非 `EXPLORE` 或定位不健康时只能安全等待。
 - API 超时、断网、格式错误或越界输出会自动回退到确定性 frontier 打分。
 - 本节点只发布决策，不发布 `cmd_vel`，也不直接发 Nav2 goal。
+
+如需在返航成功后把仿真电量自动恢复到 80%，可以用辅助脚本代替终端 1
+中的 `sim_battery` 命令：
+
+```bash
+bash g3_integration_eval/scripts/run_sim_battery_auto_recharge.sh \
+  -p initial_percentage:=0.23 \
+  -p idle_drain_per_sec:=0.0001 \
+  -p moving_drain_per_sec:=0.001
+```
+
+`auto_recharge_on_return_success` 默认关闭。脚本会启用该参数并监听
+`/g3/return_event`；只有真实导航返回 `succeeded` 后才回充到 `0.80`，
+`preview`、失败和同一 `attempt_id` 的重复事件均不会回充。回充只改变仿真
+电量，状态机仍保持 `RETURN`；下一轮任务需要人工发送 `standby`，再发送
+`explore`。

@@ -94,6 +94,33 @@ def validate_low_battery_threshold(threshold: float) -> float:
     return normalized
 
 
+def estop_reset_block_reason(
+    *, battery_fault_active: bool, navigation_active: bool
+) -> Optional[str]:
+    """Explain why a latched ESTOP cannot yet be reset, if applicable."""
+
+    if battery_fault_active:
+        return "battery fault has not recovered"
+    if navigation_active:
+        return "navigation cancellation has not reached a terminal state"
+    return None
+
+
+def normalize_battery_percentage(percentage: float) -> Optional[float]:
+    """Validate a normalized battery reading in the inclusive [0, 1] range.
+
+    ``sensor_msgs/BatteryState.percentage`` is defined as a normalized value.
+    Values from a 0..100 publisher must be converted by that publisher or by
+    the dedicated Unitree battery adapter before reaching this state machine.
+    Unknown and out-of-range readings return ``None``.
+    """
+
+    value = float(percentage)
+    if not isfinite(value) or not 0.0 <= value <= 1.0:
+        return None
+    return value
+
+
 def battery_return_event(
     current: State,
     percentage: float,
@@ -104,17 +131,16 @@ def battery_return_event(
     Only EXPLORE may produce the event. Once RETURN or ESTOP has been entered,
     subsequent battery messages therefore cannot retrigger or override it.
     BatteryState uses NaN for an unknown percentage, so non-finite and
-    out-of-range readings are deliberately ignored.
+    out-of-range readings are deliberately ignored here. The ROS node handles
+    those readings as a safety error and enters ESTOP.
     """
 
     normalized_threshold = validate_low_battery_threshold(threshold)
-    normalized_percentage = float(percentage)
+    normalized_percentage = normalize_battery_percentage(percentage)
 
     if current is not State.EXPLORE:
         return None
-    if not isfinite(normalized_percentage):
-        return None
-    if not 0.0 <= normalized_percentage <= 1.0:
+    if normalized_percentage is None:
         return None
     if normalized_percentage < normalized_threshold:
         return Event.RETURN

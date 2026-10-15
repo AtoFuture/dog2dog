@@ -5,7 +5,9 @@ from g3_integration_eval.state_machine import (
     InvalidTransition,
     State,
     battery_return_event,
+    estop_reset_block_reason,
     mission_state_value,
+    normalize_battery_percentage,
     parse_event,
     transition,
     validate_low_battery_threshold,
@@ -46,6 +48,23 @@ def test_estop_requires_reset_before_normal_operation():
     assert transition(State.ESTOP, Event.RESET) is State.STANDBY
 
 
+@pytest.mark.parametrize(
+    ("battery_fault_active", "navigation_active", "expected"),
+    [
+        (True, False, "battery fault has not recovered"),
+        (False, True, "navigation cancellation has not reached a terminal state"),
+        (False, False, None),
+    ],
+)
+def test_estop_reset_requires_recovered_fault_and_finished_navigation(
+    battery_fault_active, navigation_active, expected
+):
+    assert estop_reset_block_reason(
+        battery_fault_active=battery_fault_active,
+        navigation_active=navigation_active,
+    ) == expected
+
+
 def test_return_cannot_jump_directly_to_explore():
     with pytest.raises(InvalidTransition):
         transition(State.RETURN, Event.EXPLORE)
@@ -70,6 +89,16 @@ def test_unknown_command_is_rejected():
 )
 def test_low_battery_threshold_is_strictly_below(percentage, expected):
     assert battery_return_event(State.EXPLORE, percentage, 0.20) is expected
+
+
+@pytest.mark.parametrize("percentage", [0.0, 0.85, 1.0])
+def test_battery_percentage_accepts_only_normalized_scale(percentage):
+    assert normalize_battery_percentage(percentage) == pytest.approx(percentage)
+
+
+@pytest.mark.parametrize("percentage", [15.0, 85.0, 100.0])
+def test_whole_percent_battery_readings_are_invalid(percentage):
+    assert normalize_battery_percentage(percentage) is None
 
 
 @pytest.mark.parametrize(
@@ -105,7 +134,9 @@ def test_estop_has_priority_over_low_battery_return():
     assert battery_return_event(state, 0.01, 0.20) is None
 
 
-@pytest.mark.parametrize("percentage", [float("nan"), float("inf"), -0.1, 1.1])
+@pytest.mark.parametrize(
+    "percentage", [float("nan"), float("inf"), -0.1, 100.1]
+)
 def test_unknown_or_invalid_battery_readings_are_ignored(percentage):
     assert battery_return_event(State.EXPLORE, percentage, 0.20) is None
 
