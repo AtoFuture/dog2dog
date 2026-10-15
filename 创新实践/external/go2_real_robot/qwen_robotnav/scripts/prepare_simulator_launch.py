@@ -11,6 +11,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--sim-workspace',type=Path,default=Path.home()/'go2_sim_ws/ROS2-Gazebo-GO2')
     parser.add_argument('--output-dir',type=Path,default=Path('/tmp/deepseek_nav2_sim'))
+    parser.add_argument('--single-odom-tf',action='store_true',help='Separate raw leg odometry and let EKF alone publish odom TF')
     args=parser.parse_args()
     output=args.output_dir.resolve()
     if not str(output).isascii():
@@ -23,6 +24,21 @@ def main():
     if needle not in child or choice not in top:
         parser.error('Simulator launch layout changed; model generation could not be located')
     child=child.replace(needle,needle+'\n        from qwen_robotnav.sim_model import horizontal_lidar_description\n        robot_desc = horizontal_lidar_description(robot_desc)')
+    if args.single_odom_tf:
+        odom_remaps='remappings=remappings\n        )\n\n        rviz_launch_file'
+        ekf_params="{'use_sim_time': use_sim_time}],"
+        if "'enable_odom_tf': True" not in child or odom_remaps not in child or ekf_params not in child:
+            parser.error('Simulator odometry launch layout changed; refusing an ambiguous TF setup')
+        child=child.replace("'enable_odom_tf': True", "'enable_odom_tf': False, 'use_sim_time': True")
+        child=child.replace(odom_remaps,"remappings=[('/tf','tf'),('/tf_static','tf_static'),('odom','leg/odometry')]\n        )\n\n        rviz_launch_file")
+        # Foot twist is a gait command (not m/s), and its yaw rate is negated.
+        # Fuse independent position + raw IMU yaw/rate instead of those duplicates.
+        fusion = """{'use_sim_time': use_sim_time,
+             'odom0': f'/{namespace}/leg/odometry',
+             'imu0': f'/{namespace}/imu_plugin/out',
+             'odom0_config': [True, True, False, False, False, False, False, False, False, False, False, False, False, False, False],
+             'imu0_config': [False, False, False, False, False, True, False, False, False, False, False, True, False, False, False]}],"""
+        child=child.replace(ekf_params, fusion)
     output.mkdir(parents=True,exist_ok=True)
     (output/'go2_sensors_nav2.launch.py').write_text(child)
     top=top.replace(choice,'launch_file = '+repr(str(output/'go2_sensors_nav2.launch.py')))

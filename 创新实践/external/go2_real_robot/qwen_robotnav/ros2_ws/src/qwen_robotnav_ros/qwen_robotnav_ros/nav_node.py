@@ -16,6 +16,7 @@ import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseArray, Pose
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, DurabilityPolicy
 from rclpy.clock import Clock, ClockType
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
@@ -41,6 +42,9 @@ class NavNode(Node):
         self.declare_parameter("publish_debug_image", True)
         self.declare_parameter("inference_timeout_sec", 15.0)
         self.declare_parameter("max_frame_age_sec", 15.0)
+        self.declare_parameter("require_mission_state", False)
+        self._gate_by_mission = bool(self.get_parameter("require_mission_state").value)
+        self._mission_allowed = not self._gate_by_mission
 
         self.camera_topic = self.get_parameter("camera_topic").value
         self.instruction = self.get_parameter("instruction").value
@@ -95,6 +99,9 @@ class NavNode(Node):
         self.instruction_sub = self.create_subscription(
             String, "/qwen_robotnav/instruction", self._instruction_callback, 1
         )
+        self.mission_sub = self.create_subscription(
+            String, '/mission_state', self._mission_callback,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.waypoint_pub = self.create_publisher(PoseArray, "/qwen_robotnav/waypoints", 1)
         self.debug_image_pub = self.create_publisher(Image, "/qwen_robotnav/debug_image", 1)
 
@@ -142,7 +149,17 @@ class NavNode(Node):
         self.engine.config.instruction = msg.data
         self.get_logger().info(f"Updated instruction: {msg.data}")
 
+    def _mission_callback(self, msg: String):
+        if not self._gate_by_mission:
+            return
+        allowed = msg.data.strip().lower() == 'exploring'
+        if allowed != self._mission_allowed:
+            self._instruction_revision += 1
+        self._mission_allowed = allowed
+
     def _inference_callback(self):
+        if not self._mission_allowed:
+            return
         if self._inference_future is not None:
             return
         with self.lock:

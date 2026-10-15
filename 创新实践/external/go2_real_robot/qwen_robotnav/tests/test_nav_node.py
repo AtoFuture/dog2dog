@@ -20,6 +20,7 @@ def node(monkeypatch):
     warnings = []
     executor = ThreadPoolExecutor(max_workers=1)
     obj = SimpleNamespace(
+        _mission_allowed=True, _gate_by_mission=True,
         lock=threading.Lock(),
         frame_history=deque([{'Front': object()}]),
         latest_frame=np.zeros((2, 2, 3), dtype=np.uint8),
@@ -118,3 +119,17 @@ def test_waypoints_keep_image_acquisition_timestamp_for_nav2():
                         get_clock=lambda:pytest.fail('Publication time replaced image time'))
     nav_node.NavNode._publish_waypoints(obj,np.zeros((1,3)))
     assert messages[0].header.stamp==stamp
+
+
+def test_return_suspends_requests_and_invalidates_inflight_prediction(node):
+    node._inference_future = Future()
+    node._inference_future.set_result((np.zeros((1,3)), '{}'))
+    node._inference_frame_time=100
+    nav_node.NavNode._mission_callback(node,SimpleNamespace(data='returning'))
+    nav_node.NavNode._poll_inference(node)
+    assert node.published==[]
+    node.engine=lambda *_:pytest.fail('RETURN started an unnecessary API request')
+    nav_node.NavNode._inference_callback(node)
+    assert node._inference_future is None
+    nav_node.NavNode._mission_callback(node,SimpleNamespace(data='exploring'))
+    assert node._mission_allowed

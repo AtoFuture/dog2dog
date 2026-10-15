@@ -76,6 +76,53 @@ ros2 launch /tmp/deepseek_nav2_sim/gazebo_nav2.launch.py sensors:=true world:=wa
 额外紧急停车护栏干预为 **0**。导航与桥接回归测试 **47 passed**，ROS 包构建和 launch 参数检查通过。
 该实验明确使用**仿真真值定位**及上述水平扫描副本，验证的是接线和避障执行，不作为 SLAM/AMCL 或真机验收。
 
+## AMCL 定位与 G3 返航交接
+
+仓库提供两个隔离配置生成器，不修改共享仿真工作区。以下命令在已加载 ROS Humble、
+仿真 workspace 且本包可导入的环境中执行，输出目录必须为 ASCII 路径：
+
+```bash
+python3 scripts/prepare_simulator_launch.py --single-odom-tf --output-dir /tmp/deepseek_amcl
+python3 scripts/prepare_amcl_navigation.py --output-dir /tmp/deepseek_amcl
+```
+
+第一份配置将足端里程计放到 `/robot1/leg/odometry`，关闭其 TF，EKF 单独发布
+`odom → base_link` 和 `/robot1/odometry/filtered`。融合时只取足端 x/y 位置与原始 IMU
+的 yaw/角速度，排除足端消息里反号角速度、未按步态增益换算的命令速度及重复加速度。
+第二份启动地图、AMCL 与 Nav2，
+用水平 Velodyne 校正 `map → odom`，清除原配置的 `/g1/ground_truth` 依赖。
+默认已知出生点为 `(6.86, 6.0, 0)`，可用 `--initial-x/y/yaw` 调整；不会持续读取真值校正。
+
+在同一个隔离 ROS 域和 Gazebo partition 下，启动生成的 `gazebo_nav2.launch.py`，
+再启动 `amcl_navigation.launch.py`。Nav2 速度输出为 `/deepseek/nav_cmd`，必须经 G1
+`cmd_vel_scaler.py` 送入仿真控制器。该生成器面向当前单机器人 `robot1` 仿真配置。
+
+与 G3 联动时，DeepSeek launch 设置 `require_mission_state:=true`，G3 设置
+`require_navigation_handoff:=true`。低电量先广播 `returning` 并发送唯一交接 token；
+DeepSeek 桥接清空排队目标，等待其 action 到达终态后确认释放。G3 只接受匹配 token，
+再发送返航目标；5 秒无确认进入 ESTOP。这样避免取消探索目标时误伤刚接受的返航目标。
+当前交接确认端是 DeepSeek 桥接器，不能直接用于未实现该协议的旧 frontier 客户端。
+
+完整的隔离回归入口会自行启动 Nav2、DeepSeek 和 G3，只需预先启动生成的仿真：
+
+```bash
+# 环境中需要 API key，并让 G3 Python 包可导入；勿同时启动另一套导航节点。
+python3 scripts/validate_amcl_navigation.py \
+  --output-dir /tmp/deepseek_amcl --expected-domain 189 --cycles 3
+```
+
+测试依次执行真实模型探索目标、模拟低电量、G3 接管返航、再次探索，输出
+`report.json`、`trajectory.csv`、`localization.json`、规划路径、事件和截图。
+设置 `require_mission_state:=true` 后，返航/待机期间暂停视觉 API 请求，恢复探索时重新推理。
+测试里的 Gazebo 真值只用于误差评估和站立保护，不发布导航 TF 或里程计。
+它不验证未知地图 frontier、目标检出、真实电池或真机运行。
+
+2026-10-15 三轮实测：6 次到点完成，返航误差 **0.306 / 0.356 / 0.284 m**，
+紧急保护干预 0 次。探索目标真值误差 **0.299 / 0.305 / 0.422 m**；
+本轮通过标准为探索 action 成功、返航 action 成功且真值距基站 ≤0.4 m，不能视为精确停靠验收。
+详见 [验证报告](docs/amcl-navigation-validation.md)。
+
+
 ## 环境信息
 
 - 主机：NVIDIA Jetson Orin NX

@@ -14,7 +14,7 @@ def ready_future(value):
 
 def fixture_node(attempt):
     events = []
-    obj = SimpleNamespace(_attempt=attempt, _pending=None, _allowed=True,
+    obj = SimpleNamespace(_attempt=attempt, _pending=None, _allowed=True, _handoff_token=None,
                           _event=lambda status,*args,**kwargs:events.append(status),events=events)
     obj._on_result = lambda a,f: Nav2WaypointBridge._on_result(obj,a,f)
     obj._on_cancel = lambda a,f: Nav2WaypointBridge._on_cancel(obj,a,f)
@@ -66,4 +66,33 @@ def test_shutdown_drops_queued_prediction_and_blocks_new_goals():
     node._pending=object()
     Nav2WaypointBridge.stop_navigation(node)
     assert node._pending is None
+    assert not node._allowed
+
+
+def test_handoff_waits_for_late_goal_acceptance_and_terminal_result():
+    import json
+    attempt={'id':1,'cancel':False,'handle':None,'target':{}}
+    node=fixture_node(attempt)
+    node.stop_navigation=lambda reason:Nav2WaypointBridge.stop_navigation(node,reason)
+    node._warn=lambda message:None
+    node._handoff_ack=SimpleNamespace(publish=lambda message:node.acks.append(json.loads(message.data)))
+    node.acks=[]
+    node._input_timeout=10
+    node._goal_timeout=100
+    node._last_input=None
+    attempt['started']=__import__('time').monotonic()
+    Nav2WaypointBridge._on_handoff(node,SimpleNamespace(data='{"token":"return-123"}'))
+    Nav2WaypointBridge._tick(node)
+    assert node.acks==[]
+    result=Future()
+    calls=[]
+    handle=SimpleNamespace(accepted=True,get_result_async=lambda:result,
+        cancel_goal_async=lambda:calls.append(1) or ready_future(SimpleNamespace(goals_canceling=[1])))
+    Nav2WaypointBridge._on_response(node,attempt,ready_future(handle))
+    assert calls==[1]
+    Nav2WaypointBridge._tick(node)
+    assert node.acks==[]
+    result.set_result(SimpleNamespace(status=5))
+    Nav2WaypointBridge._tick(node)
+    assert node.acks==[{'token':'return-123','released':True}]
     assert not node._allowed

@@ -2,10 +2,14 @@
 
 import json
 import os
+import math
+import time
+import uuid
 from typing import Optional, Sequence
 
 import rclpy
 from rclpy.node import Node
+from rclpy.clock import Clock, ClockType
 from rclpy.qos import (
     DurabilityPolicy,
     HistoryPolicy,
@@ -80,6 +84,17 @@ class G3StateMachineNode(Node):
             self.get_parameter("navigation_server_timeout_sec").value
         )
 
+        self.declare_parameter('require_navigation_handoff', False)
+        self.declare_parameter('navigation_handoff_timeout_sec', 5.0)
+        self._require_handoff = bool(self.get_parameter('require_navigation_handoff').value)
+        self._handoff_timeout = float(self.get_parameter('navigation_handoff_timeout_sec').value)
+        if not math.isfinite(self._handoff_timeout) or self._handoff_timeout <= 0:
+            raise ValueError('navigation_handoff_timeout_sec must be finite and positive')
+        self._handoff_pending = None
+        self._handoff_publisher = self.create_publisher(String, '/navigation/handoff_request', 10)
+        self.create_subscription(String, '/navigation/handoff_ack', self._on_handoff_ack, 10)
+        self._handoff_clock = Clock(clock_type=ClockType.STEADY_TIME)
+        self._handoff_timer = self.create_timer(0.1, self._check_handoff, clock=self._handoff_clock)
         self._state = State.STANDBY
         self._battery_fault_active = False
         self._last_battery_time = self.get_clock().now()
@@ -235,6 +250,8 @@ class G3StateMachineNode(Node):
                     f"{previous.value}"
                 )
 
+        if self._state is not State.RETURN:
+            self._handoff_pending = None
         self._publish_state()
 
         if self._state is State.RETURN and previous is not State.RETURN:
@@ -246,6 +263,37 @@ class G3StateMachineNode(Node):
             )
 
     def _start_return(self, trigger: str) -> None:
+        if self._require_handoff:
+            token = uuid.uuid4().hex
+            self._handoff_pending = (token, trigger, time.monotonic()+self._handoff_timeout)
+            self._handoff_publisher.publish(String(data=json.dumps({'token': token})))
+            self.get_logger().info('RETURN waiting for exploration navigation to release its goal')
+            return
+        self._send_return(trigger)
+
+    def _on_handoff_ack(self, message: String) -> None:
+        pending = self._handoff_pending
+        if pending is None or self._state is not State.RETURN:
+            return
+        try:
+            ack = json.loads(message.data)
+            if ack.get('token') != pending[0] or ack.get('released') is not True:
+                return
+        except (ValueError, AttributeError):
+            return
+        if time.monotonic() > pending[2]:
+            self._check_handoff()
+            return
+        self._handoff_pending = None
+        self._send_return(pending[1])
+
+    def _check_handoff(self) -> None:
+        if self._handoff_pending is not None and time.monotonic() > self._handoff_pending[2]:
+            self._handoff_pending = None
+            self.get_logger().error('Navigation handoff timed out; RETURN goal was not sent')
+            self._apply_event(Event.ESTOP, source='navigation_handoff_timeout')
+
+    def _send_return(self, trigger: str) -> None:
         home_target = {
             "frame_id": str(self.get_parameter("home_frame").value),
             "x": float(self.get_parameter("home_x").value),

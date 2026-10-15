@@ -254,3 +254,15 @@ bash g3_integration_eval/scripts/run_sim_battery_auto_recharge.sh \
 `preview`、失败和同一 `attempt_id` 的重复事件均不会回充。回充只改变仿真
 电量，状态机仍保持 `RETURN`；下一轮任务需要人工发送 `standby`，再发送
 `explore`。
+
+## 与 DeepSeek 导航交接
+
+同时运行 DeepSeek 航点桥接时，G3 设置 `require_navigation_handoff:=true`，
+DeepSeek launch 设置 `require_mission_state:=true`。G3 低电量触发 RETURN 后先在
+`/navigation/handoff_request` 发布唯一 token；桥接取消自己的探索目标并等 action 终态，
+再在 `/navigation/handoff_ack` 回传 `{token, released: true}`。G3 收到匹配确认才发返航目标。
+旧确认、重复确认和离开 RETURN 后的确认均忽略；确认超过 5 秒进入 ESTOP，
+可用 `navigation_handoff_timeout_sec` 配置。该开关默认关闭，旧 frontier 客户端尚未实现此协议。
+
+仿真回归及 AMCL 配置生成入口见
+[DeepSeek 导航 README](../../external/go2_real_robot/qwen_robotnav/README.md#amcl-定位与-g3-返航交接)。

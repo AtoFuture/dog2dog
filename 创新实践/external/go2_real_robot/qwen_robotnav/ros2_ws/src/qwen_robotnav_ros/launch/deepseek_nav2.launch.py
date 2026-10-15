@@ -15,6 +15,7 @@ def generate_launch_description():
         'vllm_model': 'deepseek-flash',
         'use_sim_time': 'true',
         'nav_action': '/robot1/navigate_to_pose',
+        'require_mission_state': 'false',
         'tf_topic': '/robot1/tf',
         'tf_static_topic': '/robot1/tf_static',
     }
@@ -29,11 +30,13 @@ def generate_launch_description():
             'vllm_base_url': LaunchConfiguration('vllm_base_url'),
             'vllm_model': LaunchConfiguration('vllm_model'),
             'use_sim_time': clock,
+            'require_mission_state': ParameterValue(LaunchConfiguration('require_mission_state'), value_type=bool),
         }],
     ))
     ld.add_action(Node(
         package='qwen_robotnav_ros', executable='nav2_waypoint_bridge', output='screen',
-        parameters=[{'nav_action': LaunchConfiguration('nav_action'), 'use_sim_time': clock}],
+        parameters=[{'nav_action': LaunchConfiguration('nav_action'), 'use_sim_time': clock,
+                     'require_mission_state': ParameterValue(LaunchConfiguration('require_mission_state'), value_type=bool)}],
         remappings=[('/tf', LaunchConfiguration('tf_topic')),
                     ('/tf_static', LaunchConfiguration('tf_static_topic'))],
     ))

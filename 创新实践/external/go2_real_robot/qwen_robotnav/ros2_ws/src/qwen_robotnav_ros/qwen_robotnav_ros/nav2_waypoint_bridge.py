@@ -11,6 +11,7 @@ from geometry_msgs.msg import PoseArray
 from nav2_msgs.action import NavigateToPose
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, DurabilityPolicy
 from rclpy.clock import Clock, ClockType
 from rclpy.signals import SignalHandlerOptions
 from rclpy.time import Time
@@ -44,6 +45,7 @@ class Nav2WaypointBridge(Node):
         if not all(math.isfinite(v) and v > 0 for v in (self._input_timeout, self._goal_timeout)):
             raise ValueError('Timeouts must be finite and positive')
         self._allowed = not bool(self.get_parameter('require_mission_state').value)
+        self._handoff_token = None
         self._pending = None
         self._last_input = None
         self._attempt = None
@@ -55,7 +57,9 @@ class Nav2WaypointBridge(Node):
         self._events = self.create_publisher(String, '/deepseek/nav2_events', 10)
         self._goals = self.create_publisher(PoseStamped, '/deepseek/nav2_goal', 10)
         self.create_subscription(PoseArray, str(self.get_parameter('waypoint_topic').value), self._on_waypoints, 1)
-        self.create_subscription(String, '/mission_state', self._on_mission, 10)
+        self.create_subscription(String, '/mission_state', self._on_mission, QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self._handoff_ack = self.create_publisher(String, '/navigation/handoff_ack', 10)
+        self.create_subscription(String, '/navigation/handoff_request', self._on_handoff, 10)
         self._watchdog_clock = Clock(clock_type=ClockType.STEADY_TIME)
         self._timer = self.create_timer(0.2, self._tick, clock=self._watchdog_clock)
         self.get_logger().info('DeepSeek → Nav2 bridge ready; Nav2 owns planning and velocity control')
@@ -99,12 +103,26 @@ class Nav2WaypointBridge(Node):
         self._last_input = now
 
     def _on_mission(self, msg):
-        self._allowed = msg.data.strip().lower() == 'exploring'
+        self._allowed = msg.data.strip().lower() == 'exploring' and self._handoff_token is None
         if not self._allowed:
             self._pending = None
             self.cancel_navigation('mission:'+msg.data)
 
+    def _on_handoff(self, msg):
+        try:
+            token = json.loads(msg.data)['token']
+            if not isinstance(token, str) or not token or len(token) > 128:
+                raise ValueError('Invalid handoff token')
+        except (ValueError, KeyError, TypeError):
+            self._warn('Invalid navigation handoff request')
+            return
+        self._handoff_token = token
+        self.stop_navigation('mission_handoff')
+
     def _tick(self):
+        if self._handoff_token is not None and self._attempt is None:
+            self._handoff_ack.publish(String(data=json.dumps({'token': self._handoff_token, 'released': True})))
+            self._handoff_token = None
         now = time.monotonic()
         if self._attempt is not None:
             if now-self._attempt['started'] > self._goal_timeout:
