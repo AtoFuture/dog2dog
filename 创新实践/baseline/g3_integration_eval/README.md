@@ -262,7 +262,12 @@ DeepSeek launch 设置 `require_mission_state:=true`。G3 低电量触发 RETURN
 `/navigation/handoff_request` 发布唯一 token；桥接取消自己的探索目标并等 action 终态，
 再在 `/navigation/handoff_ack` 回传 `{token, released: true}`。G3 收到匹配确认才发返航目标。
 旧确认、重复确认和离开 RETURN 后的确认均忽略；确认超过 5 秒进入 ESTOP，
-可用 `navigation_handoff_timeout_sec` 配置。该开关默认关闭，旧 frontier 客户端尚未实现此协议。
+可用 `navigation_handoff_timeout_sec` 配置。该开关默认关闭；当前 G2 frontier 与 DeepSeek 桥接均支持此协议，运行时只能启用一个探索目标客户端。
 
 仿真回归及 AMCL 配置生成入口见
 [DeepSeek 导航 README](../../external/go2_real_robot/qwen_robotnav/README.md#amcl-定位与-g3-返航交接)。
+
+SLAM 的地图坐标原点/朝向可能不同于参考地图，覆盖率评测支持旋转坐标原点。
+固定三值 PGM 中的 205 必须保留为未知格；当前导出使用 free_thresh=0.196。
+仓库旧参考图的评测副本也会修正这一阈值，共享参考图和在线导航输入不变。
+从空地图运行到 rosbag 评测的入口见上述 DeepSeek 导航 README 的 SLAM/frontier 部分。

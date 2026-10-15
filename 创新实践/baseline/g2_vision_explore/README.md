@@ -78,3 +78,18 @@ Bridge 的具体边界、构建命令和离线测试见 [`go2_video_bridge/READM
 4. 评估 Foxy 真机运行与 Humble 开发环境之间的跨版本链路。
 
 G2 不修改 G1/G3、`vision_interfaces/*.msg` 或冻结的 topic、消息字段语义、QoS、TF 接口；本轮也不实现 LiDAR 代码。
+
+## 在线 SLAM 与返航联调（2026-10-15）
+
+`vision_explorer` 现已支持 `/navigation/handoff_request` / `handoff_ack`：
+取消探索目标后等 action 终态才释放导航权，接受延迟/旧结果不会清除新目标。
+TF 缺失或过期时不再用 `(0,0)` 代替，地图或任务状态不可用时不发新点。
+与 G3 联动设置 `require_mission_state:=true`，G3 设置 `require_navigation_handoff:=true`。
+
+`min_goal_distance_m` 为最小测地目标距离，物理节点默认 0.5 m；
+小于阈值的候选被过滤为暂不可选，不误报探索完成。
+实测从空地图完成 5 个 ≥0.75 m 的有效目标和 2 个短启动目标，再低电量返航；
+不代表已达到全场覆盖率或精确停靠要求。
+
+完整启动、地图、rosbag、图表与限制见
+[SLAM/frontier 验证报告](../../external/go2_real_robot/qwen_robotnav/docs/slam-frontier-validation.md)。

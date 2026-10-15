@@ -1,4 +1,4 @@
-"""Prepare isolated AMCL/Nav2 configuration without simulator-truth inputs.
+"""Prepare isolated AMCL or online SLAM / Nav2 without simulator-truth inputs.
 
 Run in ROS Humble. Pair with prepare_simulator_launch.py --single-odom-tf.
 The generated navigation output must go through the simulator velocity scaler.
@@ -21,6 +21,8 @@ def main():
     parser.add_argument('--initial-x', type=float, default=6.86)
     parser.add_argument('--initial-y', type=float, default=6.0)
     parser.add_argument('--initial-yaw', type=float, default=0.0)
+    parser.add_argument('--localization', choices=['amcl','slam'], default='amcl')
+    parser.add_argument('--slam-max-range',type=float,default=4.0)
     args = parser.parse_args()
     root = args.output_dir.resolve()
     if not str(root).isascii():
@@ -53,6 +55,25 @@ def main():
     official = official.replace(behavior, "remappings=remappings+[('cmd_vel','/deepseek/nav_cmd')]),")
     (root/'navigation.launch.py').write_text(official)
     map_file = args.sim_workspace/'src/navigation2/maps/warehouse_map.yaml'
+    if args.localization == 'slam':
+        slam = yaml.safe_load(Path('/opt/ros/humble/share/slam_toolbox/config/mapper_params_online_async.yaml').read_text())['slam_toolbox']['ros__parameters']
+        slam.update(use_sim_time=True, base_frame='base_link', odom_frame='odom', map_frame='map',
+                    scan_topic='/robot1/velodyne', mode='mapping', map_update_interval=1.0,
+                    min_laser_range=0.3, max_laser_range=args.slam_max_range,
+                    minimum_travel_distance=0.10, minimum_travel_heading=0.10,
+                    minimum_time_interval=0.2, enable_interactive_mode=False)
+        (root/'slam.yaml').write_text(yaml.safe_dump({'slam_toolbox':{'ros__parameters':slam}},sort_keys=False))
+        localization_nodes = """Node(package='slam_toolbox', executable='async_slam_toolbox_node', name='slam_toolbox', output='screen',
+             parameters=[yaml.safe_load(open(root+'/slam.yaml'))['slam_toolbox']['ros__parameters']],
+             remappings=[('/tf','/robot1/tf'),('/tf_static','/robot1/tf_static'),('/map','/robot1/map'),('/map_metadata','/robot1/map_metadata')]),"""
+    else:
+        localization_nodes = """Node(package='nav2_map_server', executable='map_server', name='map_server', output='screen',
+             parameters=[{'yaml_filename': MAP_FILE, 'use_sim_time': True}]),
+        Node(package='nav2_amcl', executable='amcl', name='amcl', output='screen',
+             parameters=[config['amcl']['ros__parameters']],
+             remappings=[('/tf','/robot1/tf'),('/tf_static','/robot1/tf_static')]),
+        Node(package='nav2_lifecycle_manager', executable='lifecycle_manager', name='lifecycle_manager_localization',
+             parameters=[{'use_sim_time': True, 'autostart': True, 'node_names': ['map_server','amcl']}]),""".replace('MAP_FILE',repr(str(map_file)))
     launch = '''import yaml
 from launch import LaunchDescription
 from launch.actions import GroupAction, IncludeLaunchDescription
@@ -65,20 +86,15 @@ def generate_launch_description():
     config = yaml.safe_load(open(root+'/nav2.yaml'))
     return LaunchDescription([GroupAction([
         PushRosNamespace('robot1'),
-        Node(package='nav2_map_server', executable='map_server', name='map_server', output='screen',
-             parameters=[{'yaml_filename': MAP_FILE, 'use_sim_time': True}]),
-        Node(package='nav2_amcl', executable='amcl', name='amcl', output='screen',
-             parameters=[config['amcl']['ros__parameters']],
-             remappings=[('/tf','/robot1/tf'),('/tf_static','/robot1/tf_static')]),
-        Node(package='nav2_lifecycle_manager', executable='lifecycle_manager', name='lifecycle_manager_localization',
-             parameters=[{'use_sim_time': True, 'autostart': True, 'node_names': ['map_server','amcl']}]),
+        LOCALIZATION_NODES
         IncludeLaunchDescription(PythonLaunchDescriptionSource(root+'/navigation.launch.py'),
              launch_arguments={'namespace':'robot1','params_file':root+'/nav2.yaml',
                                'use_sim_time':'true','autostart':'true','use_composition':'False'}.items()),
     ])])
-'''.replace('ROOT', repr(str(root))).replace('MAP_FILE', repr(str(map_file)))
-    (root/'amcl_navigation.launch.py').write_text(launch)
-    print(root/'amcl_navigation.launch.py')
+'''.replace('ROOT', repr(str(root))).replace('LOCALIZATION_NODES',localization_nodes)
+    target = root/(args.localization+'_navigation.launch.py')
+    target.write_text(launch)
+    print(target)
     print('Velocity output: /deepseek/nav_cmd; use cmd_vel_scaler before simulator cmd_vel.')
 
 

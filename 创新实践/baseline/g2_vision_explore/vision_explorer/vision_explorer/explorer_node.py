@@ -1,60 +1,15 @@
-"""G2 探索节点：frontier 选点 → 发 ``NavigateToPose``。
+"""G2 frontier 探索：消费在线 OccupancyGrid，选取自由空间目标，交给 Nav2 绕障。
 
-这是**交付物 2 的接线**。在此之前 ``g2_core`` 里的 exploration 部分
-（``grid`` / ``frontier`` / ``geodesic`` / ``explorer`` / ``state_machine``）
-一直只是**库 + 单测**，没有任何 ROS2 节点把它们串成一个跑得起来的组件。
-本文件补的就是这一块。
-
---------------------------------------------------------------------------------
-职责边界（项目的硬规矩）
-
-**只决定「去哪」，不碰「怎么走」。**
-
-    G2（本节点）                 G1（Nav2）
-    frontier / 信息增益  ──▶    路径规划 / 绕障 / costmap
-
-所以这里只做三件事：订阅地图、选点、把点发出去。路径怎么走一概不管。
-
---------------------------------------------------------------------------------
-两个已经拍板的设计，别自己发明（都在 docs/议题-*.md 里）
-
-**① ``SENDING`` 态的出口 —— 走方案乙（已实现）**
-
-``SENDING`` 混淆了「正在发出」和「刚决定要选点」两种情形，
-所以有三种结局必须写全，且互斥：
-
-    on_goal_sent()          目标落地了
-    send_failed()           发不出去（action server 不在等）
-    on_select_failed()      **没得发**（没选到点）
-
-漏掉第三种，状态机就卡在 ``SENDING`` 出不来。
-详见 ``docs/议题-SENDING态出口.md``。
-
-**② 返航抢占 —— 订阅 ``/mission_state``（G2 的建议方案 B，待全队拍板）**
-
-不能让 G2 靠 action 返回值去猜自己是不是被抢占了 ——
-实测（在 ``fake_goal_server`` 上）证明被抢占时客户端拿到的状态码
-与「正常完成」无法区分。所以由 G3 显式广播任务状态。
-详见 ``docs/议题-接口02返航抢占.md``。
-
-⚠️ **该接口状态是「待全队决定」**。本节点按建议实现了订阅，
-但**没有这条话题时不会报错** —— 收不到就一直当「可探索」，
-行为与接线前一致。所以拍了板也不会返工，只是多了个安全阀。
-
---------------------------------------------------------------------------------
-运行
-
-    ros2 run vision_explorer explorer_node --ros-args -p use_sim_time:=true
-
-自测（不需要 G1 / Nav2 / 真机）：
-
-    ros2 run vision_explorer fake_goal_server      # 假的 NavigateToPose 服务器
-    ros2 run vision_explorer explorer_node
+只在地图和 map→base_link TF 可用时选点。require_mission_state 可要求 G3
+显式允许探索；收到 RETURN 或交接 token 时取消自己的 action，等待真实终态后
+再确认导航权释放。未知任务状态停止发点，返航取消不记为 frontier 失败。
 """
 
 from __future__ import annotations
 
 import math
+import json
+from functools import partial
 import time
 
 import numpy as np
@@ -64,6 +19,8 @@ from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import OccupancyGrid
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from rclpy.clock import Clock, ClockType
+from rclpy.signals import SignalHandlerOptions
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                        ReliabilityPolicy)
 from std_msgs.msg import String
@@ -195,16 +152,19 @@ class VisionExplorer(Node):
         p = self._p()
 
         self._sm = ExplorerStateMachine()
-        # ⚠️ 选点参数目前用 ExplorerParams 的默认值。
-        # 要调参就先把它做成 yaml + ``--params-file``（14 个字段，
-        # 一个个 declare_parameter 不划算）。默认值是经过实测与审查的，先不动。
-        self._selector = GoalSelector(ExplorerParams())
+        # 安全与增益参数沿用内核默认值，物理目标的最小距离由 ROS 参数指定。
+        self._selector = GoalSelector(ExplorerParams(min_goal_distance_m=p['min_goal_distance_m']))
 
         self._grid: GridMap | None = None
         self._grid_stamp: float = -math.inf
         self._goal: Goal | None = None          # 在飞的那个目标
         self._goal_sent_at: float = -math.inf
-        self._mission_state: str = MISSION_EXPLORING
+        self._mission_state: str = 'standby' if p['require_mission_state'] else MISSION_EXPLORING
+        self._sm.on_mission_state(self._mission_state)
+        self._attempt = None
+        self._sequence = 0
+        self._handoff_token = None
+        self._stopped = False
 
         self._small_frontiers_count = 0
         self._no_candidate_count = 0
@@ -221,18 +181,19 @@ class VisionExplorer(Node):
         self.create_subscription(String, p["mission_state_topic"],
                                  self._on_mission_state, _MISSION_QOS)
 
-        self.create_timer(p["tick_period_s"], self._tick)
+        self._events = self.create_publisher(String, '/exploration/events', 10)
+        self._handoff_ack = self.create_publisher(String, '/navigation/handoff_ack', 10)
+        self.create_subscription(String, '/navigation/handoff_request', self._on_handoff, 10)
+        self._watchdog_clock = Clock(clock_type=ClockType.STEADY_TIME)
+        self._tick_timer = self.create_timer(p['tick_period_s'], self._tick, clock=self._watchdog_clock)
+        self._watchdog_timer = self.create_timer(0.1, self._watch_navigation, clock=self._watchdog_clock)
 
         self.get_logger().info(
             f"探索节点已起：map={p['map_topic']} "
             f"mission={p['mission_state_topic']} nav={p['nav_action']} "
             f"tick={p['tick_period_s']}s"
         )
-        if p["mission_state_topic"]:
-            self.get_logger().info(
-                "⚠️ /mission_state 是 G2 建议的接口（议题-接口02），"
-                "全队尚未拍板；收不到该话题时按「可探索」处理。"
-            )
+        self.get_logger().info('任务状态订阅已启用；RETURN 使用终态确认交接')
 
     # ------------------------------------------------------------------
     # 参数
@@ -247,6 +208,9 @@ class VisionExplorer(Node):
             ("robot_frame", "base_link"),
             ("map_frame", "map"),
             ("min_frontier_area_m2", 0.0),
+            ("require_mission_state", False),
+            ("map_timeout_s", 20.0),
+            ("min_goal_distance_m", 0.5),
             # 选点本身的参数由 ExplorerParams 声明（阈值、权重、TTL…）
         ])
 
@@ -254,7 +218,7 @@ class VisionExplorer(Node):
         return {n: self.get_parameter(n).value for n in (
             "map_topic", "mission_state_topic", "nav_action", "tick_period_s",
             "max_nav_timeout_s", "robot_frame", "map_frame",
-            "min_frontier_area_m2")}
+            "min_frontier_area_m2", "require_mission_state", "map_timeout_s", "min_goal_distance_m")}
 
     # ------------------------------------------------------------------
     # 订阅回调
@@ -284,12 +248,15 @@ class VisionExplorer(Node):
         把 costmap 当 OccupancyGrid 会得到一张语义全错的图，而且不报错。
         ``GridMap`` 的构造里有取值域校验，见 ``g2_core/grid.py``。
         """
+        if msg.header.frame_id != self._p()['map_frame']:
+            self.get_logger().warning('地图坐标系与 map_frame 不一致，丢弃')
+            return
         try:
             self._grid = occupancy_to_grid(msg)
         except Exception as exc:                       # noqa: BLE001
             self.get_logger().error(f"地图解析失败，丢弃这一帧：{exc}")
             return
-        self._grid_stamp = self._now()
+        self._grid_stamp = time.monotonic()
         if not self._frontier_threshold_adapted:
             self._adapt_frontier_threshold(self._grid.resolution)
             self._frontier_threshold_adapted = True
@@ -307,10 +274,14 @@ class VisionExplorer(Node):
         G2 不需要跟着改就能正确让出。
         反过来（未知当可探索）会在 G3 引入新状态时**静默地让 G2 继续抢道**。
         """
+        if self._stopped or (self._handoff_token is not None and msg.data == MISSION_EXPLORING):
+            return
         if msg.data != self._mission_state:
             self.get_logger().info(f"任务状态：{self._mission_state} → {msg.data}")
         self._mission_state = msg.data
         self._sm.on_mission_state(msg.data)
+        if not self._sm.should_explore:
+            self._cancel_goal(self._now(), reason="mission:"+msg.data)
 
     # ------------------------------------------------------------------
     # 控制循环
@@ -319,8 +290,9 @@ class VisionExplorer(Node):
         if not rclpy.ok():
             return
         now = self._now()
-        self._prune(now)
-
+        self._watch_navigation()
+        if self._stopped or self._attempt is not None or self._handoff_token is not None:
+            return
         cmd = self._sm.next_command()
         if cmd is Command.SEND_GOAL:
             self._select_and_send(now)
@@ -330,8 +302,14 @@ class VisionExplorer(Node):
 
     def _select_and_send(self, now: float) -> None:
         self._last_select_status = None
+        robot_xy = self._robot_xy()
+        if robot_xy is None or self._grid is None or time.monotonic()-self._grid_stamp > self._p()['map_timeout_s']:
+            self._sm.on_select_failed(False)
+            self._record_select_status(SelectStatus.NO_ROBOT_POSE if robot_xy is None else None)
+            self._track_select_failure()
+            return
         goal = select_and_report(
-            self._selector, self._sm, self._grid, self._robot_xy(), now,
+            self._selector, self._sm, self._grid, robot_xy, now,
             on_status=self._record_select_status)
         if goal is not None:
             self._send_goal(goal, now)
@@ -377,90 +355,135 @@ class VisionExplorer(Node):
                 self.get_logger().warning(f"状态机异常: {a}")
             self._last_anomaly_count = len(anomalies)
 
-    def _send_goal(self, goal: Goal, now: float) -> None:
-        if not self._nav.wait_for_server(timeout_sec=1.0):
-            self.get_logger().warn("NavigateToPose 服务器不在，放弃这次发点")
-            self._sm.send_failed()
-            return
+    def _event(self, status, attempt=None, **details):
+        payload = {'status': status, 'monotonic_time': time.monotonic(), **details}
+        if attempt is not None:
+            goal = attempt['goal']
+            payload.update(attempt_id=attempt['id'], target={'x':goal.x,'y':goal.y,'yaw':goal.yaw},
+                           gain=goal.gain, geodesic_dist_m=goal.geodesic_dist_m)
+        self._events.publish(String(data=json.dumps(payload)))
+        self.get_logger().info(json.dumps(payload))
 
+    def _send_goal(self, goal: Goal, now: float) -> None:
+        if not self._nav.server_is_ready():
+            self._sm.on_goal_result(False)
+            return
         msg = NavigateToPose.Goal()
-        msg.pose = PoseStamped()
-        msg.pose.header.frame_id = self._p()["map_frame"]
+        msg.pose.header.frame_id = self._p()['map_frame']
         msg.pose.header.stamp = self.get_clock().now().to_msg()
         msg.pose.pose.position.x = float(goal.x)
         msg.pose.pose.position.y = float(goal.y)
-        msg.pose.pose.position.z = 0.0
-        # GoalSelector 已经计算了抵达 frontier 后应朝向附近未知区域的 yaw。
-        # 这里必须把它传给 Nav2；G2 只决定目标位姿，G1 仍负责路径规划与绕障。
         qx, qy, qz, qw = yaw_to_quaternion(goal.yaw)
-        msg.pose.pose.orientation.x = qx
-        msg.pose.pose.orientation.y = qy
-        msg.pose.pose.orientation.z = qz
-        msg.pose.pose.orientation.w = qw
+        msg.pose.pose.orientation.x, msg.pose.pose.orientation.y = qx, qy
+        msg.pose.pose.orientation.z, msg.pose.pose.orientation.w = qz, qw
+        self._sequence += 1
+        attempt = {'id':self._sequence,'goal':goal,'handle':None,'cancel':False,
+                   'cancel_sent':False,'started':time.monotonic(),'reason':None}
+        self._attempt = attempt
+        self._goal, self._goal_handle, self._goal_sent_at = goal, None, now
+        self._event('sending', attempt)
+        try:
+            self._nav.send_goal_async(msg).add_done_callback(partial(self._on_goal_accepted, attempt))
+        except Exception as exc:
+            self._finish_attempt(attempt, 'send_error', error=str(exc))
 
-        self._goal = goal
-        self._goal_sent_at = now
-        self._goal_handle = None
-        fut = self._nav.send_goal_async(msg)
-        fut.add_done_callback(self._on_goal_accepted)
-        self.get_logger().info(
-            f"发出探索目标 ({goal.x:.2f}, {goal.y:.2f})  "
-            f"yaw={goal.yaw:.3f} [{self._sm.phase.value}]"
-        )
-
-    def _on_goal_accepted(self, future) -> None:
-        handle = future.result()
-        if handle is None or not handle.accepted:
-            self.get_logger().warn("目标被拒绝")
-            self._goal = None
-            self._sm.send_failed()
+    def _on_goal_accepted(self, attempt, future) -> None:
+        try:
+            handle = future.result()
+        except Exception as exc:
+            self._finish_attempt(attempt, 'send_error', error=str(exc))
             return
-        self._goal_handle = handle
-        handle.get_result_async().add_done_callback(self._on_goal_done)
+        if handle is None or not handle.accepted:
+            self._finish_attempt(attempt, 'rejected')
+            return
+        attempt['handle'] = handle
+        if self._attempt is attempt:
+            self._goal_handle = handle
+        self._event('accepted', attempt)
+        try:
+            handle.get_result_async().add_done_callback(partial(self._on_goal_done, attempt))
+        except Exception as exc:
+            # Without a terminal result, navigation ownership cannot be released.
+            self._event('result_error', attempt, error=str(exc))
+            attempt['cancel'] = True
+        if attempt['cancel'] or self._attempt is not attempt:
+            self._cancel_handle(attempt)
 
-    def _on_goal_done(self, future) -> None:
-        now = self._now()
+    def _on_goal_done(self, attempt, future) -> None:
         try:
             status = future.result().status
-        except Exception as exc:                       # noqa: BLE001
-            self.get_logger().error(f"取目标结果失败：{exc}")
-            self._sm.on_goal_cancelled()
+        except Exception as exc:
+            self._event('result_error', attempt, error=str(exc))
+            attempt['cancel'] = True
+            self._cancel_handle(attempt)
             return
+        self._finish_attempt(attempt, {4:'succeeded',5:'canceled',6:'aborted'}.get(status,'unknown'))
 
-        success = status == 4                          # STATUS_SUCCEEDED
-        self.get_logger().info(f"探索目标结束：status={status}")
-        if self._goal is not None:
-            self._selector.on_result(self._goal, success, now)
+    def _finish_attempt(self, attempt, status, **details):
+        self._event(status, attempt, **details)
+        if self._attempt is not attempt:
+            return
+        success = status == 'succeeded'
+        if not attempt['cancel'] or attempt['reason'] == 'timeout':
+            self._selector.on_result(attempt['goal'], success, self._now())
             if success:
-                self._selector.mark_visited(self._goal.x, self._goal.y, now)
-        self._goal = None
-        self._goal_handle = None
+                self._selector.mark_visited(attempt['goal'].x,attempt['goal'].y,self._now())
+        self._attempt = self._goal = self._goal_handle = None
         self._sm.on_goal_result(success)
 
-    def _cancel_goal(self, now: float) -> None:
-        if self._goal_handle is not None:
-            self._goal_handle.cancel_goal_async()
-        # ⚠️ 这里**立刻**回报 on_goal_cancelled()，不等 cancel 的回执。
-        # 理由：状态机需要马上离开 NAVIGATING 才能响应抢占，
-        # 而 cancel 的回执可能很晚甚至不来（action 层不保证）。
-        self._goal = None
-        self._goal_handle = None
-        self._sm.on_goal_cancelled()
-        self.get_logger().info("已取消在飞目标（让出导航权）")
-
-    def _prune(self, now: float) -> None:
-        """在飞目标超时 → 交给状态机处理。"""
-        if self._sm.phase is not Phase.NAVIGATING:
+    def _cancel_handle(self, attempt):
+        if attempt['cancel_sent'] or attempt['handle'] is None:
             return
-        p = self._p()
-        if now - self._goal_sent_at > p["max_nav_timeout_s"]:
-            self.get_logger().warn(
-                f"目标超时（>{p['max_nav_timeout_s']}s），收回")
-            if self._goal_handle is not None:
-                self._goal_handle.cancel_goal_async()
-            self._goal = None
-            self._goal_handle = None
-            self._sm.on_nav_timeout()
+        attempt['cancel_sent'] = True
+        try:
+            attempt['handle'].cancel_goal_async().add_done_callback(partial(self._on_cancel, attempt))
+        except Exception as exc:
+            self._event('cancel_error', attempt, error=str(exc))
+
+    def _on_cancel(self, attempt, future):
+        try:
+            status = 'cancel_accepted' if future.result().goals_canceling else 'cancel_rejected'
+            self._event(status, attempt)
+        except Exception as exc:
+            self._event('cancel_error', attempt, error=str(exc))
+
+    def _cancel_goal(self, now=None, reason='mission') -> None:
+        attempt = self._attempt
+        if attempt is None or attempt['cancel']:
+            return
+        attempt['cancel'], attempt['reason'] = True, reason
+        self._event('cancel_requested', attempt, reason=reason)
+        self._cancel_handle(attempt)
+
+    def _on_handoff(self, msg):
+        try:
+            token = json.loads(msg.data)['token']
+            if not isinstance(token,str) or not token or len(token)>128:
+                return
+        except (ValueError,KeyError,TypeError):
+            return
+        self._handoff_token = token
+        self._mission_state = 'returning'
+        self._sm.on_mission_state('returning')
+        self._cancel_goal(reason='handoff')
+
+    def _watch_navigation(self):
+        attempt = self._attempt
+        if attempt is not None:
+            if time.monotonic()-attempt['started'] > self._p()['max_nav_timeout_s']:
+                self._cancel_goal(reason='timeout')
+            elif not self._sm.should_explore:
+                self._cancel_goal(reason='mission:'+self._mission_state)
+        elif self._handoff_token is not None:
+            token = self._handoff_token
+            self._handoff_ack.publish(String(data=json.dumps({'token':token,'released':True})))
+            self._event('handoff_released', token=token)
+            self._handoff_token = None
+
+    def stop_navigation(self):
+        self._stopped = True
+        self._sm.on_mission_state('standby')
+        self._cancel_goal(reason='shutdown')
 
     # ------------------------------------------------------------------
     # 杂项
@@ -468,37 +491,39 @@ class VisionExplorer(Node):
     def _now(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
 
-    def _robot_xy(self) -> tuple[float, float]:
-        """机器人在 ``map`` 系下的位置。
-
-        TF 拿不到时退回 ``(0, 0)`` —— 这是**刻意的退化**：
-        位姿不准只会让选点次优，而抛异常会让整个节点停摆。
-        契约上 ``map → base_link`` 是 G1 的交付物（接口 01），
-        拿不到时的责任不在 G2，但 G2 不该因此停摆。
-        """
+    def _robot_xy(self) -> tuple[float, float] | None:
+        """Fail closed if map-frame TF is missing or stale; never invent a pose."""
         p = self._p()
         try:
             from rclpy.time import Time
             from tf2_ros import Buffer, TransformListener
-            if not hasattr(self, "_tf"):
+            if not hasattr(self, '_tf'):
                 self._tf = Buffer()
                 self._tf_listener = TransformListener(self._tf, self)
-            tr = self._tf.lookup_transform(p["map_frame"], p["robot_frame"],
-                                           Time())
+            tr = self._tf.lookup_transform(p['map_frame'],p['robot_frame'],Time())
+            age = (self.get_clock().now()-Time.from_msg(tr.header.stamp)).nanoseconds*1e-9
+            if age > 1.0:
+                return None
             t = tr.transform.translation
-            return float(t.x), float(t.y)
-        except Exception:                              # noqa: BLE001
-            return 0.0, 0.0
+            if not (math.isfinite(t.x) and math.isfinite(t.y)):
+                return None
+            return float(t.x),float(t.y)
+        except Exception:
+            return None
 
 
 def main(args=None) -> None:
-    rclpy.init(args=args)
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
     node = VisionExplorer()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
+        node.stop_navigation()
+        deadline = time.monotonic()+2
+        while rclpy.ok() and node._attempt is not None and time.monotonic()<deadline:
+            rclpy.spin_once(node,timeout_sec=0.1)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

@@ -696,3 +696,17 @@ def test_world_grid_roundtrip_with_asymmetric_coordinates():
         row, col = grid.world_to_grid(wx, wy)
         bx, by = grid.grid_to_world(row - 0.5, col - 0.5)   # 回到格的外角
         assert (bx, by) == pytest.approx((wx, wy), abs=1e-9)
+
+
+def test_minimum_goal_distance_filters_trivial_frontier_targets():
+    selector=GoalSelector(ExplorerParams(min_goal_distance_m=2.5))
+    goal=must_pick(selector,room_map())
+    assert goal.geodesic_dist_m>=2.5
+    selector.params.min_goal_distance_m=20.0
+    assert pick_status(selector,room_map()) is SelectStatus.NO_CANDIDATE
+
+
+@pytest.mark.parametrize('distance',[-1,float('nan'),float('inf')])
+def test_invalid_minimum_goal_distance_is_rejected(distance):
+    with pytest.raises(ValueError,match='min_goal_distance_m'):
+        GoalSelector(ExplorerParams(min_goal_distance_m=distance)).select(room_map(),ROOM_CENTRE_XY,0)

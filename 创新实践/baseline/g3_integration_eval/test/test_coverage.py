@@ -178,7 +178,7 @@ def test_resolution_mismatch_is_rejected(tmp_path):
         (0.0, 0.1),
     ],
 )
-def test_rotated_map_is_rejected(
+def test_small_map_rotations_preserve_observed_cell_center(
     tmp_path,
     reference_yaw,
     slam_yaw,
@@ -201,8 +201,7 @@ def test_rotated_map_is_rejected(
         origin=(0.0, 0.0, slam_yaw),
     )
 
-    with pytest.raises(ValueError, match="rotated"):
-        calculate_coverage(reference, slam)
+    assert calculate_coverage(reference, slam).coverage == pytest.approx(1.0)
 
 
 def test_missing_yaml_is_rejected(tmp_path):
@@ -253,3 +252,22 @@ def test_reference_without_free_cells_is_rejected(tmp_path):
         match="contains no free cells",
     ):
         calculate_coverage(reference, slam)
+
+
+def test_rotated_slam_map_uses_inverse_rotation_and_pgm_row_order(tmp_path):
+    import math
+    reference=write_map(tmp_path,'reference',2,1,[254,254],resolution=1)
+    slam=write_map(tmp_path,'slam',1,2,[205,254],resolution=1,origin=(2,0,math.pi/2))
+    result=calculate_coverage(reference,slam)
+    assert result.coverage==pytest.approx(.5)
+    assert result.observed_as_free==1
+    assert result.outside_slam_canvas==0
+
+
+def test_rotated_reference_map_uses_forward_rotation(tmp_path):
+    import math
+    reference=write_map(tmp_path,'reference',1,2,[254,254],resolution=1,origin=(1,0,math.pi/2))
+    slam=write_map(tmp_path,'slam',2,1,[254,205],resolution=1,origin=(-1,0,0))
+    result=calculate_coverage(reference,slam)
+    assert result.coverage==pytest.approx(.5)
+    assert result.outside_slam_canvas==0

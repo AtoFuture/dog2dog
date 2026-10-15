@@ -176,14 +176,10 @@ def calculate_coverage(
             "reference and SLAM map resolutions differ"
         )
 
-    if (
-        abs(reference.origin_yaw) > 1e-9
-        or abs(slam.origin_yaw) > 1e-9
-    ):
-        raise ValueError(
-            "rotated map origins are not supported"
-        )
-
+    # Online SLAM maps have their own origin and heading. Transform cell centers
+    # through world coordinates; map rotation must not be discarded for coverage.
+    rc, rs = math.cos(reference.origin_yaw), math.sin(reference.origin_yaw)
+    sc, ss = math.cos(slam.origin_yaw), math.sin(slam.origin_yaw)
     resolution = reference.resolution
 
     reference_free = 0
@@ -213,23 +209,13 @@ def calculate_coverage(
                 reference.height - 1 - reference_row
             )
 
-            world_x = (
-                reference.origin_x
-                + (reference_col + 0.5) * resolution
-            )
-
-            world_y = (
-                reference.origin_y
-                + (reference_grid_y + 0.5) * resolution
-            )
-
-            slam_col = math.floor(
-                (world_x - slam.origin_x) / resolution
-            )
-
-            slam_grid_y = math.floor(
-                (world_y - slam.origin_y) / resolution
-            )
+            local_x = (reference_col + 0.5) * resolution
+            local_y = (reference_grid_y + 0.5) * resolution
+            world_x = reference.origin_x + rc*local_x - rs*local_y
+            world_y = reference.origin_y + rs*local_x + rc*local_y
+            dx, dy = world_x-slam.origin_x, world_y-slam.origin_y
+            slam_col = math.floor((sc*dx+ss*dy) / slam.resolution)
+            slam_grid_y = math.floor((-ss*dx+sc*dy) / slam.resolution)
 
             if (
                 slam_col < 0

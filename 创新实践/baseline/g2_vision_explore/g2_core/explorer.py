@@ -158,6 +158,9 @@ class ExplorerParams:
     该值应写进接口契约作为冻结参数。Go2 机身约 70x31 cm，0.45 是偏保守的起步值。
     """
 
+    min_goal_distance_m: float = 0.0
+    """最小测地目标距离；物理节点默认过滤原地即可成功的近点。"""
+
     # --- frontier ---
     min_frontier_area_m2: float = 0.25
     merge_within_cells: int = 0
@@ -267,6 +270,8 @@ class GoalSelector:
         所以直接抛。
         """
         p = self.params
+        if not math.isfinite(p.min_goal_distance_m) or p.min_goal_distance_m < 0:
+            raise ValueError("min_goal_distance_m must be finite and non-negative")
         if p.goal_pullback_m < p.safety_radius_m:
             raise ValueError(
                 f"goal_pullback_m ({p.goal_pullback_m}) 必须 >= safety_radius_m "
@@ -485,7 +490,8 @@ class GoalSelector:
             if pullback_cells > 0:
                 cell_mask = cv2.dilate(cell_mask, kernel)
 
-            candidates = np.argwhere((cell_mask > 0) & valid_goal & (dist >= 0))
+            candidates = np.argwhere((cell_mask > 0) & valid_goal & (dist >= 0)
+                                     & (dist * grid.resolution >= p.min_goal_distance_m))
             candidates = self._filter_blacklisted(grid, candidates)
             if candidates.size == 0:
                 continue

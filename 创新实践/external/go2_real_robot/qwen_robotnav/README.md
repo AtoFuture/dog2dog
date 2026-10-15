@@ -101,7 +101,7 @@ python3 scripts/prepare_amcl_navigation.py --output-dir /tmp/deepseek_amcl
 `require_navigation_handoff:=true`。低电量先广播 `returning` 并发送唯一交接 token；
 DeepSeek 桥接清空排队目标，等待其 action 到达终态后确认释放。G3 只接受匹配 token，
 再发送返航目标；5 秒无确认进入 ESTOP。这样避免取消探索目标时误伤刚接受的返航目标。
-当前交接确认端是 DeepSeek 桥接器，不能直接用于未实现该协议的旧 frontier 客户端。
+DeepSeek 桥接器与当前 G2 frontier 客户端均实现该交接协议；运行时只启用一个探索目标客户端。
 
 完整的隔离回归入口会自行启动 Nav2、DeepSeek 和 G3，只需预先启动生成的仿真：
 
@@ -121,6 +121,39 @@ python3 scripts/validate_amcl_navigation.py \
 紧急保护干预 0 次。探索目标真值误差 **0.299 / 0.305 / 0.422 m**；
 本轮通过标准为探索 action 成功、返航 action 成功且真值距基站 ≤0.4 m，不能视为精确停靠验收。
 详见 [验证报告](docs/amcl-navigation-validation.md)。
+
+
+## 从空地图运行 SLAM / frontier / 返航
+
+当前仿真环境可用一个入口完成配置生成、隔离仿真、在线建图、G2 选点、Nav2 避障、
+G3 模拟低电量返航、地图导出、rosbag 记录、离线报告、图表及进程清理：
+
+```bash
+./scripts/run_slam_frontier.sh /tmp/slam_frontier_run 5
+# 仅准备配置，不启动仿真：
+./scripts/run_slam_frontier.sh /tmp/slam_frontier_prepared 5 --prepare-only
+```
+
+入口复用本机已配置的 `~/.enroot/ros`、`~/.enroot/ros-gui` 与 Go2 仿真工作区。
+默认 ROS domain 192、独立 Gazebo partition；检测到该域已有节点会拒绝启动。
+可通过 `SLAM_ROS_DOMAIN_ID`、`SLAM_IGN_PARTITION`、`G1_SIM_WORKSPACE`、
+`G1_ROS_WRAPPER`、`G1_GPU_WRAPPER` 指定现有环境。输出目录不能已有 bag，使用 ASCII 路径。
+不启动真机 SDK，也不修改共享仿真文件。
+
+SLAM 模式不加载静态地图或 AMCL，`map→odom` 仅由 slam_toolbox 发布。
+需要分别启动时，配置生成器使用 `--localization slam`；基站点取 SLAM 启动时的机器人位姿。
+G2 在 TF 缺失/过期、地图过期、任务状态不允许时不发新点，等待取消终态后才确认返航交接。
+物理节点过滤测地距离小于 0.5 m 的原地点；回归只把 ≥0.75 m 的到点计入有效目标数，
+短启动点单列，以适应货架遮挡下的初始小地图。
+
+这一阶段的目标来源是 **G2 确定性 frontier**，DeepSeek 视觉航点节点保持停用以维持单一导航权。
+它验证 SLAM/frontier/G3 基础闭环，不代表 DeepSeek 已参与 frontier 排序或目标检出已验收。
+
+2026-10-15 实测：5 个有效目标 + 2 个启动点，低电量返航误差 0.263 m，
+在线已知面积从 3.73 m² 增至 132.62 m²；离线参考自由区域覆盖率 **30.72%**。
+最差探索目标真值误差 0.658 m，尚非精确到点验收或全场覆盖完成。
+一键入口另以 1 个有效目标跑通，返航误差 0.254 m，已自动停止仿真。
+详见 [SLAM/frontier 验证报告](docs/slam-frontier-validation.md)。
 
 
 ## 环境信息
