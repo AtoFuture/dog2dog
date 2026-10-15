@@ -394,6 +394,7 @@ def project_depth_bbox(
     max_dispersion_m: float = 3.0,
     anchor: str = "center",
     mask_margin_px: int = 0,
+    mask_depth_cluster_gap_m: float = 0.,
 ) -> ProjectionResult | None:
     """用深度图把一个检测框解算成相机系三维点。
 
@@ -410,6 +411,11 @@ def project_depth_bbox(
         （``yolo26*-seg.pt`` 是 COCO 预训练权重，零训练成本。）
     mask_margin_px : int
         内缩分割掩膜的边缘像素，避免轮廓外的背景深度混入；太细目标会被丢弃。
+    mask_depth_cluster_gap_m : float
+        默认 0，保持严格全掩膜质量检查。正值仅对实例分割掩膜启用深度分组：
+        相邻有序深度差超过该值则断开，仅保留占有效像素至少 80% 的主簇。
+        有效深度须覆盖至少 60% 掩膜，否则拒绝；无掩膜不能启用此降噪。
+        主簇仍经过原离散度门槛，且使用对应的原始像素反投影。
     min_valid_pixels : int
         有效深度像素少于此值则丢弃该检测（目标被严重遮挡时深度不可信）。
     max_dispersion_m : float
@@ -502,6 +508,20 @@ def project_depth_bbox(
 
     rows, cols = np.nonzero(valid)
     z = sub[rows, cols].astype(np.float64)
+    if not math.isfinite(mask_depth_cluster_gap_m) or mask_depth_cluster_gap_m < 0:
+        raise ValueError('mask_depth_cluster_gap_m must be finite and non-negative')
+    if mask_depth_cluster_gap_m > 0:
+        if mask is None:
+            raise ValueError('Depth cluster sampling requires an instance mask')
+        mask_pixels=int(mask[y1:y2,x1:x2].astype(bool).sum())
+        if len(z) < .6*mask_pixels:return None
+        order=np.argsort(z)
+        boundaries=np.flatnonzero(np.diff(z[order])>mask_depth_cluster_gap_m)+1
+        clusters=np.split(order,boundaries)
+        selected=max(clusters,key=len)
+        if len(selected)<max(min_valid_pixels,.8*len(z)):return None
+        rows=rows[selected];cols=cols[selected];z=z[selected]
+
 
     # 整块像素一起反投影，而不是「深度取分位数 + 坐标取框中心」
     u = cols + x1
@@ -546,7 +566,7 @@ def project_depth_bbox(
 
     return ProjectionResult(
         point=center.astype(np.float64),
-        valid_pixels=int(valid.sum()),
+        valid_pixels=len(z),
         dispersion=dispersion,
         spread_per_axis=(q75 - q25).astype(np.float64),
     )

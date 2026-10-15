@@ -126,12 +126,13 @@ def main():
     parser.add_argument('--mission-brain',action='store_true')
     parser.add_argument('--perception',action='store_true')
     parser.add_argument('--recon-task',action='store_true')
+    parser.add_argument('--required-person-count',type=int,default=1)
     parser.add_argument('--goals',type=int,default=5)
     parser.add_argument('--exploration-timeout',type=float,default=600)
     args=parser.parse_args()
     if args.expected_domain in (0,42,43) or int(os.environ.get('ROS_DOMAIN_ID','0'))!=args.expected_domain:
         parser.error('Use a matching isolated simulator ROS domain')
-    if not os.environ.get('IGN_PARTITION') or args.goals<1:
+    if not os.environ.get('IGN_PARTITION') or args.goals<1 or args.required_person_count<1:
         parser.error('Set IGN_PARTITION and a positive --goals')
     if args.recon_task and not args.perception:parser.error('--recon-task requires --perception')
     root=args.output_dir.resolve();project=Path(__file__).resolve().parents[4]
@@ -139,11 +140,16 @@ def main():
         parser.error('Generate --localization slam into --output-dir first')
     rclpy.init(args=['--ros-args','-p','use_sim_time:=true','-p','require_mission_state:=true',
         '-p','require_navigation_handoff:=true','-p','enable_navigation_transmission:=true',
-        '-p','recon_output_dir:='+str(root),'-p','minimum_exploration_goals:='+str(args.goals),
+        '-p','required_person_count:='+str(args.required_person_count),'-p','recon_output_dir:='+str(root),'-p','minimum_exploration_goals:='+str(args.goals),
         '-p','battery_topic:=/frontier_trial/battery','-p','map_topic:=/robot1/map',
         '-p','use_mission_brain:='+str(args.mission_brain).lower(),
         '-p','nav_action:=/robot1/navigate_to_pose','-p','tick_period_s:=0.75','-p','min_goal_distance_m:=0.5',
         '-r','/tf:=/robot1/tf','-r','/tf_static:=/robot1/tf_static'],signal_handler_options=SignalHandlerOptions.NO)
+    # Background shells can inherit SIGINT=SIG_IGN. Restore graceful shutdown so
+    # interruption still reaches finally and finalizes the recorder.
+    signal.signal(signal.SIGINT,signal.default_int_handler)
+    def interrupted(signum, frame):raise KeyboardInterrupt('Validation interrupted')
+    signal.signal(signal.SIGTERM,interrupted)
     monitor=Monitor();g3=G3StateMachineNode();explorer=None;brain=None;recon=None
     executor=SingleThreadedExecutor();executor.add_node(monitor);executor.add_node(g3)
     children=[];logs=[];report={};baseline=None;home=None;anchor=None;recorder=None
@@ -173,7 +179,7 @@ def main():
             '/world/world_demo/pose/info@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
             '--ros-args','-r','__node:=frontier_truth_evaluation',
             '-r','/world/world_demo/pose/info:=/frontier_trial/gt_pose'],'gt_bridge.log')
-        if not spin_until(lambda:monitor.poses and .18<monitor.poses[-1][3]<.35 and time.monotonic()-monitor.scan_at<1,75):
+        if not spin_until(lambda:monitor.poses and .18<monitor.poses[-1][3]<.35 and time.monotonic()-monitor.scan_at<1,150):
             raise RuntimeError('Simulator sensors or standing posture unavailable')
         recorder=start(['ros2','bag','record','--include-hidden-topics','-o',str(root/'bag'),'/clock','/robot1/map','/robot1/tf','/robot1/tf_static',
                '/robot1/velodyne','/robot1/odometry/filtered','/robot1/cmd_vel','/deepseek/nav_cmd','/robot1/cmd_vel_nav','/frontier_trial/scaled_cmd','/exploration/events',
@@ -217,12 +223,18 @@ def main():
                 '-p','depth_topic:=/robot1/rgbd_d435/depth_image',
                 '-p','camera_info_topic:=/robot1/rgbd_d435/camera_info',
                 '-p','weights:='+str(project/'baseline/g2_vision_explore'/('yolo26n-seg.pt' if args.recon_task else 'yolo26n.pt')),
+                '-p','mask_depth_cluster_gap_m:='+('0.35' if args.recon_task else '0.0'),
                 '-p','tf_fallback_to_latest:=false',
                 '-r','/tf:=/robot1/tf','-r','/tf_static:=/robot1/tf_static'],'detector.log')
         started=time.monotonic()
         if args.recon_task:
             monitor.battery();monitor.command_pub.publish(String(data='EXPLORE'))
-            spin_until(lambda:bool(recon.targets),30)
+            initial_view_start=monitor.get_clock().now().nanoseconds
+            spin_until(recon.objective_confirmed,30)
+            (root/'recon_initial_view.json').write_text(json.dumps(dict(
+                start_stamp_ns=initial_view_start,end_stamp_ns=monitor.get_clock().now().nanoseconds,
+                motion_enabled=False,targets=recon.targets,required_person_count=args.required_person_count,
+                objective_confirmed=recon.objective_confirmed()),indent=2))
         explorer=VisionExplorer();executor.add_node(explorer)
         monitor.running=True;monitor.battery()
         if not args.recon_task:monitor.command_pub.publish(String(data='EXPLORE'))
@@ -234,7 +246,10 @@ def main():
                 if recon.state in ('failed','interrupted'):raise RuntimeError('Recon task '+recon.state)
                 return recon.return_requested
             return sum(e['status']=='succeeded' and e['geodesic_dist_m']>=.75 for e in monitor.events)>=args.goals
-        if not spin_until(explored,args.exploration_timeout):raise RuntimeError('Insufficient successful frontier goals before deadline')
+        if not spin_until(explored,args.exploration_timeout):
+            raise RuntimeError((f'Recon deadline: targets_confirmed={recon.objective_confirmed()}, '
+                                f'exploration_goals={len(recon.completed_goals)}/{args.goals}')
+                               if args.recon_task else 'Insufficient successful frontier goals before deadline')
         # Exercise an active/late-accepted frontier cancellation at low-battery handoff.
         if not args.recon_task:
             spin_until(lambda:explorer._attempt is not None or explorer._brain_pending is not None,3)
@@ -296,7 +311,7 @@ def main():
             report['world_map_yaw_offset']=anchor
         if args.mission_brain and not any(e['status']=='brain_selected' and not e['fallback'] for e in monitor.events):
             report['success']=False
-            report['error']='No real DeepSeek decision reached navigation'
+            report.setdefault('error','No real DeepSeek decision reached navigation')
         if baseline is not None and monitor.poses:
             report.setdefault('truth_home_error_m',math.hypot(monitor.poses[-1][1]-baseline[1],monitor.poses[-1][2]-baseline[2]))
         report['recording_complete']=(root/'bag/metadata.yaml').is_file()
@@ -312,7 +327,7 @@ def main():
         report['perception_status']=monitor.perception[-1] if monitor.perception else None
         if args.perception and not (monitor.perception and monitor.perception[-1]['stats']['frames']>0 and monitor.perception[-1]['map_tf_available']):
             report['success']=False
-            report['error']='Perception frames or image-time map TF unavailable'
+            report.setdefault('error','Perception frames or image-time map TF unavailable')
         if (root/'detections/evidence.json').exists():
             report['detection_evidence']=json.loads((root/'detections/evidence.json').read_text())
         report.update(saved_map_yaml=(root/'slam_map.yaml').exists(),goal_source='DeepSeek-ranked G2 safe frontiers' if args.mission_brain else 'G2 deterministic frontier',

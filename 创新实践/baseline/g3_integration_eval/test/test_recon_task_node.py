@@ -45,3 +45,11 @@ def test_external_battery_return_is_not_reported_as_objective_completion():
     node._mission(SimpleNamespace(data='returning'))
     node._return_event(message(status='succeeded',attempt_id='battery'))
     assert node.state=='interrupted' and not node.commands
+
+
+def test_two_person_objective_does_not_return_after_only_one():
+    node=node_fixture();node.required_person_count=2;node.completed_goals={1}
+    node.targets={'person':{'class_name':'person'}}
+    node._maybe_return();assert not node.commands
+    node.targets['person:2']={'class_name':'person'}
+    node._maybe_return();assert node.commands==['RETURN']

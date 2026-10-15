@@ -6,7 +6,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy
 from std_msgs.msg import String
-from g3_integration_eval.recon_task import confirmed_targets
+from g3_integration_eval.recon_task import confirmed_instances
 
 
 class ReconTaskNode(Node):
@@ -14,11 +14,13 @@ class ReconTaskNode(Node):
         super().__init__('recon_task')
         self.declare_parameter('required_classes',['person'])
         self.declare_parameter('minimum_exploration_goals',1)
+        self.declare_parameter('required_person_count',1)
         self.declare_parameter('recon_output_dir','')
         self.required = list(self.get_parameter('required_classes').value)
+        self.required_person_count=int(self.get_parameter('required_person_count').value)
         self.minimum_goals = int(self.get_parameter('minimum_exploration_goals').value)
         directory = self.get_parameter('recon_output_dir').value
-        if not directory or not self.required or self.minimum_goals < 0:
+        if not directory or not self.required or self.minimum_goals < 0 or self.required_person_count < 1:
             raise ValueError('Set recon_output_dir, required classes and non-negative exploration goal count')
         self.directory=Path(directory);self.directory.mkdir(parents=True,exist_ok=True)
         if (self.directory/'mission_report.json').exists():
@@ -36,8 +38,9 @@ class ReconTaskNode(Node):
         self._save()
 
     def _save(self):
-        report=dict(state=self.state,objective='find declared classes with two tracked JPEG observations, then return',
-            required_classes=self.required,minimum_exploration_goals=self.minimum_goals,
+        report=dict(state=self.state,objective='confirm declared counts of stationary targets with two tracked JPEG observations per instance, then return',
+            required_classes=self.required,required_counts={c:self.required_person_count if c=='person' else 1 for c in self.required},
+            identity_policy='stationary targets; merge track IDs within 0.8 m XY; closer people unresolved',minimum_exploration_goals=self.minimum_goals,
             completed_exploration_goals=len(self.completed_goals),targets=self.targets,
             return_requested=self.return_requested,return_attempt_id=self.return_attempt,
             success=self.state=='returned',history=self.history)
@@ -61,7 +64,7 @@ class ReconTaskNode(Node):
     def _evidence(self,msg):
         if self.started_stamp is None or self.return_requested or self.state!='searching':return
         try:
-            self.targets=confirmed_targets(json.loads(msg.data),self.required,min_stamp_ns=self.started_stamp)
+            self.targets=confirmed_instances(json.loads(msg.data),self.required,min_stamp_ns=self.started_stamp)
         except (ValueError,TypeError,AttributeError):return
         self._maybe_return()
 
@@ -74,9 +77,13 @@ class ReconTaskNode(Node):
         except (KeyError,TypeError,ValueError):return
         self._maybe_return()
 
+    def objective_confirmed(self):
+        return all(sum(t.get('class_name',key.split(':')[0])==c for key,t in self.targets.items())
+                   >= (getattr(self,'required_person_count',1) if c=='person' else 1) for c in self.required)
+
     def _maybe_return(self):
         if (not self.return_requested and self.mission=='exploring'
-            and set(self.required)<=set(self.targets) and len(self.completed_goals)>=self.minimum_goals):
+            and self.objective_confirmed() and len(self.completed_goals)>=self.minimum_goals):
             self.return_requested=True
             self._transition('return_requested')
             self.command.publish(String(data='RETURN'))

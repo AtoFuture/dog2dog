@@ -21,3 +21,21 @@ def test_private_scene_rewrites_only_target_asset_and_preserves_original(tmp_pat
     assert 'recon_person_1' not in world.read_text()
     (asset/'model.sdf').write_text('<sdf><model name="person"><uri>../../escape.dae</uri></model></sdf>')
     with pytest.raises(ValueError):module.prepare(world,asset,tmp_path/'bad')
+
+
+@pytest.mark.parametrize('scenario,panels',[('multi',0),('partial',1),('full',1)])
+def test_multiple_people_and_physical_occluder_geometry(tmp_path,scenario,panels):
+    import json
+    world=tmp_path/'world.sdf';world.write_text('<sdf><world name="world_demo"/></sdf>')
+    asset=tmp_path/'person';asset.mkdir()
+    (asset/'model.sdf').write_text('<sdf><model name="person"><link name="body"/></model></sdf>')
+    output=module.prepare(world,asset,tmp_path/'output',scenario)
+    root=ET.parse(output).getroot()
+    assert len(root.findall('.//model'))==2+panels
+    manifest=json.loads((output.parent/'scene_manifest.json').read_text())
+    assert len(manifest['targets'])==2 and manifest['evaluation_only']
+    if panels:
+        panel=root.find('.//model[@name="recon_occluder"]')
+        assert panel.findtext('static')=='true'
+        assert panel.findtext('link/collision/geometry/box/size')==panel.findtext('link/visual/geometry/box/size')
+        assert manifest['targets'][1]['initial_visibility']==scenario+'_occlusion'

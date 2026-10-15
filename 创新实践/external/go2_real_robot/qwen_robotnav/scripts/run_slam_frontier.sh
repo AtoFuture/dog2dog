@@ -3,7 +3,7 @@
 set -euo pipefail
 if [[ "${1:-}" == "--help" ]]; then
     echo 'Usage: run_slam_frontier.sh [OUTPUT_DIR] [GOALS=5] [--prepare-only]'
-    echo 'Environment: SLAM_ROS_DOMAIN_ID, SLAM_IGN_PARTITION, G1_SIM_WORKSPACE, G1_ROS_WRAPPER, G1_GPU_WRAPPER, SLAM_MISSION_BRAIN=1, SLAM_PERCEPTION=1, SLAM_MAX_RANGE, SLAM_RECON_TASK=1, SLAM_RECON_PERSON_MODEL'
+    echo 'Environment: SLAM_ROS_DOMAIN_ID, SLAM_IGN_PARTITION, G1_SIM_WORKSPACE, G1_ROS_WRAPPER, G1_GPU_WRAPPER, SLAM_MISSION_BRAIN=1, SLAM_PERCEPTION=1, SLAM_MAX_RANGE, SLAM_RECON_TASK=1, SLAM_RECON_PERSON_MODEL, SLAM_RECON_SCENARIO=single|multi|partial|full, SLAM_RECON_REQUIRED_PERSONS, SLAM_EXPLORATION_TIMEOUT'
     exit 0
 fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,6 +15,11 @@ GPU_WRAPPER="${G1_GPU_WRAPPER:-${HOME}/.enroot/ros-gui}"
 SIM_WORKSPACE="${G1_SIM_WORKSPACE:-${HOME}/go2_sim_ws/ROS2-Gazebo-GO2}"
 [[ "${GOALS}" =~ ^[1-9][0-9]*$ ]] || { echo 'GOALS must be positive' >&2; exit 2; }
 [[ "${3:-}" == "" || "${3:-}" == "--prepare-only" ]] || { echo 'Unknown third argument' >&2; exit 2; }
+REQUIRED_PERSONS="${SLAM_RECON_REQUIRED_PERSONS:-}"
+if [[ -z "${REQUIRED_PERSONS}" ]]; then
+    if [[ "${SLAM_RECON_SCENARIO:-single}" == "single" ]]; then REQUIRED_PERSONS=1; else REQUIRED_PERSONS=2; fi
+fi
+[[ "${REQUIRED_PERSONS}" =~ ^[1-9][0-9]*$ ]] || { echo 'Required person count must be positive' >&2; exit 2; }
 TRIAL_DOMAIN="${SLAM_ROS_DOMAIN_ID:-192}"
 TRIAL_PARTITION="${SLAM_IGN_PARTITION:-frontier_${TRIAL_DOMAIN}_$$}"
 for executable in "${ROS_WRAPPER}" "${GPU_WRAPPER}"; do
@@ -29,9 +34,9 @@ export PYTHONPATH="$1/..:${PYTHONPATH:-}"
 python3 "$1/prepare_simulator_launch.py" --single-odom-tf --sim-workspace "$3" --output-dir "$2"
 python3 "$1/prepare_amcl_navigation.py" --localization slam --sim-workspace "$3" --output-dir "$2" --slam-max-range "$4"
 if [[ "$6" == "1" ]]; then
-    python3 "$1/prepare_recon_scene.py" --world "$3/src/gazebo_sim/world/warehouse.sdf" --person-model "$5" --output-dir "$2"
+    python3 "$1/prepare_recon_scene.py" --world "$3/src/gazebo_sim/world/warehouse.sdf" --person-model "$5" --output-dir "$2" --scenario "$7"
 fi
-' _ "${SCRIPT_DIR}" "${OUTPUT_DIR}" "${SIM_WORKSPACE}" "${SLAM_MAX_RANGE:-4.0}" "${SLAM_RECON_PERSON_MODEL:-}" "${SLAM_RECON_TASK:-0}"
+' _ "${SCRIPT_DIR}" "${OUTPUT_DIR}" "${SIM_WORKSPACE}" "${SLAM_MAX_RANGE:-4.0}" "${SLAM_RECON_PERSON_MODEL:-}" "${SLAM_RECON_TASK:-0}" "${SLAM_RECON_SCENARIO:-single}"
 if [[ "${3:-}" == "--prepare-only" ]]; then
     echo "Prepared: ${OUTPUT_DIR}"
     exit 0
@@ -105,9 +110,9 @@ if [[ "$8" == "1" ]]; then
     BRAIN_ARGS=(--mission-brain)
 fi
 if [[ "$9" == "1" ]]; then BRAIN_ARGS+=(--perception); fi
-if [[ "${10}" == "1" ]]; then BRAIN_ARGS+=(--recon-task); fi
-exec python3 "$6/validate_slam_frontier.py" "${BRAIN_ARGS[@]}" --output-dir "$2" --expected-domain "$3" --goals "$7"
-' _ "${SIM_WORKSPACE}" "${OUTPUT_DIR}" "${TRIAL_DOMAIN}" "${TRIAL_PARTITION}" "${PROJECT_DIR}" "${SCRIPT_DIR}" "${GOALS}" "${SLAM_MISSION_BRAIN:-${SLAM_RECON_TASK:-0}}" "${SLAM_PERCEPTION:-${SLAM_RECON_TASK:-0}}" "${SLAM_RECON_TASK:-0}" >"${OUTPUT_DIR}/trial.log" 2>&1 &
+if [[ "${10}" == "1" ]]; then BRAIN_ARGS+=(--recon-task --required-person-count "${11}" ); fi
+exec python3 "$6/validate_slam_frontier.py" "${BRAIN_ARGS[@]}" --output-dir "$2" --expected-domain "$3" --goals "$7" --exploration-timeout "${12}"
+' _ "${SIM_WORKSPACE}" "${OUTPUT_DIR}" "${TRIAL_DOMAIN}" "${TRIAL_PARTITION}" "${PROJECT_DIR}" "${SCRIPT_DIR}" "${GOALS}" "${SLAM_MISSION_BRAIN:-${SLAM_RECON_TASK:-0}}" "${SLAM_PERCEPTION:-${SLAM_RECON_TASK:-0}}" "${SLAM_RECON_TASK:-0}" "${REQUIRED_PERSONS}" "${SLAM_EXPLORATION_TIMEOUT:-600}" >"${OUTPUT_DIR}/trial.log" 2>&1 &
 VALIDATION_GROUP=$!
 if wait "${VALIDATION_GROUP}"; then
     TRIAL_STATUS=0

@@ -618,3 +618,27 @@ def test_eroding_segmentation_boundary_rejects_background_without_relaxing_quali
     assert result is not None and result.point[2]==pytest.approx(3.)
     mask[:]=False;mask[5:27,15:17]=True
     assert project_depth_bbox(**args,mask_margin_px=2) is None
+
+
+def test_mask_depth_majority_cluster_preserves_pixel_geometry_and_quality_gate():
+    depth=np.full((10,10),3.,dtype=np.float32);mask=np.ones((10,10),bool)
+    depth[:,:1]=9.;depth[:,1:2]=1.  # foreground and distant background, 20% total
+    args=dict(depth_m=depth,intrinsics=CameraIntrinsics(100,100,0,0),bbox_xyxy=(0,0,10,10),mask=mask)
+    assert project_depth_bbox(**args,max_dispersion_m=1.) is None
+    result=project_depth_bbox(**args,mask_depth_cluster_gap_m=.35,max_dispersion_m=1.)
+    assert result is not None and result.valid_pixels==80
+    assert result.point==pytest.approx([.165,.135,3.])
+    assert project_depth_bbox(**args,mask_depth_cluster_gap_m=.35,max_dispersion_m=.01) is None
+
+
+def test_mask_depth_cluster_rejects_ambiguous_planes_sparse_depth_and_bbox_only():
+    depth=np.full((10,10),3.,dtype=np.float32);mask=np.ones((10,10),bool)
+    args=dict(depth_m=depth,intrinsics=CameraIntrinsics(100,100,0,0),bbox_xyxy=(0,0,10,10),mask=mask,mask_depth_cluster_gap_m=.35)
+    depth[:,:4]=7.
+    assert project_depth_bbox(**args) is None
+    depth[:,:]=3.;depth[:,:5]=np.nan
+    assert project_depth_bbox(**args) is None
+    depth[:,:]=3.;args['mask']=None
+    with pytest.raises(ValueError):project_depth_bbox(**args)
+    args['mask']=mask;args['mask_depth_cluster_gap_m']=float('nan')
+    with pytest.raises(ValueError):project_depth_bbox(**args)

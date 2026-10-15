@@ -400,3 +400,5 @@ JPEG 证据、原始 RGB-D bag 和按确认观测时间戳提取的彩色图/深
 Z 属于当前 map 坐标系，尚未标定为离地高度；本实验不证明全身三维重建精度或多人检出率。
 
 完整实测：人员平面误差约 0.14 米、返航误差约 0.28 米，任务总用时约 120 秒，录包中的 action 与任务终态均已核对。见 [人员侦查验收报告](docs/recon-person-validation.md)。
+
+多人及实体遮挡场景入口、人数确认规则和实测结果见 [多人及遮挡验证](docs/recon-multi-occlusion-validation.md)。设置 `SLAM_RECON_SCENARIO=multi|partial|full` 后默认要求确认两人；每人仍需两次独立 JPEG 证据，换 ID 不能直接增加人数。

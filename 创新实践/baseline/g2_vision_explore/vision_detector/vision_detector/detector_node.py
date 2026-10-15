@@ -131,6 +131,9 @@ class VisionDetector(Node):
         self._declare_params()
         if not 0 <= self.get_parameter("mask_depth_margin_px").value <= 16:
             raise ValueError("mask_depth_margin_px must be 0..16")
+        gap=float(self.get_parameter("mask_depth_cluster_gap_m").value)
+        if not np.isfinite(gap) or gap<0:
+            raise ValueError("mask_depth_cluster_gap_m must be finite and non-negative")
 
         self._bridge = CvBridge()
         self.tf_buffer = Buffer()
@@ -243,6 +246,7 @@ class VisionDetector(Node):
         if publisher is not None:
             publisher.publish(String(data=json.dumps(dict(
                 stats=self._stat, image_time_tf_fallbacks=self._tf_fallback_count,
+                mask_depth_cluster_gap_m=self.get_parameter("mask_depth_cluster_gap_m").value,
                 **self._frame_info))))
 
     def _report_stats(self) -> None:
@@ -344,6 +348,7 @@ class VisionDetector(Node):
         d("max_dispersion_m", 3.0)
         d("min_valid_pixels", 10)
         d("mask_depth_margin_px", 2)
+        d("mask_depth_cluster_gap_m", 0.0)
 
         # --- 坐标变换 ---
         d("map_frame", "map")
@@ -502,6 +507,7 @@ class VisionDetector(Node):
                 max_dispersion_m=self.get_parameter("max_dispersion_m").value,
                 anchor=self.get_parameter("anchor").value,
                 mask_margin_px=int(self.get_parameter("mask_depth_margin_px").value),
+                mask_depth_cluster_gap_m=float(self.get_parameter("mask_depth_cluster_gap_m").value),
             )
             if res is None:
                 # 深度不可信（被遮挡、框里混了远近两个面）—— 丢弃而不是硬报一个坐标

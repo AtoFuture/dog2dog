@@ -40,6 +40,23 @@ def main():
              'imu0_config': [False, False, False, False, False, True, False, False, False, False, False, True, False, False, False]}],"""
         child=child.replace(ekf_params, fusion)
     output.mkdir(parents=True,exist_ok=True)
+    # Humble spawner ignores --service-call-timeout specifically for load_controller.
+    # Patch its imported function in this child process only, leaving /opt/ros intact.
+    spawner=output/'controller_spawner'
+    spawner.write_text("""#!/usr/bin/env python3
+import controller_manager.spawner as spawner
+from controller_manager.controller_manager_services import load_controller
+
+def scoped_load(node, manager, name):
+    return load_controller(node, manager, name, service_timeout=60., call_timeout=60.)
+
+spawner.load_controller=scoped_load
+spawner.main()
+""")
+    spawner.chmod(0o755)
+    if "executable='spawner'" not in child:
+        parser.error('Cannot locate controller spawner in simulator launch')
+    child=child.replace("executable='spawner'", 'executable='+repr(str(spawner)))
     (output/'go2_sensors_nav2.launch.py').write_text(child)
     top=top.replace(choice,'launch_file = '+repr(str(output/'go2_sensors_nav2.launch.py')))
     target=output/'gazebo_nav2.launch.py'
