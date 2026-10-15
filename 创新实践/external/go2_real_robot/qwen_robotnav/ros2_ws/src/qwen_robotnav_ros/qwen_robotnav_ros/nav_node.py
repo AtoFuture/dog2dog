@@ -16,6 +16,7 @@ import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseArray, Pose
 from rclpy.node import Node
+from rclpy.clock import Clock, ClockType
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
@@ -77,11 +78,13 @@ class NavNode(Node):
         self.frame_history: deque = deque(maxlen=self.history_length)
         self.latest_frame: Optional[np.ndarray] = None
         self._last_frame_time = None
+        self._last_frame_stamp = None
         self.lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._inference_future = None
         self._inference_frame = None
         self._inference_frame_time = None
+        self._inference_frame_stamp = None
         self._instruction_revision = 0
         self._inference_revision = 0
 
@@ -96,8 +99,9 @@ class NavNode(Node):
         self.debug_image_pub = self.create_publisher(Image, "/qwen_robotnav/debug_image", 1)
 
         # Timer for periodic inference
-        self.timer = self.create_timer(self.inference_period, self._inference_callback)
-        self.result_timer = self.create_timer(0.1, self._poll_inference)
+        self._inference_clock = Clock(clock_type=ClockType.STEADY_TIME)
+        self.timer = self.create_timer(self.inference_period, self._inference_callback, clock=self._inference_clock)
+        self.result_timer = self.create_timer(0.1, self._poll_inference, clock=self._inference_clock)
 
         self.get_logger().info(
             f"NavNode started. task_mode={task_mode.value}, "
@@ -130,6 +134,7 @@ class NavNode(Node):
             pil_image = PILImage.fromarray(rgb)
             self.frame_history.append({self.camera_name: pil_image})
             self._last_frame_time = time.monotonic()
+            self._last_frame_stamp = msg.header.stamp
 
     def _instruction_callback(self, msg: String):
         self.instruction = msg.data
@@ -149,6 +154,7 @@ class NavNode(Node):
             frames = list(self.frame_history)
             self._inference_frame = self.latest_frame.copy()
             self._inference_frame_time = self._last_frame_time
+            self._inference_frame_stamp = self._last_frame_stamp
             self._inference_revision = self._instruction_revision
 
         self._inference_future = self._executor.submit(self.engine, frames)
@@ -182,6 +188,7 @@ class NavNode(Node):
         finally:
             self._inference_frame = None
             self._inference_frame_time = None
+            self._inference_frame_stamp = None
 
     def destroy_node(self):
         self.timer.cancel()
@@ -191,7 +198,9 @@ class NavNode(Node):
 
     def _publish_waypoints(self, waypoints: np.ndarray):
         msg = PoseArray()
-        msg.header.stamp = self.get_clock().now().to_msg()
+        # Relative goals belong to the image acquisition pose, not the pose
+        # reached after several seconds of model inference.
+        msg.header.stamp = self._inference_frame_stamp or self.get_clock().now().to_msg()
         msg.header.frame_id = "base_link"
         for w in waypoints:
             pose = Pose()

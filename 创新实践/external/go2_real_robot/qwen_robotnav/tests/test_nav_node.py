@@ -24,11 +24,13 @@ def node(monkeypatch):
         frame_history=deque([{'Front': object()}]),
         latest_frame=np.zeros((2, 2, 3), dtype=np.uint8),
         _last_frame_time=100.0,
+        _last_frame_stamp=None,
         max_frame_age_sec=15.0,
         _executor=executor,
         _inference_future=None,
         _inference_frame=None,
         _inference_frame_time=None,
+        _inference_frame_stamp=None,
         _instruction_revision=0,
         _inference_revision=0,
         publish_debug_image=False,
@@ -104,3 +106,15 @@ def test_new_instruction_invalidates_inflight_prediction(node):
     nav_node.NavNode._poll_inference(node)
     assert node.published == []
     assert 'superseded instruction' in node.warnings[0]
+
+
+def test_waypoints_keep_image_acquisition_timestamp_for_nav2():
+    from builtin_interfaces.msg import Time
+
+    messages=[]
+    stamp=Time(sec=42,nanosec=123)
+    obj=SimpleNamespace(_inference_frame_stamp=stamp,
+                        waypoint_pub=SimpleNamespace(publish=messages.append),
+                        get_clock=lambda:pytest.fail('Publication time replaced image time'))
+    nav_node.NavNode._publish_waypoints(obj,np.zeros((1,3)))
+    assert messages[0].header.stamp==stamp

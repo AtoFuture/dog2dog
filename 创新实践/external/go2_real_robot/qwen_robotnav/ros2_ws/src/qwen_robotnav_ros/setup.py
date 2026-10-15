@@ -10,7 +10,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', ['launch/robot_nav.launch.py']),
+        ('share/' + package_name + '/launch', ['launch/robot_nav.launch.py', 'launch/deepseek_nav2.launch.py']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -22,6 +22,7 @@ setup(
     entry_points={
         'console_scripts': [
             'nav_node = qwen_robotnav_ros.nav_node:main',
+            'nav2_waypoint_bridge = qwen_robotnav_ros.nav2_waypoint_bridge:main',
             'go2_controller = qwen_robotnav_ros.go2_controller:main',
             'go2_ros_bridge = qwen_robotnav_ros.go2_ros_bridge:main',
         ],

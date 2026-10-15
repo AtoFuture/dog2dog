@@ -30,6 +30,52 @@ ros2 launch qwen_robotnav_ros robot_nav.launch.py \
 
 以下 Jetson、vLLM 和本地 Qwen 部署说明保留为历史及可选后端配置，不代表当前默认接入。
 
+## DeepSeek → Nav2 避障导航
+
+先启动地图、定位、雷达和 Nav2（默认 action 为 `/robot1/navigate_to_pose`），再启动：
+
+```bash
+ros2 launch qwen_robotnav_ros deepseek_nav2.launch.py \
+  camera_topic:=/robot1/color/image_raw use_sim_time:=true
+```
+
+该入口只启动视觉推理节点和 `nav2_waypoint_bridge`，不启动直接速度控制器或真机 SDK 桥。
+Nav2 负责代价地图、全局规划、局部跟踪、恢复及速度输出；仿真沿用 G1 的速度缩放器。
+不要同时启动旧的 `go2_controller` 向同一个底盘速度话题发指令。
+探索目标也应保持单一入口，停用同时向该 Nav2 action 发探索目标的旧发送器。
+
+桥接节点从预测轨迹中选取距离 1–2.5 米的较远航点，按**图像采集时刻**的 TF
+转换到 `map`，提交 `NavigateToPose`。当前导航结束前只保留最新预测，不反复抢占。
+图像/TF/服务不可用时不发送新目标；视觉输入超时或 `/mission_state` 离开 `exploring`
+时异步取消当前目标，取消中继续等待终态，避免接受延迟回调后又发出第二个目标。
+
+默认 TF 话题为 `/robot1/tf`、`/robot1/tf_static`，可通过 `tf_topic`、`tf_static_topic`
+调整。`/deepseek/nav2_goal` 发布实际地图目标，`/deepseek/nav2_events` 记录发送、接受、
+完成、失败和取消事件。已有 Nav2 栈必须能独立完成雷达避障导航；该入口不会隐式启动定位。
+
+推理调度和输入看门狗使用单调实时时钟；图像和目标坐标仍使用 ROS 采集时间戳，
+避免仿真变慢或暂停时网络调度、超时检查也随之停顿。退出时调用 `stop_navigation()`，
+它会清除排队预测并锁定停机状态，防止取消终态到达后又提交下一目标。
+
+### 仿真雷达配置与验证
+
+当前外部 Go2 仿真模型的 Velodyne 配置为一条垂直扫描线，但角度范围仍为 ±15°。
+联调观测到它向下照到地面，在代价地图里形成封闭的假障碍环，导致目标无法规划。
+可生成独立启动副本，仅把该单线雷达的垂直角度改为 0，不修改共享模型文件：
+
+```bash
+python3 scripts/prepare_simulator_launch.py --output-dir /tmp/deepseek_nav2_sim
+# 在原有 ROS/Gazebo 环境内，确保 qwen_robotnav 包可导入
+ros2 launch /tmp/deepseek_nav2_sim/gazebo_nav2.launch.py sensors:=true world:=warehouse.sdf
+```
+
+多线雷达及场景障碍保持不变。之后按 G1 流程启动 Nav2，再启动上述 DeepSeek 桥接入口。
+
+2026-10-15 隔离仿真验证：DeepSeek → NavigateToPose → 雷达 costmap → Nav2 → 速度缩放，
+首个目标成功，真值净位移 **2.268 m**、到目标误差 **0.217 m**，通过此前阻挡前进的支柱区域，
+额外紧急停车护栏干预为 **0**。导航与桥接回归测试 **47 passed**，ROS 包构建和 launch 参数检查通过。
+该实验明确使用**仿真真值定位**及上述水平扫描副本，验证的是接线和避障执行，不作为 SLAM/AMCL 或真机验收。
+
 ## 环境信息
 
 - 主机：NVIDIA Jetson Orin NX
