@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
+import math
 import re
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,24 +25,36 @@ class VLMClient:
 
     def __init__(self, config: Optional[VLMConfig] = None):
         self.config = config or VLMConfig()
-        self._client = None
+        if not math.isfinite(self.config.timeout) or self.config.timeout <= 0:
+            raise ValueError("VLM timeout must be finite and positive")
 
-    def _get_client(self):
-        """Lazy import / construction of the OpenAI client."""
-        if self._client is None:
-            try:
-                import openai
-            except ImportError as exc:
-                raise RuntimeError(
-                    "openai package is required for VLMClient. "
-                    "Install it with: pip install openai"
-                ) from exc
-            self._client = openai.OpenAI(
+    async def _request_completion(self, request_kwargs):
+        """Cancel the entire HTTP request even if the provider sends keep-alives."""
+        try:
+            from openai import AsyncOpenAI
+        except ImportError as exc:
+            raise RuntimeError(
+                "openai package is required for VLMClient. "
+                "Install it with: pip install openai"
+            ) from exc
+
+        async def request():
+            # Each synchronous call owns its event loop and HTTP client. Never
+            # reuse an async connection pool after asyncio.run closes its loop.
+            async with AsyncOpenAI(
                 base_url=self.config.base_url,
                 api_key=self.config.api_key or "not-needed",
                 timeout=self.config.timeout,
-            )
-        return self._client
+                max_retries=0,
+            ) as client:
+                return await client.chat.completions.create(**request_kwargs)
+
+        try:
+            return await asyncio.wait_for(request(), timeout=self.config.timeout)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"VLM request exceeded {self.config.timeout:g}s total deadline"
+            ) from exc
 
     @staticmethod
     def _pil_to_base64(image: Image.Image, fmt: str = "PNG") -> str:
@@ -91,8 +105,6 @@ class VLMClient:
             A tuple ``(waypoints, raw_text)`` where ``waypoints`` is a list of
             dicts with keys ``x``, ``y``, ``theta``.
         """
-        client = self._get_client()
-
         # Replace the last user message text with interleaved image content.
         request_messages = []
         for msg in messages:
@@ -116,7 +128,7 @@ class VLMClient:
             request_kwargs["response_format"] = {"type": "json_object"}
             request_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
-        response = client.chat.completions.create(**request_kwargs)
+        response = asyncio.run(self._request_completion(request_kwargs))
 
         raw_text = response.choices[0].message.content or ""
         waypoints = self._parse_waypoints(raw_text)

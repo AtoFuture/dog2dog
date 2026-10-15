@@ -1,11 +1,13 @@
-"""ROS2 navigation node: receives images, calls Qwen-RobotNav, publishes waypoints."""
+"""ROS2 navigation node: receives images, calls DeepSeek, publishes waypoints."""
 
 from __future__ import annotations
 
 import os
 import threading
+import time
 import traceback
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 
 import cv2
@@ -21,7 +23,7 @@ from qwen_robotnav import NavigationConfig, NavigationEngine, TaskMode
 
 
 class NavNode(Node):
-    """Subscribe to camera images, maintain history, run Qwen-RobotNav inference."""
+    """Receive images while a single worker runs DeepSeek inference."""
 
     def __init__(self):
         super().__init__("qwen_robotnav_nav_node")
@@ -36,6 +38,8 @@ class NavNode(Node):
         self.declare_parameter("vllm_model", "deepseek-flash")
         self.declare_parameter("camera_name", "Front")
         self.declare_parameter("publish_debug_image", True)
+        self.declare_parameter("inference_timeout_sec", 15.0)
+        self.declare_parameter("max_frame_age_sec", 15.0)
 
         self.camera_topic = self.get_parameter("camera_topic").value
         self.instruction = self.get_parameter("instruction").value
@@ -43,6 +47,9 @@ class NavNode(Node):
         self.inference_period = float(self.get_parameter("inference_period").value)
         self.camera_name = self.get_parameter("camera_name").value
         self.publish_debug_image = self.get_parameter("publish_debug_image").value
+        self.max_frame_age_sec = float(self.get_parameter("max_frame_age_sec").value)
+        if not np.isfinite(self.max_frame_age_sec) or self.max_frame_age_sec <= 0:
+            raise ValueError("max_frame_age_sec must be finite and positive")
 
         mode_str = self.get_parameter("task_mode").value
         try:
@@ -69,7 +76,14 @@ class NavNode(Node):
         self.bridge = CvBridge()
         self.frame_history: deque = deque(maxlen=self.history_length)
         self.latest_frame: Optional[np.ndarray] = None
+        self._last_frame_time = None
         self.lock = threading.Lock()
+        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._inference_future = None
+        self._inference_frame = None
+        self._inference_frame_time = None
+        self._instruction_revision = 0
+        self._inference_revision = 0
 
         # Subscribers and publishers
         self.image_sub = self.create_subscription(
@@ -83,10 +97,12 @@ class NavNode(Node):
 
         # Timer for periodic inference
         self.timer = self.create_timer(self.inference_period, self._inference_callback)
+        self.result_timer = self.create_timer(0.1, self._poll_inference)
 
         self.get_logger().info(
             f"NavNode started. task_mode={task_mode.value}, "
-            f"camera_topic={self.camera_topic}, vllm={config.vlm.base_url}"
+            f"camera_topic={self.camera_topic}, provider=DeepSeek, "
+            f"endpoint={config.vlm.base_url}, model={config.vlm.model}"
         )
 
     def _make_vlm_config(self):
@@ -96,6 +112,7 @@ class NavNode(Node):
             base_url=self.get_parameter("vllm_base_url").value,
             model=self.get_parameter("vllm_model").value,
             api_key=os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("VLLM_API_KEY") or None,
+            timeout=float(self.get_parameter("inference_timeout_sec").value),
         )
 
     def _image_callback(self, msg: Image):
@@ -112,34 +129,65 @@ class NavNode(Node):
             rgb = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
             pil_image = PILImage.fromarray(rgb)
             self.frame_history.append({self.camera_name: pil_image})
+            self._last_frame_time = time.monotonic()
 
     def _instruction_callback(self, msg: String):
         self.instruction = msg.data
+        self._instruction_revision += 1
         self.engine.config.instruction = msg.data
         self.get_logger().info(f"Updated instruction: {msg.data}")
 
     def _inference_callback(self):
+        if self._inference_future is not None:
+            return
         with self.lock:
             if len(self.frame_history) == 0:
                 self.get_logger().debug("No frames received yet; skipping inference")
                 return
+            if time.monotonic() - self._last_frame_time > self.max_frame_age_sec:
+                return
             frames = list(self.frame_history)
+            self._inference_frame = self.latest_frame.copy()
+            self._inference_frame_time = self._last_frame_time
+            self._inference_revision = self._instruction_revision
 
+        self._inference_future = self._executor.submit(self.engine, frames)
+
+    def _poll_inference(self):
+        future = self._inference_future
+        if future is None or not future.done():
+            return
+        self._inference_future = None
         try:
-            waypoints, raw_text = self.engine(frames)
+            waypoints, raw_text = future.result()
+            if self._inference_revision != self._instruction_revision:
+                self.get_logger().warning("Discarding DeepSeek result for a superseded instruction")
+                return
+            if time.monotonic() - self._inference_frame_time > self.max_frame_age_sec:
+                self.get_logger().warning("Discarding DeepSeek result for an expired camera frame")
+                return
             self._publish_waypoints(waypoints)
             self.get_logger().info(
                 f"Predicted {len(waypoints)} waypoints; first={waypoints[0].tolist() if len(waypoints) else None}"
             )
-            if self.publish_debug_image and self.latest_frame is not None:
+            if self.publish_debug_image and self._inference_frame is not None:
                 try:
-                    self._publish_debug_image(self.latest_frame, waypoints)
+                    self._publish_debug_image(self._inference_frame, waypoints)
                 except Exception as exc:
                     self.get_logger().warning(f"Debug image publish failed: {exc!r}")
         except Exception as exc:
             self.get_logger().error(
                 f"Inference failed: {exc!r}\n{traceback.format_exc()}"
             )
+        finally:
+            self._inference_frame = None
+            self._inference_frame_time = None
+
+    def destroy_node(self):
+        self.timer.cancel()
+        self.result_timer.cancel()
+        self._executor.shutdown(wait=True, cancel_futures=True)
+        return super().destroy_node()
 
     def _publish_waypoints(self, waypoints: np.ndarray):
         msg = PoseArray()

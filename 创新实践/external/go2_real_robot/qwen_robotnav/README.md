@@ -1,8 +1,32 @@
 # Qwen-RobotNav on Jetson Orin NX → Unitree Go2
 
-本项目基于 [Qwen-RobotNav](https://qwen.ai/blog?id=qwen-robotnav) 技术报告，在 **NVIDIA Jetson Orin NX (JetPack 7.2 / L4T 39.2)** 上用 Docker 容器化方式实现一套可运行的导航推理系统，并计划迁移到 **宇树 Go2 机器狗**。
+本项目基于 Qwen-RobotNav 的导航流程实现观察编码、提示构建、航点解码和 Go2 控制接口。
+**当前视觉推理后端已切换为 DeepSeek**：`https://api.deepseek.com`，模型 `deepseek-flash`。
+`qwen_robotnav` 包名、节点名和话题名保留以兼容已有启动脚本。
 
-> **注意**：官方 `QwenLM/Qwen-RobotNav` 代码与模型权重尚未公开，因此本实现使用远端 `Qwen3-VL-30B-A3B-Instruct-FP8` 作为 VLM 骨干，本地 Jetson 负责任务自适应观察编码、提示构建、waypoint 解码和机器人控制接口。当远端 vLLM 不可达时，可回退到本地 `Qwen/Qwen3-VL-4B-Instruct`。
+## 当前 DeepSeek 接入
+
+- 视觉节点优先读取 `DEEPSEEK_API_KEY`；API 地址与模型通过历史参数名
+  `vllm_base_url` / `vllm_model` 配置，默认就是 DeepSeek。
+- 视觉节点以单独工作线程执行推理，一次只运行一个请求；ROS 回调继续接收图像和指令。
+- `inference_timeout_sec` 默认 15 秒，限制整个 HTTP 请求，关闭 SDK 自动重试。
+  客户端通过可取消的异步请求执行总时限，结束后关闭连接；超时不会让工作线程无限等待。
+- `max_frame_age_sec` 默认 15 秒；过期图像不提交推理，过期结果不发布航点。
+- 推理期间收到新指令时，旧指令对应的结果会被丢弃。
+- 兼容的同步 `VLMClient.predict_waypoints()` 接口使用 `asyncio.run()`，应从同步代码
+  或工作线程调用；不要直接在已经运行的 asyncio 事件循环中调用。
+- DeepSeek 排队时可能不断发送保活空行，网络读超时不代表请求总时限。
+  参见 [DeepSeek 保活说明](https://api-docs.deepseek.com/quick_start/rate_limit/)。
+
+```bash
+ros2 launch qwen_robotnav_ros robot_nav.launch.py \
+  vllm_base_url:=https://api.deepseek.com \
+  vllm_model:=deepseek-flash \
+  inference_timeout_sec:=15.0 \
+  max_frame_age_sec:=15.0
+```
+
+以下 Jetson、vLLM 和本地 Qwen 部署说明保留为历史及可选后端配置，不代表当前默认接入。
 
 ## 环境信息
 

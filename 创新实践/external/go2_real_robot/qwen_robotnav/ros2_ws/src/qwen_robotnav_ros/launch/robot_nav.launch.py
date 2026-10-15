@@ -34,6 +34,16 @@ def generate_launch_description():
             description="DeepSeek model name (deepseek-flash = DeepSeek-V4.1-Flash)",
         ),
         DeclareLaunchArgument(
+            "inference_timeout_sec",
+            default_value="15.0",
+            description="Total inference request deadline in seconds",
+        ),
+        DeclareLaunchArgument(
+            "max_frame_age_sec",
+            default_value="15.0",
+            description="Reject camera frames and predictions older than this many seconds",
+        ),
+        DeclareLaunchArgument(
             "start_unitree_bridge",
             default_value="true",
             description="Start the standalone Unitree SDK2 motion/camera bridge",
@@ -78,6 +88,8 @@ def generate_launch_description():
                 "task_mode": LaunchConfiguration("task_mode"),
                 "vllm_base_url": LaunchConfiguration("vllm_base_url"),
                 "vllm_model": LaunchConfiguration("vllm_model"),
+                "inference_timeout_sec": LaunchConfiguration("inference_timeout_sec"),
+                "max_frame_age_sec": LaunchConfiguration("max_frame_age_sec"),
                 "history_length": 4,
                 "inference_period": 1.0,
             }],
