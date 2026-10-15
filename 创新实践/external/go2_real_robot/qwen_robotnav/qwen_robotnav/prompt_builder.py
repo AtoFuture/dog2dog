@@ -9,7 +9,7 @@ from .observation_encoder import AllocatedFrame
 
 
 class PromptBuilder:
-    """Builds the visual-language sequence fed into Qwen3-VL.
+    """Build the visual-language sequence for the configured VLM backend.
 
     The model receives:
       - An embodiment-aware system preamble.
@@ -29,7 +29,8 @@ class PromptBuilder:
             "You are given a sequence of egocentric camera observations. "
             "Predict a safe trajectory for the next few seconds as 8 waypoints. "
             "Each waypoint is given as (x, y, theta) in the robot's egocentric frame, "
-            "where x is forward, y is left, and theta is the heading in radians."
+            "where x is forward, y is left, and theta is the heading in radians. "
+            "Distances x and y are in meters, not normalized coordinates."
         )
 
     def _task_instruction(self) -> str:

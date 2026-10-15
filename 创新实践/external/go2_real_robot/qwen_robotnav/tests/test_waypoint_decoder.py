@@ -1,6 +1,7 @@
 """Unit tests for waypoint denormalisation and velocity commands."""
 
 import numpy as np
+import pytest
 
 from qwen_robotnav import WaypointDecoder, WaypointDecoderConfig
 
@@ -44,3 +45,32 @@ def test_smooth():
     smoothed = decoder.smooth(waypoints, alpha=0.5)
     assert smoothed.shape == waypoints.shape
     assert smoothed[1, 0] == 0.5
+
+
+def test_metric_waypoints_preserve_distances_and_heading():
+    decoder = WaypointDecoder()
+    out = decoder.from_metric([{'x': 0.5, 'y': -0.2, 'theta': 0.6}])
+    np.testing.assert_allclose(out, [[0.5, -0.2, 0.6]])
+    assert decoder.from_metric([]).shape == (0, 3)
+
+
+@pytest.mark.parametrize('value', [float('nan'), float('inf'), -float('inf')])
+def test_nonfinite_text_coordinates_are_rejected(value):
+    with pytest.raises(ValueError, match='finite'):
+        WaypointDecoder().from_metric([{'x': value, 'y': 0, 'theta': 0}])
+
+
+def test_navigation_engine_does_not_rescale_text_model_predictions():
+    from PIL import Image
+    from qwen_robotnav import CameraConfig, NavigationConfig, NavigationEngine
+
+    engine = NavigationEngine(NavigationConfig(cameras=[CameraConfig('Front', 0)]))
+
+    def prediction(messages, images):
+        assert 'meters, not normalized' in messages[0]['content']
+        assert len(images) == 1
+        return [{'x': 0.5, 'y': -0.2, 'theta': 0.6}], '{}'
+
+    engine.vlm_client.predict_waypoints = prediction
+    points, _ = engine([{'Front': Image.new('RGB', (64, 64))}])
+    np.testing.assert_allclose(points, [[0.5, -0.2, 0.6]])

@@ -10,10 +10,20 @@ from .config import WaypointDecoderConfig
 
 
 class WaypointDecoder:
-    """Convert normalised model outputs to robot egocentric waypoints."""
+    """Decode text waypoints in meters/radians or explicitly normalized outputs."""
 
     def __init__(self, config: Optional[WaypointDecoderConfig] = None):
         self.config = config or WaypointDecoderConfig()
+
+    def from_metric(self, waypoints: List[Dict[str, float]]) -> np.ndarray:
+        """Text prompts request meters/radians; preserve those units exactly."""
+        arr = np.asarray([
+            [float(w['x']), float(w['y']), float(w['theta'])]
+            for w in waypoints
+        ], dtype=np.float64).reshape(-1, 3)
+        if not np.isfinite(arr).all():
+            raise ValueError("Waypoint coordinates must be finite meters/radians")
+        return arr
 
     def denormalise(
         self,

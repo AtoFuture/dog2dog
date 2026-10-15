@@ -85,7 +85,10 @@ class NavigationEngine:
         )
         messages, images = self.prompt_builder.build_messages(allocated)
         waypoints_raw, raw_text = self.vlm_client.predict_waypoints(messages, images)
-        waypoints = self.decoder.denormalise(waypoints_raw)
+        # Both remote and local text backends receive the same metric prompt.
+        # Scaling by the learned-head normalization factors here multiplies
+        # distances by five and yaw by pi a second time.
+        waypoints = self.decoder.from_metric(waypoints_raw)
         waypoints = self.decoder.smooth(waypoints)
         return waypoints, raw_text
 
