@@ -44,6 +44,7 @@
 from __future__ import annotations
 
 import math
+import json
 import time
 
 import cv2
@@ -57,6 +58,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from sensor_msgs.msg import CameraInfo, Image
+from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from g2_core.anomaly import keypoints_to_torso_3d, torso_tilt_from_vertical
@@ -180,6 +182,9 @@ class VisionDetector(Node):
             DetectionSnapshot, self.get_parameter("snapshots_topic").value, RESULT_QOS
         )
 
+        self._status_pub = self.create_publisher(String, "/perception/status", 10)
+        self._frame_info = {}
+
         # ---- 订阅 ----
         # ⚠️ 关于 callback group，注释一度与实际不符（2026-09-18 审核 P3）。
         #
@@ -231,7 +236,15 @@ class VisionDetector(Node):
         # 每 10 秒报一次处理统计 —— 出问题时一眼能看出卡在哪一步
         self.create_timer(10.0, self._report_stats)
 
+    def _publish_status(self):
+        publisher = getattr(self, '_status_pub', None)
+        if publisher is not None:
+            publisher.publish(String(data=json.dumps(dict(
+                stats=self._stat, image_time_tf_fallbacks=self._tf_fallback_count,
+                **self._frame_info))))
+
     def _report_stats(self) -> None:
+        self._publish_status()
         st = self._stat
         if st["frames"] == 0:
             self.get_logger().warn(
@@ -320,6 +333,7 @@ class VisionDetector(Node):
         # 抬 conf 会把人丢掉，而放大是把人找回来。详见 DetectorConfig.upscale_min_side。
         d("upscale_min_side", 480)
         d("device", "cpu")
+        d("cpu_threads", 2)
         d("detect_hz", 5.0)
         d("sync_slop_s", 0.05)
 
@@ -360,6 +374,12 @@ class VisionDetector(Node):
         匹配上」这类错误推迟到第一帧图像到达时才抛 —— 而那时候往往还伴随着
         别的问题（话题不对、QoS 不匹配），混在一起更难定位。
         """
+        if str(self.get_parameter('device').value) == 'cpu':
+            import torch
+            threads = int(self.get_parameter('cpu_threads').value)
+            if not 1 <= threads <= 16:
+                raise ValueError('cpu_threads must be 1..16')
+            torch.set_num_threads(threads)
         try:
             self._detector = Detector(
                 DetectorConfig(
@@ -383,10 +403,10 @@ class VisionDetector(Node):
             f"内参已就位：fx={self._intrinsics.fx:.1f} fy={self._intrinsics.fy:.1f} "
             f"cx={self._intrinsics.cx:.1f} cy={self._intrinsics.cy:.1f}"
         )
-        if abs(msg.d[0]) > 1e-6:
+        if any(abs(coefficient) > 1e-6 for coefficient in msg.d):
             # 有畸变系数却没去畸变 —— 三维坐标会系统性偏移，尤其画面边缘。
             self.get_logger().warn(
-                f"CameraInfo 报告了非零畸变系数（d[0]={msg.d[0]:.4f}），"
+                "CameraInfo 报告了非零畸变系数，"
                 f"但本节点喂给针孔模型的是**未去畸变**的图。"
                 f"请在上游接 image_proc / image_undistort，或用去畸变后的话题。"
             )
@@ -456,6 +476,11 @@ class VisionDetector(Node):
         # TF 每帧查一次就够：同一帧里所有目标用的是同一个变换。
         # （原先每个目标各查一次，既浪费又让 tf_fail 计数变得难解释。）
         tf = self._lookup_tf(color_msg.header.frame_id, stamp)
+        self._frame_info = dict(camera_frame=color_msg.header.frame_id,
+            image_size=[color_msg.width,color_msg.height], depth_size=[depth_msg.width,depth_msg.height],
+            image_stamp_ns=stamp.sec*1_000_000_000+stamp.nanosec,
+            depth_stamp_ns=depth_msg.header.stamp.sec*1_000_000_000+depth_msg.header.stamp.nanosec,
+            map_tf_available=tf is not None)
 
         for det in detections:
             # ⚠️ 倒地判据**每帧都喂**，不受下面的 min_publish_interval_s 节流影响。
@@ -489,6 +514,8 @@ class VisionDetector(Node):
 
             self._stat["published"] += 1
             self._publish_detection(det, self._to_map(res, tf), stamp)
+
+        self._publish_status()
 
     # ------------------------------------------------------------------
     # 倒地识别

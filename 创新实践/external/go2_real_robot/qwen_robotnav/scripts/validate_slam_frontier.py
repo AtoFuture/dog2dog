@@ -2,7 +2,7 @@
 
 Start the generated isolated simulator first. No static map, AMCL, truth TF or
 hardware SDK is used. Ground truth measures errors and guards standing posture.
-This stage uses the deterministic G2 frontier selector; DeepSeek vision is idle.
+Optional DeepSeek ranking uses only safe G2 candidates; vision is a separate stage.
 """
 import argparse
 import csv
@@ -41,7 +41,7 @@ def yaw(q):
 class Monitor(Node):
     def __init__(self):
         super().__init__('slam_frontier_validation')
-        self.poses=[];self.events=[];self.returns=[];self.maps=[];self.states=[]
+        self.poses=[];self.events=[];self.returns=[];self.maps=[];self.states=[];self.perception=[]
         self.latest_map=None;self.command=None;self.command_at=-math.inf
         self.scan_at=-math.inf;self.front=math.inf;self.minimum_front=math.inf
         self.running=False;self.battery_level=.8;self.blocked=0;self.forwarded=0
@@ -57,6 +57,7 @@ class Monitor(Node):
         self.create_subscription(String,'/exploration/events',self.event,10)
         self.create_subscription(String,'/g3/return_event',self.return_event,10)
         self.create_subscription(String,'/mission_state',self.state,10)
+        self.create_subscription(String,'/perception/status',lambda m:self.perception.append(json.loads(m.data)),10)
         self.create_timer(.05,self.control)
         self.create_timer(.5,self.battery)
 
@@ -122,6 +123,8 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-dir',type=Path,required=True)
     parser.add_argument('--expected-domain',type=int,required=True)
+    parser.add_argument('--mission-brain',action='store_true')
+    parser.add_argument('--perception',action='store_true')
     parser.add_argument('--goals',type=int,default=5)
     parser.add_argument('--exploration-timeout',type=float,default=600)
     args=parser.parse_args()
@@ -135,9 +138,10 @@ def main():
     rclpy.init(args=['--ros-args','-p','use_sim_time:=true','-p','require_mission_state:=true',
         '-p','require_navigation_handoff:=true','-p','enable_navigation_transmission:=true',
         '-p','battery_topic:=/frontier_trial/battery','-p','map_topic:=/robot1/map',
+        '-p','use_mission_brain:='+str(args.mission_brain).lower(),
         '-p','nav_action:=/robot1/navigate_to_pose','-p','tick_period_s:=0.75','-p','min_goal_distance_m:=0.5',
         '-r','/tf:=/robot1/tf','-r','/tf_static:=/robot1/tf_static'],signal_handler_options=SignalHandlerOptions.NO)
-    monitor=Monitor();g3=G3StateMachineNode();explorer=None
+    monitor=Monitor();g3=G3StateMachineNode();explorer=None;brain=None
     executor=SingleThreadedExecutor();executor.add_node(monitor);executor.add_node(g3)
     children=[];logs=[];report={};baseline=None;home=None;anchor=None
 
@@ -154,6 +158,9 @@ def main():
         return False
 
     try:
+        if args.mission_brain:
+            from g3_integration_eval.mission_brain_node import MissionBrainNode
+            brain=MissionBrainNode();executor.add_node(brain)
         start(['/opt/ros/humble/lib/ros_gz_bridge/parameter_bridge',
             '/world/world_demo/pose/info@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
             '--ros-args','-r','__node:=frontier_truth_evaluation',
@@ -164,7 +171,9 @@ def main():
                '/robot1/velodyne','/robot1/odometry/filtered','/robot1/cmd_vel','/exploration/events',
                '/mission_state','/g3/state','/g3/return_event','/frontier_trial/gt_pose','/frontier_trial/battery',
                '/robot1/navigate_to_pose/_action/status','/robot1/navigate_to_pose/_action/feedback',
-               '/navigation/handoff_request','/navigation/handoff_ack'],'bag.log')
+               '/navigation/handoff_request','/navigation/handoff_ack',
+               '/exploration/candidates','/mission/context','/brain/decision',
+               '/detections_3d','/detections_snapshot','/mission/detection_evidence','/perception/status'],'bag.log')
         start(['ros2','launch',str(root/'slam_navigation.launch.py')],'nav2.log')
         start(['python3',str(project/'baseline/g1_mapping_nav/tools/cmd_vel_scaler.py'),
             '--ros-args','-p','use_sim_time:=true','-p','input_topic:=/deepseek/nav_cmd',
@@ -187,6 +196,20 @@ def main():
         home=monitor.map_pose();baseline=monitor.poses[-1];anchor=baseline[4]-home[2]
         g3.set_parameters([Parameter('home_x',value=float(home[0])),Parameter('home_y',value=float(home[1]))])
         initial_area=monitor.maps[-1][1]
+        if args.perception:
+            start(['/opt/ros/humble/lib/ros_gz_bridge/parameter_bridge',
+                '/robot1/rgbd_d435/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+                '--ros-args','-r','__node:=rgbd_intrinsics_bridge'],'rgbd_bridge.log')
+            start(['python3','-m','g3_integration_eval.detection_evidence_node','--ros-args',
+                '-p','evidence_output_dir:='+str(root/'detections')],'evidence.log')
+            start(['env','OMP_NUM_THREADS=2','MKL_NUM_THREADS=2','OPENBLAS_NUM_THREADS=2',
+                'python3','-m','vision_detector.detector_node','--ros-args',
+                '-p','use_sim_time:=true','-p','color_topic:=/robot1/rgbd_d435/image',
+                '-p','depth_topic:=/robot1/rgbd_d435/depth_image',
+                '-p','camera_info_topic:=/robot1/rgbd_d435/camera_info',
+                '-p','weights:='+str(project/'baseline/g2_vision_explore/yolo26n.pt'),
+                '-p','tf_fallback_to_latest:=false',
+                '-r','/tf:=/robot1/tf','-r','/tf_static:=/robot1/tf_static'],'detector.log')
         explorer=VisionExplorer();executor.add_node(explorer)
         monitor.running=True;monitor.battery();monitor.command_pub.publish(String(data='EXPLORE'))
         print(json.dumps({'phase':'exploring','home_map':home,'truth_start':baseline[1:],
@@ -197,7 +220,7 @@ def main():
             return sum(e['status']=='succeeded' and e['geodesic_dist_m']>=.75 for e in monitor.events)>=args.goals
         if not spin_until(explored,args.exploration_timeout):raise RuntimeError('Insufficient successful frontier goals before deadline')
         # Exercise an active/late-accepted frontier cancellation at low-battery handoff.
-        spin_until(lambda:explorer._attempt is not None,3)
+        spin_until(lambda:explorer._attempt is not None or explorer._brain_pending is not None,3)
         monitor.battery_level=.1;monitor.battery()
         def returned():
             if any(e['status'] in ('aborted','canceled','rejected','server_unavailable') for e in monitor.returns):
@@ -252,7 +275,19 @@ def main():
             report.setdefault('truth_start',baseline[1:])
             report.setdefault('home_map',home)
             report['world_map_yaw_offset']=anchor
-        report.update(saved_map_yaml=(root/'slam_map.yaml').exists(),goal_source='G2 deterministic frontier',localization='online SLAM + foot-position / IMU EKF',
+        if args.mission_brain and not any(e['status']=='brain_selected' and not e['fallback'] for e in monitor.events):
+            report['success']=False
+            report['error']='No real DeepSeek decision reached navigation'
+        report['perception_enabled']=args.perception
+        report['perception_status']=monitor.perception[-1] if monitor.perception else None
+        if args.perception and not (monitor.perception and monitor.perception[-1]['stats']['frames']>0 and monitor.perception[-1]['map_tf_available']):
+            report['success']=False
+            report['error']='Perception frames or image-time map TF unavailable'
+        if (root/'detections/evidence.json').exists():
+            report['detection_evidence']=json.loads((root/'detections/evidence.json').read_text())
+        report.update(saved_map_yaml=(root/'slam_map.yaml').exists(),goal_source='DeepSeek-ranked G2 safe frontiers' if args.mission_brain else 'G2 deterministic frontier',
+            deepseek_selections=sum(e['status']=='brain_selected' and not e['fallback'] for e in monitor.events),
+            brain_fallback_selections=sum(e['status']=='brain_selected' and e['fallback'] for e in monitor.events),localization='online SLAM + foot-position / IMU EKF',
             static_map_loaded=False,truth_in_navigation_tf=False,requested_goals=args.goals,
             counted_goal_minimum_geodesic_distance_m=.75,node_minimum_goal_geodesic_distance_m=.5,home_error_limit_m=.4,
             meaningful_frontier_goals=sum(e['status']=='succeeded' and e['geodesic_dist_m']>=.75 for e in monitor.events),
@@ -262,7 +297,7 @@ def main():
             minimum_front_range_m=monitor.minimum_front if math.isfinite(monitor.minimum_front) else None,
             final_zero_command_published=True)
         (root/'report.json').write_text(json.dumps(report,indent=2));print(json.dumps(report),flush=True)
-        for node in [explorer,g3,monitor]:
+        for node in [explorer,brain,g3,monitor]:
             if node is not None:executor.remove_node(node);node.destroy_node()
         executor.shutdown();rclpy.shutdown()
     return 0 if report['success'] else 1

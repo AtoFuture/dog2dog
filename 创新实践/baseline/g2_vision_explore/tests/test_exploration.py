@@ -710,3 +710,27 @@ def test_minimum_goal_distance_filters_trivial_frontier_targets():
 def test_invalid_minimum_goal_distance_is_rejected(distance):
     with pytest.raises(ValueError,match='min_goal_distance_m'):
         GoalSelector(ExplorerParams(min_goal_distance_m=distance)).select(room_map(),ROOM_CENTRE_XY,0)
+
+
+def test_candidate_pool_diversifies_a_single_closed_frontier():
+    grid = room_map()
+    selector = GoalSelector()
+    result = selector.select(grid, ROOM_CENTRE_XY, 0, max_candidates=6)
+    assert len(result.candidates) >= 3
+    assert result.goal == selector.select(grid, ROOM_CENTRE_XY, 0).goal
+    for i, goal in enumerate(result.candidates):
+        assert selector.is_goal_valid(grid, ROOM_CENTRE_XY, goal, 0)
+        assert all(math.hypot(goal.x-other.x, goal.y-other.y) >= 1
+                   for other in result.candidates[:i])
+
+
+def test_delayed_candidate_rejected_when_map_changes_or_failure_blacklisted():
+    grid = room_map()
+    selector = GoalSelector()
+    goal = selector.select(grid, ROOM_CENTRE_XY, 0).goal
+    data = grid.data.copy()
+    row, col = (math.floor(v) for v in grid.world_to_grid(goal.x, goal.y))
+    data[row, col] = OCCUPIED
+    assert not selector.is_goal_valid(GridMap(data, RES), ROOM_CENTRE_XY, goal, 1)
+    selector.on_result(goal, False, 1)
+    assert not selector.is_goal_valid(grid, ROOM_CENTRE_XY, goal, 2)

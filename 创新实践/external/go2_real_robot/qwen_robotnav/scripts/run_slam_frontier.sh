@@ -3,7 +3,7 @@
 set -euo pipefail
 if [[ "${1:-}" == "--help" ]]; then
     echo 'Usage: run_slam_frontier.sh [OUTPUT_DIR] [GOALS=5] [--prepare-only]'
-    echo 'Environment: SLAM_ROS_DOMAIN_ID, SLAM_IGN_PARTITION, G1_SIM_WORKSPACE, G1_ROS_WRAPPER, G1_GPU_WRAPPER'
+    echo 'Environment: SLAM_ROS_DOMAIN_ID, SLAM_IGN_PARTITION, G1_SIM_WORKSPACE, G1_ROS_WRAPPER, G1_GPU_WRAPPER, SLAM_MISSION_BRAIN=1, SLAM_PERCEPTION=1, SLAM_MAX_RANGE'
     exit 0
 fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,8 +26,8 @@ OUTPUT_DIR="$(realpath "${OUTPUT_DIR}")"
 "${ROS_WRAPPER}" bash -c '
 export PYTHONPATH="$1/..:${PYTHONPATH:-}"
 python3 "$1/prepare_simulator_launch.py" --single-odom-tf --sim-workspace "$3" --output-dir "$2"
-python3 "$1/prepare_amcl_navigation.py" --localization slam --sim-workspace "$3" --output-dir "$2"
-' _ "${SCRIPT_DIR}" "${OUTPUT_DIR}" "${SIM_WORKSPACE}"
+python3 "$1/prepare_amcl_navigation.py" --localization slam --sim-workspace "$3" --output-dir "$2" --slam-max-range "$4"
+' _ "${SCRIPT_DIR}" "${OUTPUT_DIR}" "${SIM_WORKSPACE}" "${SLAM_MAX_RANGE:-4.0}"
 if [[ "${3:-}" == "--prepare-only" ]]; then
     echo "Prepared: ${OUTPUT_DIR}"
     exit 0
@@ -86,9 +86,21 @@ setsid "${ROS_WRAPPER}" bash -c '
 source "$1/install/setup.bash"
 export ROS_DOMAIN_ID="$3" IGN_PARTITION="$4" RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export CYCLONEDDS_URI="file://$1/src/docker/cyclonedds.xml"
-export PYTHONPATH="$5/baseline/g2_vision_explore:$5/baseline/g2_vision_explore/vision_explorer:$5/baseline/g3_integration_eval:${PYTHONPATH:-}"
-exec python3 "$6/validate_slam_frontier.py" --output-dir "$2" --expected-domain "$3" --goals "$7"
-' _ "${SIM_WORKSPACE}" "${OUTPUT_DIR}" "${TRIAL_DOMAIN}" "${TRIAL_PARTITION}" "${PROJECT_DIR}" "${SCRIPT_DIR}" "${GOALS}" >"${OUTPUT_DIR}/trial.log" 2>&1 &
+if [[ -f "$5/baseline/install/local_setup.bash" ]]; then source "$5/baseline/install/local_setup.bash"; fi
+export PYTHONPATH="$5/baseline/g2_vision_explore:$5/baseline/g2_vision_explore/vision_detector:$5/baseline/g2_vision_explore/vision_explorer:$5/baseline/g3_integration_eval:${PYTHONPATH:-}"
+BRAIN_ARGS=()
+if [[ "$8" == "1" ]]; then
+    set -a
+    source "$5/.env"
+    set +a
+    export MISSION_BRAIN_API_KEY="${MISSION_BRAIN_API_KEY:-${DEEPSEEK_API_KEY:-}}"
+    export MISSION_BRAIN_BASE_URL="${MISSION_BRAIN_BASE_URL:-${DEEPSEEK_VLM_BASE_URL:-https://api.deepseek.com}}"
+    export MISSION_BRAIN_MODEL="${MISSION_BRAIN_MODEL:-${DEEPSEEK_VLM_MODEL:-deepseek-flash}}"
+    BRAIN_ARGS=(--mission-brain)
+fi
+if [[ "$9" == "1" ]]; then BRAIN_ARGS+=(--perception); fi
+exec python3 "$6/validate_slam_frontier.py" "${BRAIN_ARGS[@]}" --output-dir "$2" --expected-domain "$3" --goals "$7"
+' _ "${SIM_WORKSPACE}" "${OUTPUT_DIR}" "${TRIAL_DOMAIN}" "${TRIAL_PARTITION}" "${PROJECT_DIR}" "${SCRIPT_DIR}" "${GOALS}" "${SLAM_MISSION_BRAIN:-0}" "${SLAM_PERCEPTION:-0}" >"${OUTPUT_DIR}/trial.log" 2>&1 &
 VALIDATION_GROUP=$!
 if wait "${VALIDATION_GROUP}"; then
     TRIAL_STATUS=0
@@ -98,6 +110,8 @@ fi
 VALIDATION_GROUP=""
 if [[ -f "${OUTPUT_DIR}/slam_map.yaml" ]]; then
     "${ROS_WRAPPER}" bash -c '
+if [[ -f "$3/baseline/install/local_setup.bash" ]]; then source "$3/baseline/install/local_setup.bash"; fi
+set -e
 export PYTHONPATH="$3/baseline/g3_integration_eval:${PYTHONPATH:-}"
 export MPLCONFIGDIR=/tmp/slam-frontier-mpl
 python3 "$1/evaluate_slam_frontier.py" "$2" --reference-map "$4/src/navigation2/maps/warehouse_map.yaml"

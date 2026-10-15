@@ -23,7 +23,7 @@ def main():
     choice="launch_file = 'gazebo_go2_sensors.launch.py'"
     if needle not in child or choice not in top:
         parser.error('Simulator launch layout changed; model generation could not be located')
-    child=child.replace(needle,needle+'\n        from qwen_robotnav.sim_model import horizontal_lidar_description\n        robot_desc = horizontal_lidar_description(robot_desc)')
+    child=child.replace(needle,needle+'\n        from qwen_robotnav.sim_model import horizontal_lidar_description, rgbd_optical_description\n        robot_desc = rgbd_optical_description(horizontal_lidar_description(robot_desc))')
     if args.single_odom_tf:
         odom_remaps='remappings=remappings\n        )\n\n        rviz_launch_file'
         ekf_params="{'use_sim_time': use_sim_time}],"

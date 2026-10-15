@@ -1,148 +1,160 @@
-"""ROS 2 wrapper for the guarded DeepSeek mission brain.
+"""Correlated frontier ranking with a killable, wall-time-bounded API worker.
 
-Input topics use JSON in std_msgs/String until the shared mission interfaces are
-frozen.  The node publishes decisions only; it never publishes motion commands.
+This node publishes decisions only. G2 owns Nav2 and rechecks delayed targets.
 """
-
 from __future__ import annotations
 
 import json
-from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Optional, Sequence
+import math
+import multiprocessing
+import time
 
 import rclpy
+from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, DurabilityPolicy
 from std_msgs.msg import String
 
 from g3_integration_eval.mission_brain import (
-    DeepSeekBrainProvider,
-    DeepSeekConfig,
-    FrontierCandidate,
-    decide_with_fallback,
+    DeepSeekBrainProvider, DeepSeekConfig, FrontierCandidate, decide_with_fallback,
 )
 
 
+def _worker(connection, config, context, candidates, evidence_ids):
+    try:
+        result = decide_with_fallback(DeepSeekBrainProvider(config), context, candidates, evidence_ids)
+        connection.send(result.to_dict())
+    except Exception:
+        # Never include credentials, headers or arbitrary response bodies in errors.
+        connection.send({'error': 'brain worker failed'})
+    finally:
+        connection.close()
+
+
 class MissionBrainNode(Node):
-    def __init__(self) -> None:
-        super().__init__("mission_brain")
-        self.declare_parameter("context_topic", "/mission/context")
-        self.declare_parameter("candidates_topic", "/exploration/candidates")
-        self.declare_parameter("decision_topic", "/brain/decision")
+    def __init__(self):
+        super().__init__('mission_brain')
+        self.declare_parameter('context_topic', '/mission/context')
+        self.declare_parameter('candidates_topic', '/exploration/candidates')
+        self.declare_parameter('decision_topic', '/brain/decision')
+        self._config = DeepSeekConfig.from_env()
+        self._context = None
+        self._active = None
+        self._process_context = multiprocessing.get_context('spawn')
+        self._publisher = self.create_publisher(String, self.get_parameter('decision_topic').value, 10)
+        self.create_subscription(String, self.get_parameter('context_topic').value, self._on_context, 10)
+        self.create_subscription(String, self.get_parameter('candidates_topic').value, self._on_candidates, 10)
+        qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._mission = None
+        self.create_subscription(String, '/mission_state', self._on_mission, qos)
+        self._steady = Clock(clock_type=ClockType.STEADY_TIME)
+        self.create_timer(.1, self._poll_result, clock=self._steady)
+        self.get_logger().info(f'Mission Brain ready: {self._config.model}; bounded candidate ranking')
 
-        self._provider = DeepSeekBrainProvider(DeepSeekConfig.from_env())
-        self._context: dict[str, Any] | None = None
-        self._executor = ThreadPoolExecutor(max_workers=1)
-        self._future: Future | None = None
-        self._generation = 0
+    def _on_mission(self, message):
+        self._mission = message.data
+        if self._mission != 'exploring':
+            self._stop_worker()
 
-        self._publisher = self.create_publisher(
-            String, str(self.get_parameter("decision_topic").value), 10
-        )
-        self.create_subscription(
-            String,
-            str(self.get_parameter("context_topic").value),
-            self._on_context,
-            10,
-        )
-        self.create_subscription(
-            String,
-            str(self.get_parameter("candidates_topic").value),
-            self._on_candidates,
-            10,
-        )
-        self.create_timer(0.1, self._poll_result)
-        self.get_logger().info(
-            "Mission Brain ready: provider=deepseek, model=deepseek-flash; "
-            "publishes guarded high-level decisions only"
-        )
-
-    def _on_context(self, message: String) -> None:
+    def _on_context(self, message):
         try:
             value = json.loads(message.data)
             if not isinstance(value, dict):
-                raise ValueError("context must be a JSON object")
+                raise ValueError('context must be an object')
             self._context = value
-        except (json.JSONDecodeError, ValueError) as exc:
-            self.get_logger().warning(f"invalid mission context: {exc}")
+            if value.get('mission_state') != 'EXPLORE' or value.get('localization_healthy') is not True:
+                self._stop_worker()
+        except (ValueError, TypeError):
+            self.get_logger().warning('Invalid mission context')
 
-    def _on_candidates(self, message: String) -> None:
-        if self._context is None:
-            self.get_logger().warning("candidate set ignored: no mission context yet")
-            return
-        if self._future is not None and not self._future.done():
-            self.get_logger().warning("candidate set ignored: brain request already active")
+    def _on_candidates(self, message):
+        if self._active is not None or self._mission != 'exploring':
             return
         try:
             payload = json.loads(message.data)
-            if not isinstance(payload, dict):
-                raise ValueError("candidate payload must be a JSON object")
-            candidates_raw = payload.get("candidates", [])
-            if not isinstance(candidates_raw, list):
-                raise ValueError("candidates must be a list")
-            candidates = tuple(
-                FrontierCandidate.from_mapping(item) for item in candidates_raw
-            )
-            evidence_ids = tuple(int(item) for item in payload.get("evidence_ids", []))
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-            self.get_logger().warning(f"invalid candidate set: {exc}")
+            request_id = payload['request_id']
+            if not isinstance(request_id, str) or not 1 <= len(request_id) <= 128:
+                raise ValueError('invalid request ID')
+            # Inline snapshot avoids racing two independent topics.
+            context = payload.get('context', self._context)
+            if not isinstance(context, dict) or context.get('mission_state') != 'EXPLORE' or context.get('localization_healthy') is not True:
+                raise ValueError('unsafe context')
+            raw = payload['candidates']
+            if not isinstance(raw, list) or not 1 <= len(raw) <= 16:
+                raise ValueError('invalid candidate count')
+            candidates = tuple(FrontierCandidate.from_mapping(item) for item in raw)
+            if len({item.candidate_id for item in candidates}) != len(candidates):
+                raise ValueError('duplicate candidate IDs')
+            # This endpoint ranks frontiers only; detection evidence uses its own collector.
+            if payload.get('evidence_ids', []) != []:
+                raise ValueError('frontier requests must not supply detection claims')
+            budget = float(payload.get('timeout_s', self._config.timeout_s))
+            if not math.isfinite(budget) or not .1 <= budget <= 60:
+                raise ValueError('invalid request budget')
+        except (ValueError, KeyError, TypeError, AttributeError):
+            self.get_logger().warning('Invalid frontier ranking request')
             return
+        receiver, sender = self._process_context.Pipe(duplex=False)
+        process = self._process_context.Process(
+            target=_worker, args=(sender, self._config, dict(context), candidates, ()), daemon=True)
+        process.start()
+        sender.close()
+        self._active = dict(id=request_id, process=process, receiver=receiver,
+                            deadline=time.monotonic()+min(budget, self._config.timeout_s))
 
-        self._generation += 1
-        generation = self._generation
-        context = dict(self._context)
-        self._future = self._executor.submit(
-            self._decide, generation, context, candidates, evidence_ids
-        )
+    def _stop_worker(self):
+        active, self._active = self._active, None
+        if active is None:
+            return
+        process = active['process']
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=.2)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=.2)
+        active['receiver'].close()
 
-    def _decide(self, generation, context, candidates, evidence_ids):
-        decision = decide_with_fallback(
-            self._provider, context, candidates, evidence_ids
-        )
-        return generation, decision
-
-    def _poll_result(self) -> None:
-        if self._future is None or not self._future.done():
+    def _poll_result(self):
+        active = self._active
+        if active is None:
             return
-        future = self._future
-        self._future = None
-        try:
-            generation, decision = future.result()
-        except Exception as exc:  # defensive boundary around worker failures
-            self.get_logger().error(f"brain worker failed without a decision: {exc}")
+        result = None
+        if time.monotonic() >= active['deadline']:
+            result = {'error': 'brain wall-time deadline exceeded'}
+        elif active['receiver'].poll():
+            try:
+                result = active['receiver'].recv()
+            except EOFError:
+                result = {'error': 'brain worker exited'}
+        elif not active['process'].is_alive():
+            result = {'error': 'brain worker exited'}
+        if result is None:
             return
-        if generation != self._generation:
-            self.get_logger().warning("stale brain decision discarded")
-            return
-        message = String()
-        message.data = json.dumps(decision.to_dict(), ensure_ascii=False)
-        self._publisher.publish(message)
-        self.get_logger().info(
-            f"brain decision: action={decision.action.value}, "
-            f"candidate={decision.candidate_id}, provider={decision.provider}, "
-            f"fallback={decision.fallback}"
-        )
+        result['request_id'] = active['id']
+        self._stop_worker()
+        if self._mission == 'exploring':
+            self._publisher.publish(String(data=json.dumps(result, ensure_ascii=False)))
 
     def destroy_node(self):
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        self._stop_worker()
         return super().destroy_node()
 
 
-def main(args: Optional[Sequence[str]] = None) -> None:
+def main(args=None):
     rclpy.init(args=args)
+    node = None
     try:
         node = MissionBrainNode()
-    except ValueError as exc:
-        rclpy.shutdown()
-        raise SystemExit(f"Mission Brain configuration error: {exc}") from exc
-    try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
-        node.destroy_node()
+        if node is not None:
+            node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

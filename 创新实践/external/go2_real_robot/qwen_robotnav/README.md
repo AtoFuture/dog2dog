@@ -146,8 +146,8 @@ G2 在 TF 缺失/过期、地图过期、任务状态不允许时不发新点，
 物理节点过滤测地距离小于 0.5 m 的原地点；回归只把 ≥0.75 m 的到点计入有效目标数，
 短启动点单列，以适应货架遮挡下的初始小地图。
 
-这一阶段的目标来源是 **G2 确定性 frontier**，DeepSeek 视觉航点节点保持停用以维持单一导航权。
-它验证 SLAM/frontier/G3 基础闭环，不代表 DeepSeek 已参与 frontier 排序或目标检出已验收。
+默认使用 **G2 确定性 frontier**。设置 `SLAM_MISSION_BRAIN=1` 后，DeepSeek 从 G2 提供的安全候选中选择目标，G2 复核后独占 Nav2 探索 action。
+设置 `SLAM_PERCEPTION=1` 可同时启用同源 RGB-D、YOLO 和 G3 检测证据记录。独立的 DeepSeek 视觉航点客户端保持停用。
 
 2026-10-15 实测：5 个有效目标 + 2 个启动点，低电量返航误差 0.263 m，
 在线已知面积从 3.73 m² 增至 132.62 m²；离线参考自由区域覆盖率 **30.72%**。
@@ -353,3 +353,26 @@ ros2 launch qwen_robotnav_ros robot_nav.launch.py instruction:="go forward"
 ## 许可证
 
 Apache-2.0
+
+
+## DeepSeek 排序与检测证据
+
+```bash
+SLAM_MISSION_BRAIN=1 SLAM_PERCEPTION=1 SLAM_ROS_DOMAIN_ID=197   ./scripts/run_slam_frontier.sh /tmp/deepseek_frontier_run 5
+```
+
+入口读取项目 `.env` 中的 `DEEPSEEK_API_KEY`；可用 `MISSION_BRAIN_*` 覆盖任务脑配置。
+模型只接收当前候选点及任务上下文。默认最多 6 点、间隔至少 1 米、15 秒等待上限；返回必须携带匹配的请求 ID。
+超时或非法结果使用 G2 原评分最佳点，发点前重查最新地图的间隙、可达性和机器人位姿。
+返航和停止会丢弃待处理结果，任务脑的独立 API 进程会被终止。该接口只负责 frontier 排序。
+
+`SLAM_PERCEPTION=1` 使用同一个 D435 RGB-D 传感器的彩色、深度及 CameraInfo，
+生成模型中补正光学坐标系；检测关闭“最新 TF”降级。`/perception/status` 记录帧数、图像时刻 TF 和失败计数。
+G3 把 `/detections_3d` 与 `/detections_snapshot` 持久化为 `detections/evidence.sqlite3`、`evidence.json` 和 JPEG。
+证据 ID 独立于跟踪 ID，消息乱序可配对；无跟踪 ID 的目标或多个不同抓拍无法唯一配对时标为歧义。
+当前不会根据普通目标检出自动宣布任务完成。
+
+实测：5 个有效探索目标、11 次真实 DeepSeek 选择、零回退，低电量返航误差 0.240 米；
+过程中 2 次 Nav2 失败后重选，参考地图覆盖率 26.94%，最差成功目标位置误差 0.513 米。
+本地照片正例已验证实际 YOLO → 三维消息 → G3 JPEG 证据记录，其中深度/TF 为合成输入，不能作为真实 RGB-D 精度证明。
+完整证据与已知限制见 [DeepSeek 排序和检测联调](docs/deepseek-frontier-perception-validation.md)。

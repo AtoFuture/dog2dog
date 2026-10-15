@@ -122,6 +122,7 @@ class GoalSelection:
 
     status: SelectStatus
     goal: Goal | None = None
+    candidates: tuple[Goal, ...] = ()
 
     @property
     def is_complete(self) -> bool:
@@ -401,6 +402,9 @@ class GoalSelector:
         grid: GridMap,
         robot_xy: tuple[float, float],
         now: float,
+        *,
+        max_candidates: int = 1,
+        separation_m: float = 1.0,
     ) -> GoalSelection:
         """选出一个目标点。
 
@@ -408,6 +412,8 @@ class GoalSelector:
         原先的 ``None`` 把四种完全不同的情形混成了一种，其中三种**都不该**
         被当成「探索完成」（否则地图没加载完就会让探索永久停机）。
         """
+        if not 1 <= max_candidates <= 16 or not math.isfinite(separation_m) or separation_m <= 0:
+            raise ValueError("candidate limit must be 1..16 and separation positive")
         p = self.params
         self._check_params()
         self._expire(now)
@@ -453,21 +459,22 @@ class GoalSelector:
         # 兜底：窗口内选不出时，用全图再算一次。代价是慢（一次全图 BFS），
         # 但只在罕见的「目标特别远」时才触发，换来的是不会静默停机。
         best = self._best_in_clusters(
-            grid, clusters, dist, valid_goal, uf_map, pullback_cells, kernel, now
+            grid, clusters, dist, valid_goal, uf_map, pullback_cells, kernel, now, max_candidates, separation_m
         )
-        if best is None and p.max_geodesic_radius_cells is not None:
+        if not best and p.max_geodesic_radius_cells is not None:
             dist_full = geodesic_distance(grid.traversable, start, None)
             best = self._best_in_clusters(
-                grid, clusters, dist_full, valid_goal, uf_map, pullback_cells, kernel, now
+                grid, clusters, dist_full, valid_goal, uf_map, pullback_cells, kernel, now, max_candidates, separation_m
             )
-            if best is not None:
-                best.used_full_map_search = True
+            if best:
+                for item in best:
+                    item.used_full_map_search = True
             else:
                 dist = dist_full
 
-        if best is None:
+        if not best:
             return GoalSelection(SelectStatus.NO_CANDIDATE)
-        return GoalSelection(SelectStatus.GOAL, best)
+        return GoalSelection(SelectStatus.GOAL, best[0], tuple(best))
 
     def _best_in_clusters(
         self,
@@ -479,9 +486,11 @@ class GoalSelector:
         pullback_cells: int,
         kernel: np.ndarray,
         now: float,
-    ) -> Goal | None:
+        max_candidates: int,
+        separation_m: float,
+    ) -> list[Goal]:
         p = self.params
-        best: Goal | None = None
+        pool: list[Goal] = []
         for cluster in clusters:
             # frontier 格紧贴未知区，clearance 天然只有一格 —— 直接校验必然全灭。
             # 先把簇在自由空间内向外扩张，让候选点从边界退回到房间内部。
@@ -509,27 +518,44 @@ class GoalSelector:
                 * self._visit_penalty(grid, candidates)
             )
 
-            k = int(np.argmax(gains))
-            gain = float(gains[k])
-            if gain <= 0.0:
-                continue
-
-            row, col = int(rows[k]), int(cols[k])
-            wx, wy = grid.grid_to_world(row, col)
-
-            if best is None or gain > best.gain:
-                # 朝向：从目标点指向**附近**那片 frontier 的质心。
-                # 那片区域在未知区一侧，面向它才能看到新东西。
+            # A single closed-ring frontier must still offer distinct directions.
+            for _ in range(max_candidates):
+                k = int(np.argmax(gains))
+                gain = float(gains[k])
+                if gain <= 0.0:
+                    break
+                row, col = int(rows[k]), int(cols[k])
+                wx, wy = grid.grid_to_world(row, col)
                 cx, cy = self._local_frontier_centroid(grid, cluster, row, col)
-                yaw = math.atan2(cy - wy, cx - wx)
-                best = Goal(
-                    x=wx,
-                    y=wy,
-                    yaw=yaw,
-                    cluster_label=cluster.label,
-                    gain=gain,
-                    geodesic_dist_m=float(dist[row, col]) * grid.resolution,
+                pool.append(Goal(
+                    x=wx, y=wy, yaw=math.atan2(cy-wy, cx-wx),
+                    cluster_label=cluster.label, gain=gain,
+                    geodesic_dist_m=float(dist[row, col])*grid.resolution,
                     unknown_fraction=float(uf_map[row, col]),
-                )
+                ))
+                distance = np.hypot(rows-row, cols-col)*grid.resolution
+                gains[distance < separation_m] = -1.0
 
-        return best
+        selected: list[Goal] = []
+        for goal in sorted(pool, key=lambda item: item.gain, reverse=True):
+            if all(math.hypot(goal.x-other.x, goal.y-other.y) >= separation_m
+                   for other in selected):
+                selected.append(goal)
+                if len(selected) == max_candidates:
+                    break
+        return selected
+
+    def is_goal_valid(self, grid: GridMap, robot_xy, goal: Goal, now: float) -> bool:
+        """Recheck a delayed decision against the current map and failure history."""
+        self._expire(now)
+        start = grid.nearest_traversable_index(*robot_xy)
+        row, col = (math.floor(v) for v in grid.world_to_grid(goal.x, goal.y))
+        if start is None or not (0 <= row < grid.height and 0 <= col < grid.width):
+            return False
+        if not grid.traversable[row, col] or grid.clearance_m()[row, col] < self.params.safety_radius_m:
+            return False
+        cells = np.array([[row, col]])
+        if not len(self._filter_blacklisted(grid, cells)):
+            return False
+        dist = geodesic_distance(grid.traversable, start, None)[row, col]
+        return bool(dist >= 0 and dist*grid.resolution >= self.params.min_goal_distance_m)

@@ -11,6 +11,7 @@ import math
 import json
 from functools import partial
 import time
+import uuid
 
 import numpy as np
 import rclpy
@@ -150,6 +151,10 @@ class VisionExplorer(Node):
 
         self._declare_params()
         p = self._p()
+        if not math.isfinite(p["brain_timeout_s"]) or not .1 <= p["brain_timeout_s"] <= 60:
+            raise ValueError("brain_timeout_s must be .1..60")
+        if not 1 <= p["brain_max_candidates"] <= 16:
+            raise ValueError("brain_max_candidates must be 1..16")
 
         self._sm = ExplorerStateMachine()
         # 安全与增益参数沿用内核默认值，物理目标的最小距离由 ROS 参数指定。
@@ -165,6 +170,7 @@ class VisionExplorer(Node):
         self._sequence = 0
         self._handoff_token = None
         self._stopped = False
+        self._brain_pending = None
 
         self._small_frontiers_count = 0
         self._no_candidate_count = 0
@@ -181,6 +187,9 @@ class VisionExplorer(Node):
         self.create_subscription(String, p["mission_state_topic"],
                                  self._on_mission_state, _MISSION_QOS)
 
+        self._candidates = self.create_publisher(String, '/exploration/candidates', 10)
+        self._context_pub = self.create_publisher(String, '/mission/context', 10)
+        self.create_subscription(String, '/brain/decision', self._on_brain_decision, 10)
         self._events = self.create_publisher(String, '/exploration/events', 10)
         self._handoff_ack = self.create_publisher(String, '/navigation/handoff_ack', 10)
         self.create_subscription(String, '/navigation/handoff_request', self._on_handoff, 10)
@@ -211,6 +220,9 @@ class VisionExplorer(Node):
             ("require_mission_state", False),
             ("map_timeout_s", 20.0),
             ("min_goal_distance_m", 0.5),
+            ("use_mission_brain", False),
+            ("brain_timeout_s", 15.0),
+            ("brain_max_candidates", 6),
             # 选点本身的参数由 ExplorerParams 声明（阈值、权重、TTL…）
         ])
 
@@ -218,7 +230,8 @@ class VisionExplorer(Node):
         return {n: self.get_parameter(n).value for n in (
             "map_topic", "mission_state_topic", "nav_action", "tick_period_s",
             "max_nav_timeout_s", "robot_frame", "map_frame",
-            "min_frontier_area_m2", "require_mission_state", "map_timeout_s", "min_goal_distance_m")}
+            "min_frontier_area_m2", "require_mission_state", "map_timeout_s", "min_goal_distance_m",
+            "use_mission_brain", "brain_timeout_s", "brain_max_candidates")}
 
     # ------------------------------------------------------------------
     # 订阅回调
@@ -281,6 +294,7 @@ class VisionExplorer(Node):
         self._mission_state = msg.data
         self._sm.on_mission_state(msg.data)
         if not self._sm.should_explore:
+            self._discard_brain("mission:"+msg.data)
             self._cancel_goal(self._now(), reason="mission:"+msg.data)
 
     # ------------------------------------------------------------------
@@ -291,7 +305,7 @@ class VisionExplorer(Node):
             return
         now = self._now()
         self._watch_navigation()
-        if self._stopped or self._attempt is not None or self._handoff_token is not None:
+        if self._stopped or self._attempt is not None or self._handoff_token is not None or self._brain_pending is not None:
             return
         cmd = self._sm.next_command()
         if cmd is Command.SEND_GOAL:
@@ -303,10 +317,13 @@ class VisionExplorer(Node):
     def _select_and_send(self, now: float) -> None:
         self._last_select_status = None
         robot_xy = self._robot_xy()
-        if robot_xy is None or self._grid is None or time.monotonic()-self._grid_stamp > self._p()['map_timeout_s']:
+        if robot_xy is None or not self._map_pose_healthy(robot_xy):
             self._sm.on_select_failed(False)
             self._record_select_status(SelectStatus.NO_ROBOT_POSE if robot_xy is None else None)
             self._track_select_failure()
+            return
+        if self._p()["use_mission_brain"]:
+            self._request_brain(robot_xy, now)
             return
         goal = select_and_report(
             self._selector, self._sm, self._grid, robot_xy, now,
@@ -315,6 +332,86 @@ class VisionExplorer(Node):
             self._send_goal(goal, now)
         else:
             self._track_select_failure()
+
+    def _map_pose_healthy(self, robot_xy):
+        if self._grid is None or time.monotonic()-self._grid_stamp > self._p()['map_timeout_s']:
+            return False
+        row, col = (math.floor(v) for v in self._grid.world_to_grid(*robot_xy))
+        return bool(self._grid.in_bounds(row, col) and self._grid.traversable[row, col])
+
+    def _request_brain(self, robot_xy, now):
+        result = self._selector.select(self._grid, robot_xy, now,
+            max_candidates=int(self._p()['brain_max_candidates']))
+        self._record_select_status(result.status)
+        if result.goal is None:
+            self._sm.on_select_failed(result.is_complete)
+            self._track_select_failure()
+            return
+        request_id = uuid.uuid4().hex
+        goals = {f'f{i}': goal for i, goal in enumerate(result.candidates)}
+        budget = float(self._p()['brain_timeout_s'])
+        self._brain_pending = dict(id=request_id, goals=goals, robot_xy=robot_xy,
+                                   deadline=time.monotonic()+budget)
+        context = dict(mission_state='EXPLORE', localization_healthy=True,
+                       task='Rank supplied safe frontiers for reconnaissance; choose SELECT_FRONTIER. '
+                            'Balance unknown-space gain and travel cost. No detection evidence is available.')
+        payload = dict(request_id=request_id, context=context, evidence_ids=[], timeout_s=budget,
+            candidates=[dict(id=key, x=g.x, y=g.y, information_gain=g.unknown_fraction,
+                             path_cost=g.geodesic_dist_m, failure_count=0,
+                             deterministic_score=g.gain) for key,g in goals.items()])
+        self._context_pub.publish(String(data=json.dumps(context)))
+        self._candidates.publish(String(data=json.dumps(payload)))
+        self._event('brain_requested', request_id=request_id, candidate_count=len(goals))
+
+    def _discard_brain(self, reason):
+        pending = getattr(self, '_brain_pending', None)
+        if pending is None:
+            return
+        self._brain_pending = None
+        self._sm.on_select_failed(False)
+        self._event('brain_discarded', request_id=pending['id'], reason=reason)
+
+    def _on_brain_decision(self, message):
+        pending = self._brain_pending
+        if pending is None:
+            return
+        try:
+            decision = json.loads(message.data)
+            if decision.get('request_id') != pending['id']:
+                return
+        except (ValueError, AttributeError):
+            return
+        if time.monotonic() >= pending['deadline']:
+            self._resolve_brain(None, 'deadline')
+            return
+        # Only the matching candidate ID is executable; model coordinates are ignored.
+        key = decision.get('candidate_id')
+        if decision.get('action') == 'SELECT_FRONTIER' and isinstance(key,str) and key in pending['goals'] and decision.get('fallback') is False:
+            self._resolve_brain(key, 'deepseek', decision)
+        else:
+            self._resolve_brain(None, 'invalid_or_fallback', decision)
+
+    def _resolve_brain(self, key, source, decision=None):
+        pending, self._brain_pending = self._brain_pending, None
+        if pending is None:
+            return
+        if self._stopped or not self._sm.should_explore or self._handoff_token is not None:
+            self._sm.on_select_failed(False)
+            self._event('brain_discarded', request_id=pending['id'], reason='mission_changed')
+            return
+        goal = pending['goals'].get(key) if key is not None else next(iter(pending['goals'].values()))
+        robot_xy = self._robot_xy()
+        valid = (robot_xy is not None and self._map_pose_healthy(robot_xy)
+                 and math.hypot(robot_xy[0]-pending['robot_xy'][0], robot_xy[1]-pending['robot_xy'][1]) <= .5
+                 and self._selector.is_goal_valid(self._grid, robot_xy, goal, self._now()))
+        if not valid:
+            self._sm.on_select_failed(False)
+            self._event('brain_discarded', request_id=pending['id'], reason='latest_map_or_pose_invalid')
+            return
+        self._event('brain_selected', request_id=pending['id'], candidate_id=key or 'f0',
+                    source=source, fallback=source!='deepseek', decision=decision)
+        self._sm.on_goal_sent()
+        self._send_goal(goal, self._now())
 
     def _record_select_status(self, status) -> None:
         self._last_select_status = status
@@ -462,12 +559,16 @@ class VisionExplorer(Node):
                 return
         except (ValueError,KeyError,TypeError):
             return
+        self._discard_brain('handoff')
         self._handoff_token = token
         self._mission_state = 'returning'
         self._sm.on_mission_state('returning')
         self._cancel_goal(reason='handoff')
 
     def _watch_navigation(self):
+        pending = getattr(self, '_brain_pending', None)
+        if pending is not None and time.monotonic() >= pending['deadline']:
+            self._resolve_brain(None, 'deadline')
         attempt = self._attempt
         if attempt is not None:
             if time.monotonic()-attempt['started'] > self._p()['max_nav_timeout_s']:
@@ -481,6 +582,7 @@ class VisionExplorer(Node):
             self._handoff_token = None
 
     def stop_navigation(self):
+        self._discard_brain('shutdown')
         self._stopped = True
         self._sm.on_mission_state('standby')
         self._cancel_goal(reason='shutdown')

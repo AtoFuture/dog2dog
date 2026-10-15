@@ -15,6 +15,7 @@
     conf: 0.25
     imgsz: 640
     device: cpu          # 实测 640 下 CPU 有 25 FPS，远超 5 Hz 需求，不必占 GPU
+    cpu_threads: 2     # Avoid excessive CPU inference threads delaying image/TF processing
     detect_hz: 5.0
     sync_slop_s: 0.05    # 50 ms ≈ Go2 行走 5 cm；跑得快时应调小
 
