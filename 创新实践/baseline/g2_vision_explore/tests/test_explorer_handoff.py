@@ -67,3 +67,15 @@ def test_missing_tf_does_not_fall_back_to_map_origin():
     node=fixture_node()
     node._tf=SimpleNamespace(lookup_transform=lambda *a:(_ for _ in ()).throw(RuntimeError('no transform')))
     assert node._robot_xy() is None
+
+
+def test_observation_switch_waits_for_old_action_terminal_without_blacklisting():
+    node=fixture_node();attempt=node._attempt
+    node._p=lambda:{'max_nav_timeout_s':120,'active_observation':True}
+    node._robot_xy=lambda:(0.,0.);node._map_pose_healthy=lambda xy:True
+    node._observation_goals=lambda *args:(Goal(2,0,0,1,1,2,.5,purpose='observe_occlusion'),)
+    node._watch_navigation()
+    assert attempt['cancel'] and attempt['reason']=='observation_available'
+    assert node._attempt is attempt and not node.results
+    node._on_goal_done(attempt,ready(SimpleNamespace(status=5)))
+    assert node._attempt is None and not node.results

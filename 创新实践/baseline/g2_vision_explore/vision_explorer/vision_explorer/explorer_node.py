@@ -12,6 +12,7 @@ import json
 from functools import partial
 import time
 import uuid
+from pathlib import Path
 
 import numpy as np
 import rclpy
@@ -26,8 +27,9 @@ from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                        ReliabilityPolicy)
 from std_msgs.msg import String
 
-from g2_core.explorer import ExplorerParams, Goal, GoalSelector, SelectStatus
+from g2_core.explorer import ExplorerParams, Goal, GoalSelector, GoalSelection, SelectStatus
 from g2_core.grid import GridMap
+from g2_core.observation import observation_candidates
 from g2_core.state_machine import (MISSION_EXPLORING, Command,
                                    ExplorerStateMachine, Phase)
 
@@ -156,6 +158,8 @@ class VisionExplorer(Node):
         if not 1 <= p["brain_max_candidates"] <= 16:
             raise ValueError("brain_max_candidates must be 1..16")
 
+        if p['active_observation'] and (not p['use_mission_brain'] or not Path(p['observation_bt_path']).is_file()):
+            raise ValueError('Active observation requires mission brain and a generated observation BT file')
         self._sm = ExplorerStateMachine()
         # 安全与增益参数沿用内核默认值，物理目标的最小距离由 ROS 参数指定。
         self._selector = GoalSelector(ExplorerParams(min_goal_distance_m=p['min_goal_distance_m']))
@@ -171,6 +175,7 @@ class VisionExplorer(Node):
         self._handoff_token = None
         self._stopped = False
         self._brain_pending = None
+        self._recon_status=None;self._recon_status_at=-math.inf
 
         self._small_frontiers_count = 0
         self._no_candidate_count = 0
@@ -188,6 +193,7 @@ class VisionExplorer(Node):
                                  self._on_mission_state, _MISSION_QOS)
 
         self._candidates = self.create_publisher(String, '/exploration/candidates', 10)
+        self.create_subscription(String,'/mission/recon_status',self._on_recon_status,10)
         self._context_pub = self.create_publisher(String, '/mission/context', 10)
         self.create_subscription(String, '/brain/decision', self._on_brain_decision, 10)
         self._events = self.create_publisher(String, '/exploration/events', 10)
@@ -223,6 +229,8 @@ class VisionExplorer(Node):
             ("use_mission_brain", False),
             ("brain_timeout_s", 15.0),
             ("brain_max_candidates", 6),
+            ("active_observation", False),
+            ("observation_bt_path", ""),
             # 选点本身的参数由 ExplorerParams 声明（阈值、权重、TTL…）
         ])
 
@@ -231,7 +239,7 @@ class VisionExplorer(Node):
             "map_topic", "mission_state_topic", "nav_action", "tick_period_s",
             "max_nav_timeout_s", "robot_frame", "map_frame",
             "min_frontier_area_m2", "require_mission_state", "map_timeout_s", "min_goal_distance_m",
-            "use_mission_brain", "brain_timeout_s", "brain_max_candidates")}
+            "use_mission_brain", "brain_timeout_s", "brain_max_candidates", "active_observation", "observation_bt_path")}
 
     # ------------------------------------------------------------------
     # 订阅回调
@@ -333,6 +341,37 @@ class VisionExplorer(Node):
         else:
             self._track_select_failure()
 
+    def _on_recon_status(self,msg):
+        try:
+            value=json.loads(msg.data)
+            if not isinstance(value,dict) or not isinstance(value.get('missing_counts'),dict):return
+            if not all(isinstance(c,int) and not isinstance(c,bool) and c>=0 for c in value['missing_counts'].values()):return
+            if not isinstance(value.get('targets',{}),dict):return
+            for target in value.get('targets',{}).values():
+                position=target['position_m']
+                if len(position)!=3 or not all(math.isfinite(float(v)) for v in position):return
+            self._recon_status=value;self._recon_status_at=time.monotonic()
+        except (ValueError,TypeError,KeyError,AttributeError):return
+
+    def _observation_goals(self,robot_xy,now):
+        if not self._p().get('active_observation',False):return ()
+        status=getattr(self,'_recon_status',None)
+        if not status or status.get('state')!='searching' or time.monotonic()-self._recon_status_at>5.:return ()
+        if not any(count>0 for count in status['missing_counts'].values()):return ()
+        anchors=[t['position_m'][:2] for t in status.get('targets',{}).values()]
+        self._selector._expire(now)
+        visited=[(v.x,v.y) for v in self._selector._visits]
+        goals=observation_candidates(self._grid,robot_xy,anchors=anchors,visited=visited,
+            safety_radius_m=self._selector.params.safety_radius_m,max_candidates=int(self._p()['brain_max_candidates']))
+        valid=tuple(g for g in goals if self._selector.is_goal_valid(self._grid,robot_xy,g,now))
+        if valid:self._cached_observation=(valid,time.monotonic())
+        elif getattr(self,'_cached_observation',None) is not None:
+            cached,at=self._cached_observation
+            if time.monotonic()-at<8.:
+                valid=tuple(g for g in cached if self._selector.is_goal_valid(self._grid,robot_xy,g,now)
+                            and not any(math.hypot(g.x-v[0],g.y-v[1])<.75 for v in visited))
+        return valid
+
     def _map_pose_healthy(self, robot_xy):
         if self._grid is None or time.monotonic()-self._grid_stamp > self._p()['map_timeout_s']:
             return False
@@ -340,8 +379,10 @@ class VisionExplorer(Node):
         return bool(self._grid.in_bounds(row, col) and self._grid.traversable[row, col])
 
     def _request_brain(self, robot_xy, now):
-        result = self._selector.select(self._grid, robot_xy, now,
-            max_candidates=int(self._p()['brain_max_candidates']))
+        observation=self._observation_goals(robot_xy,now)
+        result = (GoalSelection(SelectStatus.GOAL,observation[0],observation) if observation else
+                  self._selector.select(self._grid, robot_xy, now,
+                    max_candidates=int(self._p()['brain_max_candidates'])))
         self._record_select_status(result.status)
         if result.goal is None:
             self._sm.on_select_failed(result.is_complete)
@@ -354,14 +395,20 @@ class VisionExplorer(Node):
                                    deadline=time.monotonic()+budget)
         context = dict(mission_state='EXPLORE', localization_healthy=True,
                        task='Rank supplied safe frontiers for reconnaissance; choose SELECT_FRONTIER. '
-                            'Balance unknown-space gain and travel cost. No detection evidence is available.')
+                            'Balance unknown-space gain and travel cost. Never infer that a hidden person exists.')
+        if observation:
+            context.update(task='Select one supplied safe observation viewpoint to expose unknown space behind a mapped occluder. '
+                                'Prioritize visibility gain, then travel cost. These are visibility hypotheses, not detections.',
+                           missing_counts=self._recon_status['missing_counts'],
+                           candidate_views={k:dict(purpose=g.purpose,look_at=g.look_at,occluder=g.occluder) for k,g in goals.items()})
         payload = dict(request_id=request_id, context=context, evidence_ids=[], timeout_s=budget,
             candidates=[dict(id=key, x=g.x, y=g.y, information_gain=g.unknown_fraction,
                              path_cost=g.geodesic_dist_m, failure_count=0,
                              deterministic_score=g.gain) for key,g in goals.items()])
         self._context_pub.publish(String(data=json.dumps(context)))
         self._candidates.publish(String(data=json.dumps(payload)))
-        self._event('brain_requested', request_id=request_id, candidate_count=len(goals))
+        self._event('brain_requested', request_id=request_id, candidate_count=len(goals),
+                    purpose='observe_occlusion' if observation else 'frontier')
 
     def _discard_brain(self, reason):
         pending = getattr(self, '_brain_pending', None)
@@ -418,6 +465,7 @@ class VisionExplorer(Node):
 
     def _track_select_failure(self) -> None:
         status = self._last_select_status
+        self._event('search_unavailable',reason=status.value if status is not None else 'map_or_pose_unavailable')
         if status is None:
             self.get_logger().debug("本轮没发点（无地图）")
         elif status is SelectStatus.SMALL_FRONTIERS:
@@ -457,7 +505,8 @@ class VisionExplorer(Node):
         if attempt is not None:
             goal = attempt['goal']
             payload.update(attempt_id=attempt['id'], target={'x':goal.x,'y':goal.y,'yaw':goal.yaw},
-                           gain=goal.gain, geodesic_dist_m=goal.geodesic_dist_m)
+                           gain=goal.gain, geodesic_dist_m=goal.geodesic_dist_m,
+                           purpose=goal.purpose,look_at=goal.look_at,occluder=goal.occluder)
         self._events.publish(String(data=json.dumps(payload)))
         self.get_logger().info(json.dumps(payload))
 
@@ -466,6 +515,13 @@ class VisionExplorer(Node):
             self._sm.on_goal_result(False)
             return
         msg = NavigateToPose.Goal()
+        if goal.purpose=='observe_occlusion':
+            path=self._p().get('observation_bt_path','')
+            if not path:
+                self._sm.on_goal_result(False)
+                self._event('search_unavailable',reason='observation_tree_unconfigured')
+                return
+            msg.behavior_tree=path
         msg.pose.header.frame_id = self._p()['map_frame']
         msg.pose.header.stamp = self.get_clock().now().to_msg()
         msg.pose.pose.position.x = float(goal.x)
@@ -570,6 +626,13 @@ class VisionExplorer(Node):
         if pending is not None and time.monotonic() >= pending['deadline']:
             self._resolve_brain(None, 'deadline')
         attempt = self._attempt
+        if (attempt is not None and not attempt['cancel'] and attempt['goal'].purpose=='frontier'
+            and self._sm.should_explore and self._p().get('active_observation',False)
+            and time.monotonic()-getattr(self,'_view_check_at',-math.inf)>2.):
+            self._view_check_at=time.monotonic()
+            xy=self._robot_xy()
+            if xy is not None and self._map_pose_healthy(xy) and self._observation_goals(xy,self._now()):
+                self._cancel_goal(reason='observation_available')
         if attempt is not None:
             if time.monotonic()-attempt['started'] > self._p()['max_nav_timeout_s']:
                 self._cancel_goal(reason='timeout')

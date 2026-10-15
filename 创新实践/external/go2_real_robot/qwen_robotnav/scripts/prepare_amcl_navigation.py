@@ -6,7 +6,8 @@ The generated navigation output must go through the simulator velocity scaler.
 
 import argparse
 from pathlib import Path
-import shutil
+import copy
+import xml.etree.ElementTree as ET
 
 import yaml
 
@@ -34,7 +35,9 @@ def main():
                 set_initial_pose=True, transform_tolerance=0.5,
                 initial_pose=dict(x=args.initial_x, y=args.initial_y, z=0.0, yaw=args.initial_yaw))
     # Known dock pose is initialization only; no truth relay or fixed map->odom.
-    shutil.copyfile(args.bt_file, root/'nav2_go2_bt.xml')
+    normal_tree=ET.parse(args.bt_file)
+    for follow in normal_tree.findall('.//FollowPath'):follow.set('goal_checker_id','general_goal_checker')
+    normal_tree.write(root/'nav2_go2_bt.xml',encoding='utf-8',xml_declaration=True)
     config['bt_navigator']['ros__parameters'].update(
         odom_topic='/robot1/odometry/filtered', default_nav_to_pose_bt_xml=str(root/'nav2_go2_bt.xml'))
     config['local_costmap']['local_costmap']['ros__parameters']['global_frame'] = 'odom'
@@ -45,6 +48,16 @@ def main():
     controller['controller_frequency'] = 10.0
     controller['progress_checker'].update(required_movement_radius=0.1, movement_time_allowance=30.0)
     controller['FollowPath']['desired_linear_vel'] = 0.20
+    controller['goal_checker_plugins'].append('observation_goal_checker')
+    controller['observation_goal_checker']=copy.deepcopy(controller['general_goal_checker'])
+    controller['observation_goal_checker'].update(xy_goal_tolerance=.20,yaw_goal_tolerance=.25)
+    tree=ET.parse(args.bt_file)
+    for follow in tree.findall('.//FollowPath'):follow.set('goal_checker_id','observation_goal_checker')
+    behavior=tree.find('.//BehaviorTree')
+    main=behavior[0];behavior.remove(main)
+    sequence=ET.SubElement(behavior,'Sequence',name='NavigateThenObserve')
+    sequence.append(main);ET.SubElement(sequence,'Wait',wait_duration='3.0')
+    tree.write(root/'observation_bt.xml',encoding='utf-8',xml_declaration=True)
     (root/'nav2.yaml').write_text(yaml.safe_dump(config, sort_keys=False))
     official = Path('/opt/ros/humble/share/nav2_bringup/launch/navigation_launch.py').read_text()
     smoother = "('cmd_vel_smoothed', 'cmd_vel')"

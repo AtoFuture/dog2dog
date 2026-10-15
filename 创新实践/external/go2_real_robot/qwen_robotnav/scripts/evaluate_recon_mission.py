@@ -15,6 +15,8 @@ from rclpy.serialization import deserialize_message
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 from action_msgs.msg import GoalStatusArray
+from tf2_msgs.msg import TFMessage
+from rosgraph_msgs.msg import Clock
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from qwen_robotnav.recon_audit import match_targets
@@ -67,11 +69,35 @@ def main():
     topics=['/robot1/rgbd_d435/image','/robot1/rgbd_d435/depth_image']
     status_topic='/robot1/navigate_to_pose/_action/status'
     return_topic='/g3/return_event';mission_topic='/mission/recon_status'
-    reader.set_filter(rosbag2_py.StorageFilter(topics=topics+[status_topic,return_topic,mission_topic]))
+    gt_topic='/frontier_trial/gt_pose';event_topic='/exploration/events'
+    reader.set_filter(rosbag2_py.StorageFilter(topics=topics+[status_topic,return_topic,mission_topic,gt_topic,event_topic,'/clock']))
     matched={};saved=[];successful_action_ids=set();recorded_return_goal=None;recorded_mission_completed=False
+    clock_ns=None;truth_poses={};observation_events=[];observation_requests=set();real_observation_decisions=0
+    first_observation_stamp=None
     output=root/'recon_validation';output.mkdir(exist_ok=True)
     while reader.has_next():
         topic,data,_=reader.read_next()
+        if topic=='/clock':
+            clock=deserialize_message(data,Clock).clock
+            clock_ns=clock.sec*1_000_000_000+clock.nanosec
+            continue
+        if topic==gt_topic:
+            for tr in deserialize_message(data,TFMessage).transforms:
+                if tr.child_frame_id!='robot1_my_bot':continue
+                stamp=tr.header.stamp.sec*1_000_000_000+tr.header.stamp.nanosec
+                stamp=stamp or clock_ns
+                if stamp is not None:truth_poses[stamp]=[tr.transform.translation.x,tr.transform.translation.y]
+            continue
+        if topic==event_topic:
+            event=json.loads(deserialize_message(data,String).data)
+            if event.get('status')=='brain_requested' and event.get('purpose')=='observe_occlusion':
+                observation_requests.add(event['request_id'])
+            if (event.get('status')=='brain_selected' and event.get('request_id') in observation_requests
+                and event.get('source')=='deepseek' and event.get('fallback') is False):real_observation_decisions+=1
+            if event.get('purpose')=='observe_occlusion':
+                observation_events.append(event)
+                if event.get('status')=='accepted' and first_observation_stamp is None:first_observation_stamp=clock_ns
+            continue
         if topic==status_topic:
             for status in deserialize_message(data,GoalStatusArray).status_list:
                 if status.status==4:successful_action_ids.add(bytes(status.goal_info.goal_id.uuid).hex())
@@ -80,7 +106,7 @@ def main():
             value=json.loads(deserialize_message(data,String).data)
             if topic==return_topic and value.get('attempt_id')==mission['return_attempt_id'] and value.get('status')=='succeeded':
                 recorded_return_goal=value.get('goal_id')
-            if topic==mission_topic and value.get('return_attempt_id')==mission['return_attempt_id'] and value.get('state')=='returned':
+            if topic==mission_topic and value.get('return_attempt_id')==mission['return_attempt_id'] and value.get('state')==mission['state'] and mission['state'] in ('returned','returned_incomplete'):
                 recorded_mission_completed=True
             continue
         msg=deserialize_message(data,Image)
@@ -120,12 +146,34 @@ def main():
             and all(t['confirmed_before_motion'] for t in visible)
             and all(not t['confirmed_before_motion'] for t in hidden)
             and initial_stamps<={sample['stamp_ns'] for sample in saved})
-    success=(initial_occlusion_control is not False and recorded_return_success and recorded_mission_completed and (root/'bag/metadata.yaml').is_file()
+    active_discoveries=[]
+    for target in target_results:
+        if target['initial_visibility_design']!='full_occlusion' or not target['confirmed_during_mission']:continue
+        stamp=target['first_confirmation_stamp_ns']
+        nearest=min(truth_poses,key=lambda t:abs(t-stamp)) if truth_poses else None
+        displacement=None
+        if nearest is not None and abs(nearest-stamp)<=200_000_000:
+            displacement=math.dist(truth_poses[nearest],start[:2])
+        active_discoveries.append(dict(target=target['name'],confirmation_stamp_ns=stamp,
+            truth_stamp_ns=nearest,displacement_from_start_m=displacement,
+            after_observation_started=first_observation_stamp is not None and stamp>first_observation_stamp))
+    active_observation_proven=bool(real_observation_decisions>0 and first_observation_stamp is not None
+        and active_discoveries and all(d['after_observation_started'] and d['displacement_from_start_m'] is not None
+            and d['displacement_from_start_m']>=.75 for d in active_discoveries))
+    require_active_proof=report.get('active_observation',False) and scene.get('scenario')=='full'
+    success=((not require_active_proof or active_observation_proven) and initial_occlusion_control is not False and recorded_return_success and recorded_mission_completed and (root/'bag/metadata.yaml').is_file()
              and report['success'] and mission['state']=='returned' and len(audits)>=2 and counts_ok and all(j is not None for j in assignment)
              and stamps<={sample['stamp_ns'] for sample in saved}
              and all(o['jpeg_decodable'] and o['planar_error_m'] is not None and o['planar_error_m']<=a.target_error_limit for o in audits)
              and not report['truth_in_navigation_tf'] and not report['static_map_loaded'])
-    result=dict(success=bool(success),recorded_return_success=recorded_return_success,
+    safe_return_success=bool(recorded_return_success and recorded_mission_completed
+        and mission['state'] in ('returned','returned_incomplete') and report.get('navigation_return_success',report['success'])
+        and (root/'bag/metadata.yaml').is_file() and report.get('truth_home_error_m',float('inf'))<=.4)
+    result=dict(success=bool(success),safe_return_success=safe_return_success,
+                active_observation_audit=dict(proven=active_observation_proven,real_model_decisions=real_observation_decisions,
+                    events=observation_events,discoveries=active_discoveries,
+                    truth_time_alignment='pose header when nonzero; otherwise preceding recorded /clock; maximum 0.2 s sample mismatch'),
+                mission_state=mission['state'],return_reason=mission.get('return_reason'),missing_counts=mission.get('missing_counts'),recorded_return_success=recorded_return_success,
                 recorded_mission_completed=recorded_mission_completed,audits=audits,exact_stamp_rgbd_samples=saved,
                 planar_error_limit_m=a.target_error_limit,truth_used_only_offline=True,
                 synthetic_rgb_or_depth_injected=False,return_trigger=report['return_trigger'],
@@ -136,10 +184,11 @@ def main():
                 unmatched_estimates=sum(j is None for j in assignment),
                 scope='stationary 3-D people; occlusion labels describe intended initial scene geometry; inspect raw RGB-D')
     (root/'recon_validation.json').write_text(json.dumps(result,indent=2))
-    lines=['# 侦查任务报告','',f'验收结果：{"通过" if success else "未通过"}',
+    lines=['# 侦查任务报告','',f'完整任务验收：{"通过" if success else "未通过"}；安全返航：{safe_return_success}',
         '',f'任务：确认 {required_counts}（每人两次带 JPEG 的跟踪观测），完成 {mission["minimum_exploration_goals"]} 个有效探索目标后返航。',
         f'有效探索目标：{mission["completed_exploration_goals"]}；返航真值误差：{report.get("truth_home_error_m","未完成返航")} 米。',
         f'实际 DeepSeek 选择：{report["deepseek_selections"]} 次；回退：{report["brain_fallback_selections"]} 次。',
+        f'主动观察证据链：{active_observation_proven}；观察点真实模型选择：{real_observation_decisions} 次。',
         '', '人员平面位置误差按代表点与人物模型原点比较；不代表全身三维重建精度。','']
     for target in target_results:
         lines.append(f'- {target["name"]}（初始设计 {target["initial_visibility_design"]}）：静止阶段确认 {target["confirmed_before_motion"]}；任务中确认 {target["confirmed_during_mission"]}。')

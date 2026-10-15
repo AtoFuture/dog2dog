@@ -49,3 +49,15 @@ def test_close_people_are_conservatively_unresolved_and_id_zero_never_counts():
     assert len(confirmed_instances(data,['person']))==1
     for item in data['observations']:item['track_id']=0
     assert not confirmed_instances(data,['person'])
+
+
+def test_track_id_reuse_at_distinct_stationary_locations_is_not_one_identity():
+    from g3_integration_eval.recon_task import confirmed_instances
+    data=payload()
+    for eid,stamp in [(3,30_000_000_000),(4,31_000_000_000)]:
+        item=observation(eid,stamp);item['position_m'][1]=1.8
+        data['observations'].append(item);data['ready_evidence_ids'].append(eid)
+    result=confirmed_instances(data,['person'])
+    assert len(result)==2
+    assert result['person']['track_id']==result['person:2']['track_id']==1
+    assert result['person:2']['evidence_ids']==[3,4]

@@ -73,3 +73,32 @@ def test_invented_candidate_cannot_create_coordinates():
     node._on_brain_decision(decision(candidate_id='invented'))
     assert node.sent == [Goal(1,0,0,1,1,1,.5)]
     assert node.events[0][1]['fallback']
+
+
+def test_viewpoint_survives_short_map_flicker_but_safety_is_rechecked(monkeypatch):
+    node=fixture_node();goal=Goal(2,0,0,1,1,2,.5,purpose='observe_occlusion')
+    node._p=lambda:{'active_observation':True,'brain_max_candidates':6}
+    node._recon_status={'state':'searching','missing_counts':{'person':1},'targets':{}}
+    node._recon_status_at=time.monotonic()
+    node._selector._expire=lambda now:None;node._selector._visits=[]
+    node._selector.params=SimpleNamespace(safety_radius_m=.45)
+    batches=iter([(goal,),(),(),()])
+    monkeypatch.setattr('vision_explorer.explorer_node.observation_candidates',lambda *a,**kw:next(batches))
+    assert node._observation_goals((0,0),1)==(goal,)
+    assert node._observation_goals((0,0),1)==(goal,)
+    node._selector.is_goal_valid=lambda *args:False
+    assert not node._observation_goals((0,0),1)
+    node._selector.is_goal_valid=lambda *args:True
+    at=time.monotonic()+9.;node._recon_status_at=at
+    monkeypatch.setattr('vision_explorer.explorer_node.time.monotonic',lambda:at)
+    assert not node._observation_goals((0,0),1)
+
+
+def test_recon_status_rejects_invalid_counts_and_stale_observation_context():
+    node=fixture_node();node._recon_status=None
+    node._on_recon_status(SimpleNamespace(data='{"missing_counts":{"person":"unknown"}}'))
+    assert node._recon_status is None
+    node._p=lambda:{'active_observation':True}
+    node._recon_status={'state':'searching','missing_counts':{'person':1}}
+    node._recon_status_at=time.monotonic()-6
+    assert not node._observation_goals((0,0),1)

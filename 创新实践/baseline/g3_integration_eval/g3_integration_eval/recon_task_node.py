@@ -2,6 +2,8 @@
 import json
 from pathlib import Path
 import time
+import math
+from rclpy.clock import Clock, ClockType
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy
@@ -16,6 +18,8 @@ class ReconTaskNode(Node):
         self.declare_parameter('minimum_exploration_goals',1)
         self.declare_parameter('required_person_count',1)
         self.declare_parameter('recon_output_dir','')
+        self.declare_parameter('search_timeout_s',600.)
+        self.declare_parameter('no_candidate_timeout_s',30.)
         self.required = list(self.get_parameter('required_classes').value)
         self.required_person_count=int(self.get_parameter('required_person_count').value)
         self.minimum_goals = int(self.get_parameter('minimum_exploration_goals').value)
@@ -27,6 +31,12 @@ class ReconTaskNode(Node):
             raise ValueError('Use a fresh reconnaissance output directory')
         self.state='waiting';self.mission=None;self.started_stamp=None
         self.targets={};self.completed_goals=set();self.return_attempt=None;self.return_requested=False
+        self.search_timeout=float(self.get_parameter('search_timeout_s').value)
+        self.no_candidate_timeout=float(self.get_parameter('no_candidate_timeout_s').value)
+        if not all(math.isfinite(v) and v>0 for v in (self.search_timeout,self.no_candidate_timeout)):
+            raise ValueError('Search and no-candidate budgets must be finite and positive')
+        self.search_started_at=None;self.unavailable_since=None;self.return_reason=None
+        self.search_budget_paused=False
         self.history=[]
         self.publisher=self.create_publisher(String,'/mission/recon_status',10)
         self.command=self.create_publisher(String,'/g3/command',10)
@@ -35,6 +45,8 @@ class ReconTaskNode(Node):
         self.create_subscription(String,'/mission/detection_evidence',self._evidence,10)
         self.create_subscription(String,'/exploration/events',self._navigation,30)
         self.create_subscription(String,'/g3/return_event',self._return_event,30)
+        self._budget_clock=Clock(clock_type=ClockType.STEADY_TIME)
+        self.create_timer(1.,self._check_budget,clock=self._budget_clock)
         self._save()
 
     def _save(self):
@@ -43,7 +55,9 @@ class ReconTaskNode(Node):
             identity_policy='stationary targets; merge track IDs within 0.8 m XY; closer people unresolved',minimum_exploration_goals=self.minimum_goals,
             completed_exploration_goals=len(self.completed_goals),targets=self.targets,
             return_requested=self.return_requested,return_attempt_id=self.return_attempt,
-            success=self.state=='returned',history=self.history)
+            success=self.state=='returned',return_success=self.state in ('returned','returned_incomplete'),
+            return_reason=self.return_reason,missing_counts=self.missing_counts(),
+            search_timeout_s=self.search_timeout,history=self.history)
         temp=self.directory/'mission_report.json.tmp'
         temp.write_text(json.dumps(report,ensure_ascii=False,indent=2));temp.replace(self.directory/'mission_report.json')
         self.publisher.publish(String(data=json.dumps(report,ensure_ascii=False)))
@@ -57,6 +71,7 @@ class ReconTaskNode(Node):
         self.mission=msg.data
         if self.mission=='exploring' and self.started_stamp is None:
             self.started_stamp=self.get_clock().now().nanoseconds
+            self.search_started_at=time.monotonic()
             self._transition('searching')
         elif self.mission=='estop':self._transition('failed')
         elif self.mission=='returning' and not self.return_requested:self._transition('interrupted')
@@ -72,6 +87,9 @@ class ReconTaskNode(Node):
         if self.state!='searching':return
         try:
             event=json.loads(msg.data)
+            if event['status']=='search_unavailable' and event.get('reason') in ('NO_FRONTIER','NO_CANDIDATE','SMALL_FRONTIERS'):
+                if getattr(self,'unavailable_since',None) is None:self.unavailable_since=time.monotonic()
+            elif event['status'] in ('sending','brain_requested','search_unavailable'):self.unavailable_since=None
             if event['status']=='succeeded' and event.get('geodesic_dist_m',0)>=.75:
                 self.completed_goals.add(event['attempt_id'])
         except (KeyError,TypeError,ValueError):return
@@ -81,28 +99,47 @@ class ReconTaskNode(Node):
         return all(sum(t.get('class_name',key.split(':')[0])==c for key,t in self.targets.items())
                    >= (getattr(self,'required_person_count',1) if c=='person' else 1) for c in self.required)
 
+    def missing_counts(self):
+        return {c:max(0,(getattr(self,'required_person_count',1) if c=='person' else 1)
+                      -sum(t.get('class_name',key.split(':')[0])==c for key,t in self.targets.items())) for c in self.required}
+
+    def request_return(self,reason):
+        if self.return_requested or self.state!='searching' or self.mission!='exploring':return
+        self.return_requested=True;self.return_reason=reason
+        self._transition('return_requested')
+        self.command.publish(String(data='RETURN'))
+
+    def _check_budget(self):
+        if self.state!='searching' or self.mission!='exploring':return
+        self._maybe_return()
+        if self.return_requested or getattr(self,'search_budget_paused',False):return
+        now=time.monotonic()
+        if self.search_started_at is not None and now-self.search_started_at>=self.search_timeout:
+            self.request_return('search_budget_exhausted')
+        elif self.unavailable_since is not None and now-self.unavailable_since>=self.no_candidate_timeout:
+            self.request_return('no_reachable_viewpoints')
+
     def _maybe_return(self):
         if (not self.return_requested and self.mission=='exploring'
             and self.objective_confirmed() and len(self.completed_goals)>=self.minimum_goals):
-            self.return_requested=True
-            self._transition('return_requested')
-            self.command.publish(String(data='RETURN'))
+            self.request_return('objective_completed')
         else:self._save()
 
     def _return_event(self,msg):
-        if not self.return_requested or self.state in ('returned','failed'):return
+        if not self.return_requested or self.state in ('returned','returned_incomplete','failed'):return
         try:
             event=json.loads(msg.data);attempt=event['attempt_id'];status=event['status']
         except (ValueError,KeyError,TypeError):return
         if self.return_attempt is None and status in ('waiting_for_server','goal_request_sent','accepted'):
             self.return_attempt=attempt
         if not attempt or attempt!=self.return_attempt:return
-        if status=='succeeded':self._transition('returned')
+        if status=='succeeded':
+            self._transition('returned' if getattr(self,'return_reason',None) in (None,'objective_completed') else 'returned_incomplete')
         elif status in ('aborted','canceled','rejected','server_unavailable'):self._transition('failed')
 
 
     def destroy_node(self):
-        if self.state not in ('returned','failed','interrupted','aborted'):
+        if self.state not in ('returned','returned_incomplete','failed','interrupted','aborted'):
             self._transition('aborted')
         return super().destroy_node()
 

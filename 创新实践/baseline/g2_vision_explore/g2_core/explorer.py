@@ -54,6 +54,10 @@ class Goal:
     正常情况应为 False；频繁为 True 说明该半径参数设小了。
     """
 
+    purpose: str = "frontier"
+    look_at: tuple[float,float] | None = None
+    occluder: tuple[float,float] | None = None
+
 
 class SelectStatus(enum.Enum):
     """``select()`` 的结果状态。
@@ -557,5 +561,14 @@ class GoalSelector:
         cells = np.array([[row, col]])
         if not len(self._filter_blacklisted(grid, cells)):
             return False
-        dist = geodesic_distance(grid.traversable, start, None)[row, col]
+        traversable=grid.traversable
+        if goal.purpose=='observe_occlusion':
+            start=tuple(math.floor(v) for v in grid.world_to_grid(*robot_xy))
+            if not grid.in_bounds(*start) or not grid.traversable[start]:return False
+            clearance=grid.clearance_m()
+            if clearance[start]<.26:return False
+            rr,cc=np.indices(grid.data.shape)
+            egress=(np.hypot(rr-start[0],cc-start[1])*grid.resolution<=.30)&traversable&(clearance>=.26)
+            traversable=(traversable & (clearance>=self.params.safety_radius_m))|egress
+        dist = geodesic_distance(traversable, start, None)[row, col]
         return bool(dist >= 0 and dist*grid.resolution >= self.params.min_goal_distance_m)

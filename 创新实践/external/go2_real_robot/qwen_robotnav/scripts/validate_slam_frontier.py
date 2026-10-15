@@ -126,6 +126,7 @@ def main():
     parser.add_argument('--mission-brain',action='store_true')
     parser.add_argument('--perception',action='store_true')
     parser.add_argument('--recon-task',action='store_true')
+    parser.add_argument('--active-observation',action='store_true')
     parser.add_argument('--required-person-count',type=int,default=1)
     parser.add_argument('--goals',type=int,default=5)
     parser.add_argument('--exploration-timeout',type=float,default=600)
@@ -134,12 +135,16 @@ def main():
         parser.error('Use a matching isolated simulator ROS domain')
     if not os.environ.get('IGN_PARTITION') or args.goals<1 or args.required_person_count<1:
         parser.error('Set IGN_PARTITION and a positive --goals')
+    if args.active_observation and not (args.recon_task and args.mission_brain):parser.error('Active observation requires recon and mission brain')
     if args.recon_task and not args.perception:parser.error('--recon-task requires --perception')
     root=args.output_dir.resolve();project=Path(__file__).resolve().parents[4]
     if not (root/'slam_navigation.launch.py').exists():
         parser.error('Generate --localization slam into --output-dir first')
     rclpy.init(args=['--ros-args','-p','use_sim_time:=true','-p','require_mission_state:=true',
         '-p','require_navigation_handoff:=true','-p','enable_navigation_transmission:=true',
+        '-p','active_observation:='+str(args.active_observation).lower(),
+        '-p','observation_bt_path:='+str(root/'observation_bt.xml'),
+        '-p','search_timeout_s:='+str(float(args.exploration_timeout)),
         '-p','required_person_count:='+str(args.required_person_count),'-p','recon_output_dir:='+str(root),'-p','minimum_exploration_goals:='+str(args.goals),
         '-p','battery_topic:=/frontier_trial/battery','-p','map_topic:=/robot1/map',
         '-p','use_mission_brain:='+str(args.mission_brain).lower(),
@@ -228,6 +233,7 @@ def main():
                 '-r','/tf:=/robot1/tf','-r','/tf_static:=/robot1/tf_static'],'detector.log')
         started=time.monotonic()
         if args.recon_task:
+            recon.search_budget_paused=True
             monitor.battery();monitor.command_pub.publish(String(data='EXPLORE'))
             initial_view_start=monitor.get_clock().now().nanoseconds
             spin_until(recon.objective_confirmed,30)
@@ -235,6 +241,8 @@ def main():
                 start_stamp_ns=initial_view_start,end_stamp_ns=monitor.get_clock().now().nanoseconds,
                 motion_enabled=False,targets=recon.targets,required_person_count=args.required_person_count,
                 objective_confirmed=recon.objective_confirmed()),indent=2))
+        if recon is not None:
+            recon.search_budget_paused=False;recon.search_started_at=time.monotonic()
         explorer=VisionExplorer();executor.add_node(explorer)
         monitor.running=True;monitor.battery()
         if not args.recon_task:monitor.command_pub.publish(String(data='EXPLORE'))
@@ -246,7 +254,7 @@ def main():
                 if recon.state in ('failed','interrupted'):raise RuntimeError('Recon task '+recon.state)
                 return recon.return_requested
             return sum(e['status']=='succeeded' and e['geodesic_dist_m']>=.75 for e in monitor.events)>=args.goals
-        if not spin_until(explored,args.exploration_timeout):
+        if not spin_until(explored,args.exploration_timeout+5):
             raise RuntimeError((f'Recon deadline: targets_confirmed={recon.objective_confirmed()}, '
                                 f'exploration_goals={len(recon.completed_goals)}/{args.goals}')
                                if args.recon_task else 'Insufficient successful frontier goals before deadline')
@@ -268,7 +276,7 @@ def main():
             initial_known_area_m2=initial_area,final_known_area_m2=final_area,
             known_area_growth_m2=final_area-initial_area)
     except (Exception,KeyboardInterrupt) as exc:
-        report=dict(success=False,error=str(exc))
+        report=dict(success=False,error=str(exc) or 'Validation interrupted')
         if recon is not None and recon.state not in ('returned','failed','interrupted'):
             recon._transition('failed')
     finally:
@@ -318,11 +326,14 @@ def main():
         report['recorder_exit_code']=recorder.returncode if recorder is not None else None
         if not report['recording_complete']:
             report['success']=False;report.setdefault('error','Recording did not finalize metadata')
-        report['return_trigger']=('recon_objective_completed' if recon is not None and recon.return_requested else 'not_triggered') if args.recon_task else 'simulated_low_battery'
+        report['return_trigger']=(getattr(recon,'return_reason',None) or 'not_triggered') if args.recon_task else 'simulated_low_battery'
+        report['active_observation']=args.active_observation
+        report['navigation_return_success']=bool(home is not None and any(e['status']=='succeeded' for e in monitor.returns)
+                                                 and report.get('truth_home_error_m',float('inf'))<=.4)
         if args.recon_task:
             report['recon_mission']=json.loads((root/'mission_report.json').read_text()) if (root/'mission_report.json').exists() else {'state':'not_started'}
             if report['recon_mission']['state']!='returned':
-                report['success']=False;report.setdefault('error','Recon mission did not confirm RETURN success')
+                report['success']=False;report.setdefault('error','Recon search incomplete; RETURN action completed' if report['recon_mission']['state']=='returned_incomplete' else 'Recon mission did not confirm RETURN success')
         report['perception_enabled']=args.perception
         report['perception_status']=monitor.perception[-1] if monitor.perception else None
         if args.perception and not (monitor.perception and monitor.perception[-1]['stats']['frames']>0 and monitor.perception[-1]['map_tf_available']):

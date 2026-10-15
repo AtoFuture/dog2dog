@@ -28,7 +28,9 @@ def confirmed_instances(payload, required_classes, *, min_stamp_ns=0, min_confid
     candidates = []
     for (class_name, track), observations in groups.items():
         ordered = sorted(observations,key=lambda item:item['stamp_ns'])
+        track_regions=[]
         for i, first in enumerate(ordered):
+            if any(math.dist(first['position_m'][:2],region[:2])<=max_separation_m for region in track_regions):continue
             for second in ordered[i+1:]:
                 dt = (second['stamp_ns']-first['stamp_ns'])*1e-9
                 if dt > max_interval_s:
@@ -40,8 +42,7 @@ def confirmed_instances(payload, required_classes, *, min_stamp_ns=0, min_confid
                 candidates.append(dict(class_name=class_name,track_id=track,
                     evidence_ids=[first['evidence_id'],second['evidence_id']],
                     observations=[first,second],position_m=[(a+b)/2 for a,b in zip(first['position_m'],second['position_m'])]))
-                break
-            if candidates and candidates[-1]['track_id']==track and candidates[-1]['class_name']==class_name:
+                track_regions.append(candidates[-1]['position_m'])
                 break
     # Stationary-target policy: track fragmentation near an already confirmed
     # location must not manufacture another person. XY avoids camera-height noise.
