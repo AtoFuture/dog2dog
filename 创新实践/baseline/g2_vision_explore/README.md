@@ -29,6 +29,24 @@
 
 离线 H.264 流验证**不表示 Go2 真机视频已跑通**。
 
+## 测试
+
+在本目录执行：
+
+```bash
+bash tools/run_tests.sh
+```
+
+入口先加载 ROS Humble 和 `baseline/install` 中已构建的接口；宿主依赖不足时，
+自动使用已有的 `~/.enroot/ros` 容器及其系统 Python。可通过 `G2_ROS_WRAPPER`
+指定其他兼容的容器入口，或加 `--local` 仅使用当前环境；其余参数传给 pytest。
+需要先构建 `baseline/interfaces`，不在测试入口中安装依赖或启动仿真。
+
+2026-10-15 复核：容器系统 Python 下 **247 passed**，包含探索节点和检测消息测试。
+本地 `.venv` 缺 PyYAML、Ultralytics，宿主 ROS 缺 Nav2 消息和 cv_bridge，
+因此直接使用这些环境会在收集或依赖检查阶段失败。部分旧版 pytest 会提示
+不认识 `pythonpath` 配置项，入口已通过 `PYTHONPATH` 显式提供源码路径。
+
 ## 当前接口
 
 ### Go2 前视视频 Bridge
