@@ -704,61 +704,48 @@
       <pose>0 0 0 0 0 0</pose>
     </model>
   
-    <!-- ================= 人员/车辆/仓储件 (added) ================= -->
+    <!-- ================= 人员/车辆 (moving, driver-driven) ================= -->
+
     <include>
       <uri>model://person_standing</uri>
       <name>person_1</name>
-      <pose>-2.0 -6.4 0.0 0 0 0.0</pose>
-      
+      <pose>1.0 -1.15 0.0 0 0 0</pose>
     </include>
+
     <include>
       <uri>model://person_standing</uri>
       <name>person_2</name>
-      <pose>1.2 1.27 0.0 0 0 0.0</pose>
-      
+      <pose>1.0 1.25 0.0 0 0 0</pose>
     </include>
+
     <include>
       <uri>model://person_standing</uri>
       <name>person_3</name>
-      <pose>11.5 3.86 0.0 0 0 3.14159</pose>
-      
+      <pose>11.0 3.85 0.0 0 0 0</pose>
     </include>
-    <include>
-      <uri>model://suv_vehicle</uri>
-      <name>suv_1</name>
-      <pose>-13.5 -5.0 0.02 0 0 0.0</pose>
-      <static>false</static>
-    </include>
-    <include>
-      <uri>model://forklift_vehicle</uri>
-      <name>forklift_1</name>
-      <pose>-13.5 2.0 0.15 0 0 0.0</pose>
-      <static>false</static>
-    </include>
-    <include>
-      <uri>model://aws_robomaker_warehouse_PalletJackB_01</uri>
-      <name>prop_palletjack_1</name>
-      <pose>-0.9 -6.2 0.0 0 0 0.4</pose>
-    </include>
-    <include>
-      <uri>model://aws_robomaker_warehouse_PalletJackB_01</uri>
-      <name>prop_palletjack_2</name>
-      <pose>12.2 -6.2 0.0 0 0 -0.3</pose>
-    </include>
-    <include>
-      <uri>model://cardboard_box</uri>
-      <name>prop_box_1</name>
-      <pose>-8.0 0.0 0.0 0 0 0.0</pose>
-    </include>
-    <include>
-      <uri>model://cardboard_box</uri>
-      <name>prop_box_2</name>
-      <pose>-8.0 0.5 0.0 0 0 0.0</pose>
-    </include>
-    <include>
-      <uri>model://aws_robomaker_warehouse_Bucket_01</uri>
-      <name>prop_bucket_1</name>
-      <pose>12.6 6.6 0.0 0 0 0.0</pose>
-    </include>
+
+    <model name="suv_1">
+      <pose>-6.5 -6.5 0.05 0 0 0</pose>
+      <link name="link">
+        <inertial><pose>0 0 0 0 0 0</pose><mass>1200</mass>
+          <inertia><ixx>600</ixx><ixy>0</ixy><ixz>0</ixz><iyy>2500</iyy><iyz>0</iyz><izz>2800</izz></inertia></inertial>
+        <collision name="collision"><pose>0 0 0 0 0 -1.57079632679</pose>
+          <geometry><mesh><scale>0.04 0.04 0.04</scale><uri>model://suv_vehicle/meshes/suv.obj</uri></mesh></geometry></collision>
+        <visual name="visual"><pose>0 0 0 0 0 -1.57079632679</pose>
+          <geometry><mesh><scale>0.04 0.04 0.04</scale><uri>model://suv_vehicle/meshes/suv.obj</uri></mesh></geometry></visual>
+      </link>
+    </model>
+
+    <model name="suv_2">
+      <pose>12.0 -6.5 0.05 0 0 0</pose>
+      <link name="link">
+        <inertial><pose>0 0 0 0 0 0</pose><mass>1200</mass>
+          <inertia><ixx>600</ixx><ixy>0</ixy><ixz>0</ixz><iyy>2500</iyy><iyz>0</iyz><izz>2800</izz></inertia></inertial>
+        <collision name="collision"><pose>0 0 0 0 0 -1.57079632679</pose>
+          <geometry><mesh><scale>0.04 0.04 0.04</scale><uri>model://suv_vehicle/meshes/suv.obj</uri></mesh></geometry></collision>
+        <visual name="visual"><pose>0 0 0 0 0 -1.57079632679</pose>
+          <geometry><mesh><scale>0.04 0.04 0.04</scale><uri>model://suv_vehicle/meshes/suv.obj</uri></mesh></geometry></visual>
+      </link>
+    </model>
 </world>
 </sdf>
