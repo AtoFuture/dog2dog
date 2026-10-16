@@ -93,3 +93,11 @@ TF 缺失或过期时不再用 `(0,0)` 代替，地图或任务状态不可用�
 
 完整启动、地图、rosbag、图表与限制见
 [SLAM/frontier 验证报告](../../external/go2_real_robot/qwen_robotnav/docs/slam-frontier-validation.md)。
+
+### 移动目标观察位点
+
+`vision_explorer` 可启用 `track_observation:=true`（同时需要任务脑和观察 BT）。节点使用侦察任务已确认的图像时刻 map 坐标生成 `observe_targets` 位点，DeepSeek 只排序安全候选 ID。候选必须通过已知自由格和 0.45 m 余量的连通性校验，当前足迹的有界退出规则沿用既有观察策略；优先保持行进视野，无此前向路线时仅允许 0.5–0.65 m 的短侧向补位，最终朝向目标群并停留观察。
+
+选点枚举可达安全栅格，优先至少 0.75 m 的路径；稀疏初始地图允许先走至少 0.5 m 的短路径补图。短路径不计入任务要求的有效探索目标。观察距离与相机角度是几何约束，二维地图视线仅作偏好，因为雷达平面障碍不能代表上半身一定不可见。
+
+启用后先等待任务状态；已确认目标存在但暂时没有安全位点时保持重试。观察时窗未满且近期证据仍完整时，暂停发送新目标，继续接收感知。导航监控和返航交接始终优先执行。联合仿真入口和边界见 `external/go2_real_robot/qwen_robotnav/docs/recon-joint-validation.md`。

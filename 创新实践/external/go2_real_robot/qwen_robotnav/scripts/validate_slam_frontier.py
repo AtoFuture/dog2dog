@@ -150,6 +150,7 @@ def main():
     parser.add_argument('--recon-identity-policy',choices=('stationary','motion_appearance_v1'),default='stationary')
     parser.add_argument('--goals',type=int,default=5)
     parser.add_argument('--dynamic-obstacle',choices=('crossing','blocked'))
+    parser.add_argument('--joint-recon',action='store_true')
     parser.add_argument('--inject-return-hold-s',type=float,default=0.)
     parser.add_argument('--exploration-timeout',type=float,default=600)
     args=parser.parse_args()
@@ -160,7 +161,10 @@ def main():
     if not os.environ.get('IGN_PARTITION') or args.goals<1 or args.required_person_count<1:
         parser.error('Set IGN_PARTITION and a positive --goals')
     if args.active_observation and not (args.recon_task and args.mission_brain):parser.error('Active observation requires recon and mission brain')
-    if args.dynamic_obstacle and (args.recon_task or args.mission_brain or args.inject_return_hold_s):
+    if args.joint_recon and args.inject_return_hold_s!=0:parser.error('Joint recon cannot inject a return hold')
+    if args.joint_recon and not (args.recon_task and args.mission_brain and args.dynamic_obstacle=='crossing' and args.recon_identity_policy=='motion_appearance_v1'):
+        parser.error('Joint recon requires moving identity, real mission brain, recon and crossing cart')
+    if args.dynamic_obstacle and not args.joint_recon and (args.recon_task or args.mission_brain or args.inject_return_hold_s):
         parser.error('Dynamic benchmark uses deterministic Nav2 goals without recon, brain or injected holds')
     if args.recon_task and not args.perception:parser.error('--recon-task requires --perception')
     root=args.output_dir.resolve();project=Path(__file__).resolve().parents[4]
@@ -169,8 +173,12 @@ def main():
     rclpy.init(args=['--ros-args','-p','use_sim_time:=true','-p','require_mission_state:=true',
         '-p','require_navigation_handoff:=true','-p','enable_navigation_transmission:=true',
         '-p','active_observation:='+str(args.active_observation).lower(),
+        '-p','track_observation:='+str(args.joint_recon).lower(),
         '-p','observation_bt_path:='+str(root/'observation_bt.xml'),
         '-p','search_timeout_s:='+str(float(args.exploration_timeout)),
+        '-p','minimum_observation_duration_s:='+('50.0' if args.joint_recon else '0.0'),
+        '-p','minimum_observation_viewpoints:='+('3' if args.joint_recon else '0'),
+        '-p','required_target_recency_s:='+('5.0' if args.joint_recon else '0.0'),
         '-p','recon_identity_policy:='+args.recon_identity_policy,
         '-p','required_person_count:='+str(args.required_person_count),'-p','recon_output_dir:='+str(root),'-p','minimum_exploration_goals:='+str(args.goals),
         '-p','battery_topic:=/frontier_trial/battery','-p','map_topic:=/robot1/map',
@@ -271,7 +279,7 @@ def main():
                 motion_enabled=False,targets=recon.targets,required_person_count=args.required_person_count,
                 objective_confirmed=recon.objective_confirmed()),indent=2))
         scene_path=root/'scene_manifest.json'
-        if scene_path.exists() and json.loads(scene_path.read_text()).get('moving_people'):
+        if scene_path.exists() and json.loads(scene_path.read_text()).get('moving_people') and not args.joint_recon:
             if args.recon_identity_policy!='motion_appearance_v1':raise RuntimeError('Moving scenes require motion_appearance_v1')
             print(json.dumps({'phase':'moving_person_observation','robot_motion_enabled':False}),flush=True)
             motion=start(['python3',str(Path(__file__).with_name('move_recon_people.py')),str(root)],'person_motion.log')
@@ -279,7 +287,13 @@ def main():
                 raise RuntimeError('Moving-person scenario did not complete; inspect person_motion.log')
         if recon is not None:
             recon.search_budget_paused=False;recon.search_started_at=time.monotonic()
-        if args.dynamic_obstacle:
+        joint_drivers=[]
+        if args.joint_recon:
+            if not scene_path.exists() or not json.loads(scene_path.read_text()).get('moving_people'):
+                raise RuntimeError('Joint recon requires moving people in its world')
+            joint_drivers=[start(['python3',str(Path(__file__).with_name('move_recon_people.py')),str(root),'--wait-for-robot-motion'],'person_motion.log'),
+                           start(['python3',str(Path(__file__).with_name('drive_dynamic_cart.py')),str(root)],'cart_motion.log')]
+        if args.dynamic_obstacle and not args.joint_recon:
             from dynamic_obstacle_trial import run_trial
             report=run_trial(monitor,root,home,baseline,start,spin_until)
         else:
@@ -289,6 +303,7 @@ def main():
             print(json.dumps({'phase':'exploring','home_map':home,'truth_start':baseline[1:],
                               'initial_known_area_m2':initial_area}),flush=True)
             def explored():
+                if any(child.poll() not in (None,0) for child in joint_drivers):raise RuntimeError('Joint scenario driver failed')
                 if monitor.states and monitor.states[-1][1]=='estop':raise RuntimeError('G3 entered ESTOP during exploration')
                 if args.recon_task:
                     if recon.state in ('failed','interrupted'):raise RuntimeError('Recon task '+recon.state)
@@ -382,7 +397,8 @@ def main():
             report['success']=False;report.setdefault('error','Return hold did not exercise progress recovery')
         report['navigation_return_success']=bool(home is not None and any(e['status']=='succeeded' for e in monitor.returns)
                                                  and report.get('truth_home_error_m',float('inf'))<=.4)
-        if args.dynamic_obstacle:
+        report['joint_recon']=args.joint_recon
+        if args.dynamic_obstacle and not args.joint_recon:
             report['navigation_return_success']=bool(report.get('dynamic_navigation_success'))
             report['dynamic_obstacle']=args.dynamic_obstacle
             report['return_trigger']='deterministic_dynamic_navigation_benchmark'
@@ -408,7 +424,8 @@ def main():
             map_samples=monitor.maps,emergency_guard_interventions=monitor.blocked,
             minimum_front_range_m=monitor.minimum_front if math.isfinite(monitor.minimum_front) else None,
             final_zero_command_published=True)
-        if args.dynamic_obstacle:report['goal_source']='fixed map-frame Nav2 benchmark goals'
+        if args.dynamic_obstacle and not args.joint_recon:report['goal_source']='fixed map-frame Nav2 benchmark goals'
+        if args.joint_recon:report['goal_source']='DeepSeek-ranked G2 safe target observation viewpoints'
         (root/'report.json').write_text(json.dumps(report,indent=2));print(json.dumps(report),flush=True)
         for node in [explorer,recon,brain,g3,monitor]:
             if node is not None:executor.remove_node(node);node.destroy_node()

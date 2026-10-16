@@ -562,7 +562,7 @@ class GoalSelector:
         if not len(self._filter_blacklisted(grid, cells)):
             return False
         traversable=grid.traversable
-        if goal.purpose=='observe_occlusion':
+        if goal.purpose in ('observe_occlusion','observe_targets'):
             start=tuple(math.floor(v) for v in grid.world_to_grid(*robot_xy))
             if not grid.in_bounds(*start) or not grid.traversable[start]:return False
             clearance=grid.clearance_m()

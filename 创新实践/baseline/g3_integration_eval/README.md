@@ -271,3 +271,11 @@ SLAM 的地图坐标原点/朝向可能不同于参考地图，覆盖率评测�
 固定三值 PGM 中的 205 必须保留为未知格；当前导出使用 free_thresh=0.196。
 仓库旧参考图的评测副本也会修正这一阈值，共享参考图和在线导航输入不变。
 从空地图运行到 rosbag 评测的入口见上述 DeepSeek 导航 README 的 SLAM/frontier 部分。
+
+### 持续观察与近期证据
+
+`recon_task_node` 增加 `minimum_observation_duration_s`、`required_target_recency_s` 和 `minimum_observation_viewpoints`，默认均为 0，保留原有任务完成条件。启用后，成功返航需要观察时窗已满，且每类要求数量的目标都在规定时间内有新的关联证据。时间采用 ROS 时钟，`last_seen_stamp_ns` 来自图像证据，不能用报告重发时间刷新。
+
+`/mission/recon_status` 提供 `targets_fresh` 和 `observation_window_pending`，供 G2 在正确观察朝向持续取证。搜索预算、无可达视点、外部返航和急停仍优先，观察时长不能阻止安全退出。联合仿真当前使用 50 s 观察时窗、5 s 证据新鲜度和三个独立观察位点；短观察位点不能代替必需的至少一个 0.75 m 有效长目标。
+
+新鲜度门槛使用 `motion_appearance_v1` 产生的 `last_seen_stamp_ns`；观察位点计数只接收 `observe_targets` 成功事件。其他模式应保留对应门槛为 0。

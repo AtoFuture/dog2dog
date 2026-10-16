@@ -17,7 +17,7 @@ def box_distance(x,y,cart,size):
     return math.hypot(max(0,abs(u)-size[0]/2),max(0,abs(v)-size[1]/2))
 
 
-def evaluate(root):
+def evaluate(root, *, joint=False):
     root=Path(root);report=json.loads((root/'report.json').read_text())
     if not (root/'bag/metadata.yaml').is_file() or report.get('recorder_exit_code')!=0:
         raise ValueError('Require finalized metadata and recorder exit code zero')
@@ -27,10 +27,10 @@ def evaluate(root):
     db=sqlite3.connect('file:'+str(next((root/'bag').glob('*.db3')))+'?mode=ro',uri=True)
     names=['/clock','/frontier_trial/cart_events','/frontier_trial/gt_pose','/robot1/cmd_vel',
            '/deepseek/nav_cmd','/robot1/velodyne','/robot1/tf_static','/robot1/local_costmap/costmap','/robot1/odometry/filtered',
-           '/robot1/navigate_to_pose/_action/status']
+           '/robot1/navigate_to_pose/_action/status','/g3/return_event','/exploration/events']
     types={n:get_message(t) for n,t in db.execute('SELECT name,type FROM topics') if n in names}
     sim=0.;cart=None;pose=None;odom=None;minimum=math.inf;successful=set()
-    commands=[];costs=[];trajectory=[];last_truth=-math.inf;laser=None;laser_hits=[];clearing=[]
+    return_events=[];frontier_events=[];commands=[];costs=[];trajectory=[];last_truth=-math.inf;laser=None;laser_hits=[];clearing=[]
     query='SELECT topics.name,messages.data FROM messages JOIN topics ON topics.id=messages.topic_id WHERE topics.name IN ('+','.join('?' for _ in names)+') ORDER BY messages.timestamp'
     try:
         for topic,data in db.execute(query,names):
@@ -62,6 +62,8 @@ def evaluate(root):
                     y=pose[1]+math.sin(pose[2])*bx+math.cos(pose[2])*by
                     if box_distance(x,y,cart,scene['size_m'])<.08:hits+=1
                 if hits>=3:laser_hits.append((sim,hits))
+            elif topic=='/g3/return_event':return_events.append((sim,json.loads(msg.data)))
+            elif topic=='/exploration/events':frontier_events.append((sim,json.loads(msg.data)))
             elif topic.endswith('/status'):
                 for status in msg.status_list:
                     ident=bytes(status.goal_info.goal_id.uuid).hex()
@@ -84,28 +86,32 @@ def evaluate(root):
                 if motion.get('anchor_world'):
                     ax,ay,heading=motion['anchor_world']
                     # Track the original visible face after the cart has left.
-                    wx=ax+1.25*math.cos(heading);wy=ay+1.25*math.sin(heading)
+                    face=scene.get('encounter_distance_m',1.5)-scene['size_m'][0]/2
+                    wx=ax+face*math.cos(heading);wy=ay+face*math.sin(heading)
                     dx=wx-pose[0];dy=wy-pose[1]
                     fx=odom[0]+math.cos(a)*dx-math.sin(a)*dy
                     fy=odom[1]+math.sin(a)*dx+math.cos(a)*dy
                     ix=math.floor((fx-msg.info.origin.position.x)/r);iy=math.floor((fy-msg.info.origin.position.y)/r)
                     patch=[msg.data[j*msg.info.width+i] for j in range(max(0,iy-1),min(msg.info.height,iy+2))
                            for i in range(max(0,ix-1),min(msg.info.width,ix+2))]
-                    if len(patch)==9 and math.hypot(wx-pose[0],wy-pose[1])>.6:clearing.append((sim,max(patch)))
+                    if len(patch)==9:clearing.append((sim,max(patch),math.hypot(wx-pose[0],wy-pose[1])))
     finally:db.close()
     start=motion.get('start_stamp_ns',0)*1e-9;end=motion.get('end_stamp_ns',0)*1e-9
     nav_stops=[t for t,n,v,w in commands if n=='/deepseek/nav_cmd' and start+1<=t<=min(end,start+8) and abs(v)<.001 and abs(w)<.001]
     marked=[t for t,c in costs if start<=t<=end and c>=99]
-    outbound_end=goals[0].get('end_stamp_ns',0)*1e-9 if goals else 0.
+    outbound_end=(min((t for t,e in return_events if e.get('status')=='accepted'),default=0.) if joint else
+                  goals[0].get('end_stamp_ns',0)*1e-9 if goals else 0.)
     resumed=[t for t,n,v,w in commands if n=='/robot1/cmd_vel' and end<t<=outbound_end and v>.01]
-    original_marked=[t for t,c in clearing if start<=t<=end and c>=99]
-    cleared=[t for t,c in clearing if t>end and c==0]
+    original_marked=[t for t,c,d in clearing if start<=t<=end and c>=99]
+    cleared=[t for t,c,d in clearing if t>end and c==0 and (joint or d>.6)]
     hit_frames=[t for t,n in laser_hits if start<=t<=end]
     anchor=motion.get('anchor_world')
     lateral_excursion=max((abs(-(x-anchor[0])*math.sin(anchor[2])+(y-anchor[1])*math.cos(anchor[2]))
                            for t,x,y in trajectory if start<=t<=end),default=0.) if anchor else 0.
     actual_goals={g['goal_id'] for g in goals}
     outbound_error=None;home_error=None
+    if trajectory and report.get('truth_start'):
+        origin=report['truth_start'];home_error=math.hypot(trajectory[-1][1]-origin[0],trajectory[-1][2]-origin[1])
     if goals and trajectory and report.get('truth_start'):
         origin=report['truth_start'];heading=origin[3]
         home_error=math.hypot(trajectory[-1][1]-origin[0],trajectory[-1][2]-origin[1])
@@ -115,6 +121,10 @@ def evaluate(root):
         if abs(sample[0]-goal_end)<=.25:
             outbound_error=math.hypot(sample[1]-target[0],sample[2]-target[1])
     nav_ok=home_error is not None and home_error<=.4 and outbound_error is not None and outbound_error<=.4 and len(goals)==2 and all(g.get('status')==4 for g in goals) and actual_goals<=successful
+    if joint:
+        actual_goals={e['goal_id'] for _,e in return_events if e.get('status')=='accepted'}
+        nav_ok=bool(home_error is not None and home_error<=.4 and len(actual_goals)==1 and actual_goals<=successful
+                    and report.get('navigation_return_success') and report.get('meaningful_frontier_goals',0)>=1)
     safe=minimum>=.38 and report.get('emergency_guard_interventions',1)==0
     success=bool(report.get('success') and motion.get('success') and nav_ok and safe and marked and hit_frames and original_marked and cleared and (nav_stops or lateral_excursion>=.45) and resumed
                  and report.get('truth_in_navigation_tf') is False)
@@ -123,11 +133,11 @@ def evaluate(root):
         required_surface_clearance_m=.38,maximum_encounter_lateral_excursion_m=lateral_excursion,emergency_guard_interventions=report.get('emergency_guard_interventions'),
         costmap_marked_samples=len(marked),lidar_cart_hit_frames=len(hit_frames),
         original_face_marked_samples=len(original_marked),
-        costmap_cleared_samples_after_departure=len(cleared),nav2_zero_twist_samples_during_encounter=len(nav_stops),
+        costmap_cleared_samples_after_departure=len(cleared),clearing_excludes_robot_footprint=not joint,nav2_zero_twist_samples_during_encounter=len(nav_stops),
         resumed_forward_samples_after_cart_cleared=len(resumed),truth_home_error_m=home_error,reported_truth_home_error_m=report.get('truth_home_error_m'),
         truth_outbound_goal_error_m=outbound_error,goal_ids=sorted(actual_goals),bag_confirmed_successful_goal_ids=sorted(actual_goals & successful),
         truth_in_navigation_tf=report.get('truth_in_navigation_tf'),
-        scope='deterministic Nav2 out-and-back; robot truth only drives test fixture placement and evaluation; cart positions are service-acknowledged; no person/LLM validation',
+        scope=('joint recon navigation and cart audit; person identity acceptance is separate' if joint else 'deterministic Nav2 out-and-back; robot truth only drives test fixture placement and evaluation; cart positions are service-acknowledged; no person/LLM validation'),
         limitation='costmap neighborhood marking is supporting evidence; lidar endpoint matches use evaluated body pose and static sensor transform; no contact sensor proof for feet')
     import matplotlib
     matplotlib.use('Agg')
@@ -146,7 +156,7 @@ def evaluate(root):
     axes[1].axvspan(0,end-start,color='orange',alpha=.15,label='Cart motion')
     axes[1].set(xlabel='Simulation seconds after encounter start',ylabel='Forward command',title='Different command scales');axes[1].legend()
     fig.tight_layout();fig.savefig(root/'dynamic_trajectory.png',dpi=150);plt.close(fig)
-    (root/'dynamic_validation.json').write_text(json.dumps(result,indent=2));return result
+    (root/('joint_dynamic_validation.json' if joint else 'dynamic_validation.json')).write_text(json.dumps(result,indent=2));return result
 
 
 if __name__=='__main__':

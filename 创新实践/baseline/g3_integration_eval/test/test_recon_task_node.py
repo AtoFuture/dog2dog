@@ -111,3 +111,47 @@ def test_moving_two_people_still_need_navigation_before_exactly_one_return():
     node._navigation(message(status='succeeded',attempt_id=1,geodesic_dist_m=1.))
     node._navigation(message(status='succeeded',attempt_id=1,geodesic_dist_m=1.))
     assert node.commands==['RETURN'] and node.return_reason=='objective_completed'
+
+
+def test_minimum_observation_time_delays_only_successful_completion():
+    node=node_fixture();node.required_person_count=2;node.completed_goals={1}
+    node.targets={f'person:{i}':{'class_name':'person'} for i in (1,2)}
+    node.minimum_observation_duration_s=50.
+    now=SimpleNamespace(nanoseconds=49_000_000_000)
+    node.get_clock=lambda:SimpleNamespace(now=lambda:now)
+    node._maybe_return();assert not node.commands
+    now.nanoseconds=50_000_000_000
+    node._maybe_return();node._maybe_return()
+    assert node.commands==['RETURN'] and node.return_reason=='objective_completed'
+
+
+def test_observation_minimum_cannot_delay_budget_or_safety_return(monkeypatch):
+    node=node_fixture();node.minimum_observation_duration_s=50.
+    node.get_clock=lambda:SimpleNamespace(now=lambda:SimpleNamespace(nanoseconds=1_000_000_000))
+    node.search_started_at=0.;node.search_timeout=10.;node.unavailable_since=None;node.no_candidate_timeout=5.
+    monkeypatch.setattr('g3_integration_eval.recon_task_node.time.monotonic',lambda:11.)
+    node._check_budget()
+    assert node.commands==['RETURN'] and node.return_reason=='search_budget_exhausted'
+
+
+def test_old_confirmed_people_cannot_satisfy_recent_completion_gate():
+    node=node_fixture();node.required_person_count=2;node.required_target_recency_s=5.
+    node.completed_goals={1};node.targets={f'person:{i}':{'class_name':'person','last_seen_stamp_ns':10_000_000_000} for i in (1,2)}
+    node.get_clock=lambda:SimpleNamespace(now=lambda:SimpleNamespace(nanoseconds=20_000_000_000))
+    node._maybe_return();assert not node.commands
+    node.targets['person:1']['last_seen_stamp_ns']=19_000_000_000
+    node._maybe_return();assert not node.commands
+    node.targets['person:2']['last_seen_stamp_ns']=19_000_000_000
+    node._maybe_return();assert node.commands==['RETURN']
+
+
+def test_short_views_count_separately_without_replacing_required_long_goal():
+    node=node_fixture();node.completed_views=set();node.minimum_observation_viewpoints=3
+    node.targets={'person':{'class_name':'person'}}
+    node._navigation(message(status='succeeded',attempt_id=1,purpose='observe_targets',geodesic_dist_m=.55))
+    node._navigation(message(status='succeeded',attempt_id=1,purpose='observe_targets',geodesic_dist_m=.55))
+    assert len(node.completed_views)==1 and not node.completed_goals and not node.commands
+    node._navigation(message(status='succeeded',attempt_id=2,purpose='observe_targets',geodesic_dist_m=.8))
+    assert len(node.completed_views)==2 and len(node.completed_goals)==1 and not node.commands
+    node._navigation(message(status='succeeded',attempt_id=3,purpose='observe_targets',geodesic_dist_m=.5))
+    assert node.commands==['RETURN']

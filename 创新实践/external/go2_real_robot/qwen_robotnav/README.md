@@ -431,3 +431,9 @@ source install/local_setup.bash
 已加入推车横穿与临时堵路基准，记录真实雷达命中、代价地图清障、Nav2 停车/绕行和往返结果。两轮独立隔离仿真通过，84 项导航回归通过；尚未验证实机或移动多人任务与动态避障同时运行。
 
 复现入口：`python3 scripts/run_dynamic_regression.py /tmp/dynamic_nav_suite --start-domain 226`。详见 [场景、证据与边界](docs/dynamic-obstacle-validation.md)。
+
+## 移动观察与动态障碍联合任务
+
+新增 `run_joint_recon.py`，将机器人移动、双人取证和推车横穿并行运行，通过 G3 自动返航。安全观察候选由已确认的图像时刻 map 证据生成，DeepSeek 只排序候选 ID；任务支持持续观察时窗和近期证据门槛。参见 [联合场景、独立验收与失败样本](docs/recon-joint-validation.md)。
+
+固定的不同服装双人平行移动与推车横穿场景已完成联合验收：零身份交换/重复，返航误差约 0.24 m，597 项分包回归通过。同衣长遮挡和近距离横穿仍保留为未通过压力样本。

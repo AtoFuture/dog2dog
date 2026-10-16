@@ -29,7 +29,7 @@ from std_msgs.msg import String
 
 from g2_core.explorer import ExplorerParams, Goal, GoalSelector, GoalSelection, SelectStatus
 from g2_core.grid import GridMap
-from g2_core.observation import observation_candidates
+from g2_core.observation import observation_candidates, tracked_observation_candidates
 from g2_core.state_machine import (MISSION_EXPLORING, Command,
                                    ExplorerStateMachine, Phase)
 
@@ -158,7 +158,7 @@ class VisionExplorer(Node):
         if not 1 <= p["brain_max_candidates"] <= 16:
             raise ValueError("brain_max_candidates must be 1..16")
 
-        if p['active_observation'] and (not p['use_mission_brain'] or not Path(p['observation_bt_path']).is_file()):
+        if (p['active_observation'] or p['track_observation']) and (not p['use_mission_brain'] or not Path(p['observation_bt_path']).is_file()):
             raise ValueError('Active observation requires mission brain and a generated observation BT file')
         self._sm = ExplorerStateMachine()
         # 安全与增益参数沿用内核默认值，物理目标的最小距离由 ROS 参数指定。
@@ -230,6 +230,7 @@ class VisionExplorer(Node):
             ("brain_timeout_s", 15.0),
             ("brain_max_candidates", 6),
             ("active_observation", False),
+            ("track_observation", False),
             ("observation_bt_path", ""),
             # 选点本身的参数由 ExplorerParams 声明（阈值、权重、TTL…）
         ])
@@ -239,7 +240,7 @@ class VisionExplorer(Node):
             "map_topic", "mission_state_topic", "nav_action", "tick_period_s",
             "max_nav_timeout_s", "robot_frame", "map_frame",
             "min_frontier_area_m2", "require_mission_state", "map_timeout_s", "min_goal_distance_m",
-            "use_mission_brain", "brain_timeout_s", "brain_max_candidates", "active_observation", "observation_bt_path")}
+            "use_mission_brain", "brain_timeout_s", "brain_max_candidates", "active_observation", "track_observation", "observation_bt_path")}
 
     # ------------------------------------------------------------------
     # 订阅回调
@@ -315,6 +316,10 @@ class VisionExplorer(Node):
         self._watch_navigation()
         if self._stopped or self._attempt is not None or self._handoff_token is not None or self._brain_pending is not None:
             return
+        status=getattr(self,'_recon_status',None)
+        if (self._p().get('track_observation',False) and status and status.get('state')=='searching'
+            and status.get('observation_window_pending') is True and time.monotonic()-self._recon_status_at<5.):
+            return
         cmd = self._sm.next_command()
         if cmd is Command.SEND_GOAL:
             self._select_and_send(now)
@@ -330,6 +335,12 @@ class VisionExplorer(Node):
             self._record_select_status(SelectStatus.NO_ROBOT_POSE if robot_xy is None else None)
             self._track_select_failure()
             return
+        if self._p().get('track_observation',False):
+            status=getattr(self,'_recon_status',None)
+            if not status or time.monotonic()-self._recon_status_at>5.:
+                self._sm.on_select_failed(False);self._event('search_unavailable',reason='awaiting_recon_status');return
+            if status.get('targets') and not self._observation_goals(robot_xy,now):
+                self._sm.on_select_failed(False);self._event('search_unavailable',reason='no_safe_target_viewpoint');return
         if self._p()["use_mission_brain"]:
             self._request_brain(robot_xy, now)
             return
@@ -354,6 +365,15 @@ class VisionExplorer(Node):
         except (ValueError,TypeError,KeyError,AttributeError):return
 
     def _observation_goals(self,robot_xy,now):
+        if self._p().get('track_observation',False):
+            status=getattr(self,'_recon_status',None)
+            if status and status.get('state')=='searching' and time.monotonic()-self._recon_status_at<5.:
+                anchors=[t['position_m'][:2] for t in status.get('targets',{}).values()
+                         if 0<=now-t.get('position_stamp_ns',0)*1e-9<=10.]
+                goals=tracked_observation_candidates(self._grid,robot_xy,anchors=anchors,
+                    safety_radius_m=self._selector.params.safety_radius_m,max_candidates=int(self._p()['brain_max_candidates']))
+                valid=tuple(g for g in goals if self._selector.is_goal_valid(self._grid,robot_xy,g,now))
+                if valid:return valid
         if not self._p().get('active_observation',False):return ()
         status=getattr(self,'_recon_status',None)
         if not status or status.get('state')!='searching' or time.monotonic()-self._recon_status_at>5.:return ()
@@ -396,7 +416,10 @@ class VisionExplorer(Node):
         context = dict(mission_state='EXPLORE', localization_healthy=True,
                        task='Rank supplied safe frontiers for reconnaissance; choose SELECT_FRONTIER. '
                             'Balance unknown-space gain and travel cost. Never infer that a hidden person exists.')
-        if observation:
+        if observation and observation[0].purpose=='observe_targets':
+            context.update(task='Select one supplied safe viewpoint to observe the confirmed moving people. Prefer the highest deterministic score to keep the camera facing them during travel. Preserve standoff; do not invent targets.',
+                           candidate_views={k:dict(purpose=g.purpose,look_at=g.look_at) for k,g in goals.items()})
+        elif observation:
             context.update(task='Select one supplied safe observation viewpoint to expose unknown space behind a mapped occluder. '
                                 'Prioritize visibility gain, then travel cost. These are visibility hypotheses, not detections.',
                            missing_counts=self._recon_status['missing_counts'],
@@ -408,7 +431,7 @@ class VisionExplorer(Node):
         self._context_pub.publish(String(data=json.dumps(context)))
         self._candidates.publish(String(data=json.dumps(payload)))
         self._event('brain_requested', request_id=request_id, candidate_count=len(goals),
-                    purpose='observe_occlusion' if observation else 'frontier')
+                    purpose=observation[0].purpose if observation else 'frontier')
 
     def _discard_brain(self, reason):
         pending = getattr(self, '_brain_pending', None)
@@ -515,7 +538,7 @@ class VisionExplorer(Node):
             self._sm.on_goal_result(False)
             return
         msg = NavigateToPose.Goal()
-        if goal.purpose=='observe_occlusion':
+        if goal.purpose in ('observe_occlusion','observe_targets'):
             path=self._p().get('observation_bt_path','')
             if not path:
                 self._sm.on_goal_result(False)

@@ -11,6 +11,8 @@ SCRIPT=Path(__file__).resolve().parents[1]/'scripts/run_slam_frontier.sh'
     ({'SLAM_RECON_TASK':'0','SLAM_RECON_SCENARIO':'moving_crossing'},'Moving scenes require recon'),
     ({'SLAM_RECON_TASK':'1','SLAM_RECON_SCENARIO':'moving_crossing','SLAM_RECON_IDENTITY_POLICY':'stationary'},'Moving scenes require recon'),
     ({'SLAM_RECON_IDENTITY_POLICY':'unknown'},'Unknown identity policy'),
+    ({'SLAM_JOINT_RECON':'1'},'Joint trial requires'),
+    ({'SLAM_JOINT_RECON':'1','SLAM_RECON_TASK':'1','SLAM_RECON_SCENARIO':'moving_parallel','SLAM_DYNAMIC_OBSTACLE':'blocked'},'Joint trial requires'),
 ])
 def test_invalid_policy_fails_before_starting_simulator(tmp_path,settings,error):
     env={k:v for k,v in os.environ.items() if not k.startswith('SLAM_')}

@@ -24,8 +24,16 @@ def main():
     if not (root/'bag/metadata.yaml').is_file():p.error('A finalized bag is required')
     scene=json.loads((root/'scene_manifest.json').read_text())
     if not scene.get('moving_people'):p.error('Moving scene required')
-    report=json.loads((root/'report.json').read_text());mission=json.loads((root/'mission_report.json').read_text())
+    report=json.loads((root/'report.json').read_text())
+    if report.get('recorder_exit_code')!=0:p.error('Require successful recorder shutdown')
+    joint=report.get('joint_recon',False);robot_truth={};last_gt=None
+    mission=json.loads((root/'mission_report.json').read_text())
     motion=json.loads((root/'person_motion.json').read_text())
+    if 'start_stamp_ns' not in motion:
+        result=dict(success=False,identity_validation_success=False,safe_return_success=False,
+            error=motion.get('error','Person motion never started'),target_audits=[],audits=[],
+            scope='motion stimulus did not start; no moving-camera success claim')
+        (root/'moving_validation.json').write_text(json.dumps(result,indent=2));print(json.dumps(result),flush=True);return 1
     evidence=json.loads((root/'detections/evidence.json').read_text())
     names=[t['name'] for t in scene['targets']];truth={name:{} for name in names}
     reader=rosbag2_py.SequentialReader()
@@ -38,7 +46,11 @@ def main():
         if topic=='/clock':
             c=deserialize_message(data,Clock).clock;clock=c.sec*10**9+c.nanosec
         elif topic=='/frontier_trial/gt_pose':
+            if clock is None or (last_gt is not None and clock-last_gt<50_000_000):continue
+            last_gt=clock
             for tr in deserialize_message(data,TFMessage).transforms:
+                if tr.child_frame_id=='robot1_my_bot':
+                    robot_truth[clock]=[tr.transform.translation.x,tr.transform.translation.y]
                 if tr.child_frame_id not in truth:continue
                 stamp=tr.header.stamp.sec*10**9+tr.header.stamp.nanosec;stamp=stamp or clock
                 if stamp is not None:truth[tr.child_frame_id][stamp]=[tr.transform.translation.x,tr.transform.translation.y]
@@ -78,6 +90,14 @@ def main():
             if name:histories[identity].append(name)
             if name and motion['start_stamp_ns']<=stamp<=motion.get('end_stamp_ns',motion['start_stamp_ns']+int(motion['duration_sim_s']*1e9)):
                 movement_samples[name].append((stamp,positions[valid[j]],o['evidence_id']))
+    robot_stamps=sorted(robot_truth)
+    def robot_at(stamp):
+        nearest=min(robot_stamps,key=lambda t:abs(t-stamp)) if robot_stamps else None
+        return (nearest,robot_truth[nearest]) if nearest is not None and abs(nearest-stamp)<=200_000_000 else None
+    def robot_moving(stamp):
+        before=robot_at(stamp-250_000_000);after=robot_at(stamp+250_000_000)
+        return bool(before and after and after[0]>before[0] and math.dist(before[1],after[1])/((after[0]-before[0])*1e-9)>=.03)
+    for capture in audits:capture['robot_moving']=robot_moving(capture['stamp_ns']) if joint else False
     switches=sum(sum(a!=b for a,b in zip(history,history[1:])) for history in histories.values())
     majority={identity:Counter(history).most_common(1)[0][0] for identity,history in histories.items()}
     duplicates=sum(max(0,n-1) for n in Counter(majority.values()).values())
@@ -87,6 +107,7 @@ def main():
         displacement=max((math.dist(a[1],b[1]) for a in samples for b in samples),default=0.)
         target_audits.append(dict(name=name,associated_motion_captures=len(samples),observed_span_s=span,
             observed_truth_displacement_m=displacement,
+            moving_robot_captures=sum(o['truth_name']==name and o['robot_moving'] and motion['start_stamp_ns']<=o['stamp_ns']<=motion.get('end_stamp_ns',0) for o in audits),
             passed=len(samples)>=6 and span>=motion['duration_sim_s']*.7 and displacement>=.5))
         if samples:
             for index in (0,len(samples)//2,len(samples)-1):selected.add(samples[index][0])
@@ -114,6 +135,7 @@ def main():
     identity_pass=bool(motion.get('success') and audits and all(t['passed'] for t in target_audits)
         and switches==0 and duplicates==0 and all(o['truth_name'] is not None and o['jpeg_decodable'] for o in audits)
         and len(mission['targets'])==len(names) and len(set(majority.values()))==len(names)
+        and (not joint or all(t['moving_robot_captures']>=6 for t in target_audits))
         and selected=={s['stamp_ns'] for s in saved}
         and not mission.get('identity_diagnostics',{}).get('capacity_exceeded',True))
     success=identity_pass and safe_return and report['success'] and mission['state']=='returned'
@@ -123,7 +145,8 @@ def main():
         target_audits=target_audits,audits=audits,exact_stamp_rgbd_samples=saved,
         truth_time_alignment='pose header or preceding bag /clock, maximum 0.2 s mismatch',
         truth_used_only_offline=True,scenario=scene['scenario'],
-        scope='rendered rigid people moving during a stationary observation phase; autonomous exploration and return follow; no walking animation or hardware validation')
+        appearance_variants=[t.get('appearance_variant','source_clone') for t in scene['targets']],
+        scope=('robot and rendered people move concurrently; strict moving-camera capture gate' if joint else 'rendered rigid people moving during a stationary observation phase; autonomous exploration and return follow; no walking animation or hardware validation'))
     (root/'moving_validation.json').write_text(json.dumps(result,indent=2))
     lines=['# 移动多人跟踪验证','',f'完整任务：{success}；身份验证：{identity_pass}；安全返航：{safe_return}',
         f'确认身份：{len(mission["targets"])}；身份交换：{switches}；重复身份：{duplicates}。',

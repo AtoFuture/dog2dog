@@ -49,3 +49,11 @@ def test_suite_does_not_accept_missing_audit_or_nonzero_launcher(tmp_path):
     assert m.summarize(tmp_path,dict(blocked=0,crossing=0))['success']
     (tmp_path/'crossing/dynamic_validation.json').unlink()
     assert not m.summarize(tmp_path,dict(blocked=0,crossing=0))['success']
+
+
+def test_joint_world_preserves_both_people_and_adds_real_cart(tmp_path):
+    source=tmp_path/'world.sdf'
+    source.write_text('<sdf version="1.7"><world name="world_demo"><model name="recon_person_1"/><model name="recon_person_2"/></world></sdf>')
+    target=load('prepare_dynamic_scene').prepare(source,tmp_path/'trial','crossing')
+    names={m.attrib['name'] for m in ET.parse(target).findall('.//world/model')}
+    assert names=={'recon_person_1','recon_person_2','trial_dynamic_cart'}
