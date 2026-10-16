@@ -3,7 +3,7 @@
 set -euo pipefail
 if [[ "${1:-}" == "--help" ]]; then
     echo 'Usage: run_slam_frontier.sh [OUTPUT_DIR] [GOALS=5] [--prepare-only]'
-    echo 'Environment: SLAM_ROS_DOMAIN_ID, SLAM_IGN_PARTITION, G1_SIM_WORKSPACE, G1_ROS_WRAPPER, G1_GPU_WRAPPER, SLAM_MISSION_BRAIN=1, SLAM_PERCEPTION=1, SLAM_MAX_RANGE, SLAM_RECON_TASK=1, SLAM_RECON_PERSON_MODEL, SLAM_RECON_SCENARIO=single|multi|partial|full|moving_crossing|moving_parallel|moving_occlusion, SLAM_RECON_IDENTITY_POLICY, SLAM_RECON_REQUIRED_PERSONS, SLAM_EXPLORATION_TIMEOUT, SLAM_ACTIVE_OBSERVATION=1, SLAM_INJECT_RETURN_HOLD_S=0..30'
+    echo 'Environment: SLAM_ROS_DOMAIN_ID, SLAM_IGN_PARTITION, G1_SIM_WORKSPACE, G1_ROS_WRAPPER, G1_GPU_WRAPPER, SLAM_MISSION_BRAIN=1, SLAM_PERCEPTION=1, SLAM_MAX_RANGE, SLAM_RECON_TASK=1, SLAM_RECON_PERSON_MODEL, SLAM_RECON_SCENARIO=single|multi|partial|full|moving_crossing|moving_parallel|moving_occlusion, SLAM_RECON_IDENTITY_POLICY, SLAM_RECON_REQUIRED_PERSONS, SLAM_EXPLORATION_TIMEOUT, SLAM_ACTIVE_OBSERVATION=1, SLAM_INJECT_RETURN_HOLD_S=0..30, SLAM_DYNAMIC_OBSTACLE=crossing|blocked'
     exit 0
 fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -28,6 +28,10 @@ fi
 if [[ "${SLAM_RECON_SCENARIO:-single}" == moving_* ]]; then
     [[ "${SLAM_RECON_TASK:-0}" == "1" && "${IDENTITY_POLICY}" == "motion_appearance_v1" ]] || { echo 'Moving scenes require recon and motion_appearance_v1' >&2; exit 2; }
 fi
+if [[ -n "${SLAM_DYNAMIC_OBSTACLE:-}" ]]; then
+    [[ "${SLAM_DYNAMIC_OBSTACLE}" == crossing || "${SLAM_DYNAMIC_OBSTACLE}" == blocked ]] || { echo 'Unknown dynamic scenario' >&2; exit 2; }
+    [[ "${SLAM_RECON_TASK:-0}" == 0 && "${SLAM_MISSION_BRAIN:-0}" == 0 ]] || { echo 'Dynamic benchmark uses deterministic Nav2 goals' >&2; exit 2; }
+fi
 TRIAL_DOMAIN="${SLAM_ROS_DOMAIN_ID:-192}"
 TRIAL_PARTITION="${SLAM_IGN_PARTITION:-frontier_${TRIAL_DOMAIN}_$$}"
 for executable in "${ROS_WRAPPER}" "${GPU_WRAPPER}"; do
@@ -45,7 +49,10 @@ python3 "$1/prepare_amcl_navigation.py" --localization slam --sim-workspace "$3"
 if [[ "$6" == "1" ]]; then
     python3 "$1/prepare_recon_scene.py" --world "$3/src/gazebo_sim/world/warehouse.sdf" --person-model "$5" --output-dir "$2" --scenario "$7"
 fi
-' _ "${SCRIPT_DIR}" "${OUTPUT_DIR}" "${SIM_WORKSPACE}" "${SLAM_MAX_RANGE:-4.0}" "${SLAM_RECON_PERSON_MODEL:-}" "${SLAM_RECON_TASK:-0}" "${SLAM_RECON_SCENARIO:-single}"
+if [[ -n "$8" ]]; then
+    python3 "$1/prepare_dynamic_scene.py" --world "$3/src/gazebo_sim/world/warehouse.sdf" --output-dir "$2" --scenario "$8"
+fi
+' _ "${SCRIPT_DIR}" "${OUTPUT_DIR}" "${SIM_WORKSPACE}" "${SLAM_MAX_RANGE:-4.0}" "${SLAM_RECON_PERSON_MODEL:-}" "${SLAM_RECON_TASK:-0}" "${SLAM_RECON_SCENARIO:-single}" "${SLAM_DYNAMIC_OBSTACLE:-}"
 if [[ "${3:-}" == "--prepare-only" ]]; then
     echo "Prepared: ${OUTPUT_DIR}"
     exit 0
@@ -67,6 +74,7 @@ PY
 ' _ "${TRIAL_DOMAIN}" "${SIM_WORKSPACE}"
 TRIAL_WORLD=warehouse.sdf
 if [[ "${SLAM_RECON_TASK:-0}" == "1" ]]; then TRIAL_WORLD="${OUTPUT_DIR}/recon_warehouse.sdf"; fi
+if [[ -n "${SLAM_DYNAMIC_OBSTACLE:-}" ]]; then TRIAL_WORLD="${OUTPUT_DIR}/dynamic_warehouse.sdf"; fi
 setsid "${GPU_WRAPPER}" bash -c '
 source "$1/install/setup.bash"
 export ROS_DOMAIN_ID="$3" IGN_PARTITION="$4" RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
@@ -122,9 +130,10 @@ fi
 if [[ "$9" == "1" ]]; then BRAIN_ARGS+=(--perception); fi
 if [[ "${10}" == "1" ]]; then BRAIN_ARGS+=(--recon-task --required-person-count "${11}" ); fi
 if [[ "${13}" == "1" ]]; then BRAIN_ARGS+=(--active-observation); fi
+if [[ -n "${16}" ]]; then BRAIN_ARGS+=(--dynamic-obstacle "${16}"); fi
 BRAIN_ARGS+=(--recon-identity-policy "${14}" --inject-return-hold-s "${15}")
 exec python3 "$6/validate_slam_frontier.py" "${BRAIN_ARGS[@]}" --output-dir "$2" --expected-domain "$3" --goals "$7" --exploration-timeout "${12}"
-' _ "${SIM_WORKSPACE}" "${OUTPUT_DIR}" "${TRIAL_DOMAIN}" "${TRIAL_PARTITION}" "${PROJECT_DIR}" "${SCRIPT_DIR}" "${GOALS}" "${SLAM_MISSION_BRAIN:-${SLAM_RECON_TASK:-0}}" "${SLAM_PERCEPTION:-${SLAM_RECON_TASK:-0}}" "${SLAM_RECON_TASK:-0}" "${REQUIRED_PERSONS}" "${SLAM_EXPLORATION_TIMEOUT:-600}" "${SLAM_ACTIVE_OBSERVATION:-0}" "${IDENTITY_POLICY}" "${SLAM_INJECT_RETURN_HOLD_S:-0}" >"${OUTPUT_DIR}/trial.log" 2>&1 &
+' _ "${SIM_WORKSPACE}" "${OUTPUT_DIR}" "${TRIAL_DOMAIN}" "${TRIAL_PARTITION}" "${PROJECT_DIR}" "${SCRIPT_DIR}" "${GOALS}" "${SLAM_MISSION_BRAIN:-${SLAM_RECON_TASK:-0}}" "${SLAM_PERCEPTION:-${SLAM_RECON_TASK:-0}}" "${SLAM_RECON_TASK:-0}" "${REQUIRED_PERSONS}" "${SLAM_EXPLORATION_TIMEOUT:-600}" "${SLAM_ACTIVE_OBSERVATION:-0}" "${IDENTITY_POLICY}" "${SLAM_INJECT_RETURN_HOLD_S:-0}" "${SLAM_DYNAMIC_OBSTACLE:-}" >"${OUTPUT_DIR}/trial.log" 2>&1 &
 VALIDATION_GROUP=$!
 if wait "${VALIDATION_GROUP}"; then
     TRIAL_STATUS=0
@@ -138,6 +147,10 @@ if [[ -f "$3/baseline/install/local_setup.bash" ]]; then source "$3/baseline/ins
 set -e
 export PYTHONPATH="$3/baseline/g3_integration_eval:${PYTHONPATH:-}"
 export MPLCONFIGDIR=/tmp/slam-frontier-mpl
+if [[ -n "$7" ]]; then
+    python3 "$1/evaluate_dynamic_obstacle.py" "$2"
+    exit $?
+fi
 python3 "$1/evaluate_slam_frontier.py" "$2" --reference-map "$4/src/navigation2/maps/warehouse_map.yaml"
 python3 "$1/plot_slam_frontier.py" "$2"
 if [[ "$5" == "1" ]]; then
@@ -147,7 +160,7 @@ if [[ "$5" == "1" ]]; then
     python3 "$1/evaluate_return_recovery.py" "$2" || AUDIT_STATUS=1
     exit "${AUDIT_STATUS}"
 fi
-' _ "${SCRIPT_DIR}" "${OUTPUT_DIR}" "${PROJECT_DIR}" "${SIM_WORKSPACE}" "${SLAM_RECON_TASK:-0}" "${SLAM_RECON_SCENARIO:-single}"
+' _ "${SCRIPT_DIR}" "${OUTPUT_DIR}" "${PROJECT_DIR}" "${SIM_WORKSPACE}" "${SLAM_RECON_TASK:-0}" "${SLAM_RECON_SCENARIO:-single}" "${SLAM_DYNAMIC_OBSTACLE:-}"
 fi
 echo "Artifacts: ${OUTPUT_DIR}"
 exit "${TRIAL_STATUS}"

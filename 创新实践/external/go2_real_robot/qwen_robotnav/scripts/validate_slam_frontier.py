@@ -149,6 +149,7 @@ def main():
     parser.add_argument('--required-person-count',type=int,default=1)
     parser.add_argument('--recon-identity-policy',choices=('stationary','motion_appearance_v1'),default='stationary')
     parser.add_argument('--goals',type=int,default=5)
+    parser.add_argument('--dynamic-obstacle',choices=('crossing','blocked'))
     parser.add_argument('--inject-return-hold-s',type=float,default=0.)
     parser.add_argument('--exploration-timeout',type=float,default=600)
     args=parser.parse_args()
@@ -159,6 +160,8 @@ def main():
     if not os.environ.get('IGN_PARTITION') or args.goals<1 or args.required_person_count<1:
         parser.error('Set IGN_PARTITION and a positive --goals')
     if args.active_observation and not (args.recon_task and args.mission_brain):parser.error('Active observation requires recon and mission brain')
+    if args.dynamic_obstacle and (args.recon_task or args.mission_brain or args.inject_return_hold_s):
+        parser.error('Dynamic benchmark uses deterministic Nav2 goals without recon, brain or injected holds')
     if args.recon_task and not args.perception:parser.error('--recon-task requires --perception')
     root=args.output_dir.resolve();project=Path(__file__).resolve().parents[4]
     if not (root/'slam_navigation.launch.py').exists():
@@ -212,6 +215,7 @@ def main():
             raise RuntimeError('Simulator sensors or standing posture unavailable')
         recorder=start(['ros2','bag','record','--include-hidden-topics','-o',str(root/'bag'),'/clock','/robot1/map','/robot1/tf','/robot1/tf_static',
                '/robot1/velodyne','/robot1/odometry/filtered','/robot1/cmd_vel','/deepseek/nav_cmd','/robot1/cmd_vel_nav','/frontier_trial/scaled_cmd','/frontier_trial/fault_events','/exploration/events',
+               '/frontier_trial/cart_events','/robot1/local_costmap/costmap','/robot1/global_costmap/costmap','/robot1/plan',
                '/mission_state','/g3/state','/g3/return_event','/frontier_trial/gt_pose','/frontier_trial/battery',
                '/robot1/navigate_to_pose/_action/status','/robot1/navigate_to_pose/_action/feedback',
                '/navigation/handoff_request','/navigation/handoff_ack',
@@ -275,38 +279,42 @@ def main():
                 raise RuntimeError('Moving-person scenario did not complete; inspect person_motion.log')
         if recon is not None:
             recon.search_budget_paused=False;recon.search_started_at=time.monotonic()
-        explorer=VisionExplorer();executor.add_node(explorer)
-        monitor.running=True;monitor.battery()
-        if not args.recon_task:monitor.command_pub.publish(String(data='EXPLORE'))
-        print(json.dumps({'phase':'exploring','home_map':home,'truth_start':baseline[1:],
-                          'initial_known_area_m2':initial_area}),flush=True)
-        def explored():
-            if monitor.states and monitor.states[-1][1]=='estop':raise RuntimeError('G3 entered ESTOP during exploration')
-            if args.recon_task:
-                if recon.state in ('failed','interrupted'):raise RuntimeError('Recon task '+recon.state)
-                return recon.return_requested
-            return sum(e['status']=='succeeded' and e['geodesic_dist_m']>=.75 for e in monitor.events)>=args.goals
-        if not spin_until(explored,args.exploration_timeout+5):
-            raise RuntimeError((f'Recon deadline: targets_confirmed={recon.objective_confirmed()}, '
-                                f'exploration_goals={len(recon.completed_goals)}/{args.goals}')
-                               if args.recon_task else 'Insufficient successful frontier goals before deadline')
-        # Exercise an active/late-accepted frontier cancellation at low-battery handoff.
-        if not args.recon_task:
-            spin_until(lambda:explorer._attempt is not None or explorer._brain_pending is not None,3)
-            monitor.battery_level=.1;monitor.battery()
-        def returned():
-            if any(e['status'] in ('aborted','canceled','rejected','server_unavailable') for e in monitor.returns):
-                raise RuntimeError('RETURN failed')
-            return any(e['status']=='succeeded' for e in monitor.returns)
-        if not spin_until(returned,180):raise RuntimeError('RETURN timed out')
-        monitor.running=False;explorer.stop_navigation()
-        spin_until(lambda:False,2)
-        end=monitor.poses[-1];home_error=math.hypot(end[1]-baseline[1],end[2]-baseline[2])
-        final_area=monitor.maps[-1][1]
-        report=dict(success=home_error<=.4 and final_area>initial_area,elapsed_seconds=time.monotonic()-started,
-            home_map=home,truth_start=baseline[1:],truth_end=end[1:],truth_home_error_m=home_error,
-            initial_known_area_m2=initial_area,final_known_area_m2=final_area,
-            known_area_growth_m2=final_area-initial_area)
+        if args.dynamic_obstacle:
+            from dynamic_obstacle_trial import run_trial
+            report=run_trial(monitor,root,home,baseline,start,spin_until)
+        else:
+            explorer=VisionExplorer();executor.add_node(explorer)
+            monitor.running=True;monitor.battery()
+            if not args.recon_task:monitor.command_pub.publish(String(data='EXPLORE'))
+            print(json.dumps({'phase':'exploring','home_map':home,'truth_start':baseline[1:],
+                              'initial_known_area_m2':initial_area}),flush=True)
+            def explored():
+                if monitor.states and monitor.states[-1][1]=='estop':raise RuntimeError('G3 entered ESTOP during exploration')
+                if args.recon_task:
+                    if recon.state in ('failed','interrupted'):raise RuntimeError('Recon task '+recon.state)
+                    return recon.return_requested
+                return sum(e['status']=='succeeded' and e['geodesic_dist_m']>=.75 for e in monitor.events)>=args.goals
+            if not spin_until(explored,args.exploration_timeout+5):
+                raise RuntimeError((f'Recon deadline: targets_confirmed={recon.objective_confirmed()}, '
+                                    f'exploration_goals={len(recon.completed_goals)}/{args.goals}')
+                                   if args.recon_task else 'Insufficient successful frontier goals before deadline')
+            # Exercise an active/late-accepted frontier cancellation at low-battery handoff.
+            if not args.recon_task:
+                spin_until(lambda:explorer._attempt is not None or explorer._brain_pending is not None,3)
+                monitor.battery_level=.1;monitor.battery()
+            def returned():
+                if any(e['status'] in ('aborted','canceled','rejected','server_unavailable') for e in monitor.returns):
+                    raise RuntimeError('RETURN failed')
+                return any(e['status']=='succeeded' for e in monitor.returns)
+            if not spin_until(returned,180):raise RuntimeError('RETURN timed out')
+            monitor.running=False;explorer.stop_navigation()
+            spin_until(lambda:False,2)
+            end=monitor.poses[-1];home_error=math.hypot(end[1]-baseline[1],end[2]-baseline[2])
+            final_area=monitor.maps[-1][1]
+            report=dict(success=home_error<=.4 and final_area>initial_area,elapsed_seconds=time.monotonic()-started,
+                home_map=home,truth_start=baseline[1:],truth_end=end[1:],truth_home_error_m=home_error,
+                initial_known_area_m2=initial_area,final_known_area_m2=final_area,
+                known_area_growth_m2=final_area-initial_area)
     except (Exception,KeyboardInterrupt) as exc:
         report=dict(success=False,error=str(exc) or 'Validation interrupted')
         if recon is not None and recon.state not in ('returned','failed','interrupted'):
@@ -374,6 +382,10 @@ def main():
             report['success']=False;report.setdefault('error','Return hold did not exercise progress recovery')
         report['navigation_return_success']=bool(home is not None and any(e['status']=='succeeded' for e in monitor.returns)
                                                  and report.get('truth_home_error_m',float('inf'))<=.4)
+        if args.dynamic_obstacle:
+            report['navigation_return_success']=bool(report.get('dynamic_navigation_success'))
+            report['dynamic_obstacle']=args.dynamic_obstacle
+            report['return_trigger']='deterministic_dynamic_navigation_benchmark'
         if args.recon_task:
             report['recon_mission']=json.loads((root/'mission_report.json').read_text()) if (root/'mission_report.json').exists() else {'state':'not_started'}
             if report['recon_mission']['state']!='returned':
@@ -396,6 +408,7 @@ def main():
             map_samples=monitor.maps,emergency_guard_interventions=monitor.blocked,
             minimum_front_range_m=monitor.minimum_front if math.isfinite(monitor.minimum_front) else None,
             final_zero_command_published=True)
+        if args.dynamic_obstacle:report['goal_source']='fixed map-frame Nav2 benchmark goals'
         (root/'report.json').write_text(json.dumps(report,indent=2));print(json.dumps(report),flush=True)
         for node in [explorer,recon,brain,g3,monitor]:
             if node is not None:executor.remove_node(node);node.destroy_node()

@@ -425,3 +425,9 @@ source install/local_setup.bash
 
 多轮入口为 `scripts/run_return_regression.py`，包含独立交叉、并行及 18 秒返航零速度保持。
 详见[返航诊断与恢复验证](docs/return-progress-recovery-validation.md)。
+
+## 动态障碍仿真
+
+已加入推车横穿与临时堵路基准，记录真实雷达命中、代价地图清障、Nav2 停车/绕行和往返结果。两轮独立隔离仿真通过，84 项导航回归通过；尚未验证实机或移动多人任务与动态避障同时运行。
+
+复现入口：`python3 scripts/run_dynamic_regression.py /tmp/dynamic_nav_suite --start-domain 226`。详见 [场景、证据与边界](docs/dynamic-obstacle-validation.md)。
