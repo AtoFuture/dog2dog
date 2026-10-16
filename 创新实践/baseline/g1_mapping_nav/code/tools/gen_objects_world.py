@@ -128,12 +128,12 @@ def vehicle(name, x, y, yaw, wps, speed):
 
 
 parts = ["\n    <!-- ==== 行人：<actor> 长走廊矩形环 ==== -->\n"]
-parts.append(actor_person("person_1", [(1.5, -1.15), (11.0, -1.15)]))
-parts.append(actor_person("person_2", [(1.5, 1.25), (11.0, 1.25)]))
-parts.append(actor_person("person_3", [(11.0, 3.85), (1.5, 3.85)]))
+parts.append(actor_person("person_1", [(10.8, 0.4), (10.8, 7.4)]))
+parts.append(actor_person("person_2", [(18.75, 0.4), (18.75, 7.4)]))
+parts.append(actor_person("person_3", [(8.0, 0.25), (20.5, 0.25)]))
 parts.append("\n    <!-- ==== 车辆：带轮整车 + 官方 AckermannSteering + TrajDrive(cmd_vel) ==== -->\n")
-parts.append(vehicle("suv_1", -6.5, -6.45, 0.0, [(-6.5, -6.45), (1.5, -6.45)], 0.6))
-parts.append(vehicle("suv_2", 12.0, -6.45, 3.14159, [(12.0, -6.45), (4.5, -6.45)], 0.6))
+parts.append(vehicle("suv_1", 3.6, -5.4, 1.5708, [(3.6, -5.4), (3.6, 7.0)], 0.6))
+parts.append(vehicle("suv_2", 5.4, -5.4, 1.5708, [(5.4, -5.4), (5.4, 4.0)], 0.6))
 
 idx = base.rfind("</world>")
 new = base[:idx] + "".join(parts) + base[idx:]

@@ -707,43 +707,43 @@
     <!-- ==== 行人：<actor> 长走廊矩形环 ==== -->
 
     <actor name="person_1">
-      <pose>1.5 -1.15 0 0 0 0</pose>
+      <pose>10.8 0.4 0 0 0 0</pose>
       <skin><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale></skin>
       <animation name="walk"><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x></animation>
       <script>
         <loop>true</loop><auto_start>true</auto_start>
         <trajectory id="0" type="walk" tension="1.0">
           <waypoint><time>0.0</time><pose>0.0 0.0 0 0 0 0</pose></waypoint>
-          <waypoint><time>31.667</time><pose>9.5 0.0 0 0 0 0</pose></waypoint>
-          <waypoint><time>63.333</time><pose>0 0 0 0 0 0</pose></waypoint>
+          <waypoint><time>23.333</time><pose>0.0 7.0 0 0 0 0</pose></waypoint>
+          <waypoint><time>46.667</time><pose>0 0 0 0 0 0</pose></waypoint>
         </trajectory>
       </script>
     </actor>
 
     <actor name="person_2">
-      <pose>1.5 1.25 0 0 0 0</pose>
+      <pose>18.75 0.4 0 0 0 0</pose>
       <skin><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale></skin>
       <animation name="walk"><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x></animation>
       <script>
         <loop>true</loop><auto_start>true</auto_start>
         <trajectory id="0" type="walk" tension="1.0">
           <waypoint><time>0.0</time><pose>0.0 0.0 0 0 0 0</pose></waypoint>
-          <waypoint><time>31.667</time><pose>9.5 0.0 0 0 0 0</pose></waypoint>
-          <waypoint><time>63.333</time><pose>0 0 0 0 0 0</pose></waypoint>
+          <waypoint><time>23.333</time><pose>0.0 7.0 0 0 0 0</pose></waypoint>
+          <waypoint><time>46.667</time><pose>0 0 0 0 0 0</pose></waypoint>
         </trajectory>
       </script>
     </actor>
 
     <actor name="person_3">
-      <pose>11.0 3.85 0 0 0 0</pose>
+      <pose>8.0 0.25 0 0 0 0</pose>
       <skin><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale></skin>
       <animation name="walk"><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x></animation>
       <script>
         <loop>true</loop><auto_start>true</auto_start>
         <trajectory id="0" type="walk" tension="1.0">
           <waypoint><time>0.0</time><pose>0.0 0.0 0 0 0 0</pose></waypoint>
-          <waypoint><time>31.667</time><pose>-9.5 0.0 0 0 0 0</pose></waypoint>
-          <waypoint><time>63.333</time><pose>0 0 0 0 0 0</pose></waypoint>
+          <waypoint><time>41.667</time><pose>12.5 0.0 0 0 0 0</pose></waypoint>
+          <waypoint><time>83.333</time><pose>0 0 0 0 0 0</pose></waypoint>
         </trajectory>
       </script>
     </actor>
@@ -751,7 +751,7 @@
     <!-- ==== 车辆：带轮整车 + 官方 AckermannSteering + TrajDrive(cmd_vel) ==== -->
 
     <model name='suv_1'>
-      <pose>-6.5 -6.45 0.325 0 0 0.0</pose>
+      <pose>3.6 -5.4 0.325 0 0 1.5708</pose>
       <link name='chassis'>
         <pose>-0.151427 0 0.175 0 0 0</pose>
         <inertial><mass>1.14395</mass><inertia>
@@ -872,13 +872,13 @@
       </plugin>
       <plugin filename="libTrajDrive.so" name="traj_drive::TrajDrive">
         <link>chassis</link><speed>0.6</speed><kp>1.5</kp><lookahead>2.0</lookahead><loop>true</loop>
-        <waypoint>-6.5 -6.45 0</waypoint>
-        <waypoint>1.5 -6.45 0</waypoint>
+        <waypoint>3.6 -5.4 0</waypoint>
+        <waypoint>3.6 7.0 0</waypoint>
       </plugin>
     </model>
 
     <model name='suv_2'>
-      <pose>12.0 -6.45 0.325 0 0 3.14159</pose>
+      <pose>5.4 -5.4 0.325 0 0 1.5708</pose>
       <link name='chassis'>
         <pose>-0.151427 0 0.175 0 0 0</pose>
         <inertial><mass>1.14395</mass><inertia>
@@ -999,8 +999,8 @@
       </plugin>
       <plugin filename="libTrajDrive.so" name="traj_drive::TrajDrive">
         <link>chassis</link><speed>0.6</speed><kp>1.5</kp><lookahead>2.0</lookahead><loop>true</loop>
-        <waypoint>12.0 -6.45 0</waypoint>
-        <waypoint>4.5 -6.45 0</waypoint>
+        <waypoint>5.4 -5.4 0</waypoint>
+        <waypoint>5.4 4.0 0</waypoint>
       </plugin>
     </model>
 </world>
