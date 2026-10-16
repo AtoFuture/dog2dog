@@ -1,5 +1,7 @@
 # 多人及遮挡验证
 
+> 历史验收记录：当前正式主线见 [统一运行说明](navigation-runtime.md)。本页保留既有结果；使用旧场景 runner 复现须显式加 `--legacy-validation`，旧 shell 场景须设置 `SLAM_LEGACY_VALIDATION=1`。人物、动态障碍实验继续冻结，本轮不重跑。
+
 继单人任务后，任务节点现在可以声明 `required_person_count`，分别确认多个静止人员。每人仍要求同一有效跟踪 ID 的两次独立观测、有效 map 位置和可解码 JPEG；ID 为 0 或快照配对不明确的观测不能完成任务。平面位置在 0.8 米内的不同 ID 合并，防止换 ID 后重复计数。这是静态空间去重，不是通用行人重识别；近距离人员可能合并，移动目标不在本轮范围。
 
 一键入口支持 `SLAM_RECON_SCENARIO=single|multi|partial|full`，非 single 场景默认要求两人，也可用 `SLAM_RECON_REQUIRED_PERSONS` 明确设置。所有人物及实体挡板只加入私有 world 副本。场景真值只供离线匹配，在线任务接收的是检测证据及目标数量。

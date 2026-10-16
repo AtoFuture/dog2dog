@@ -37,6 +37,7 @@ class MissionBrainNode(Node):
         self.declare_parameter('context_topic', '/mission/context')
         self.declare_parameter('candidates_topic', '/exploration/candidates')
         self.declare_parameter('decision_topic', '/brain/decision')
+        self.declare_parameter('mission_state_topic', '/mission_state')
         self._config = DeepSeekConfig.from_env()
         self._context = None
         self._active = None
@@ -46,7 +47,9 @@ class MissionBrainNode(Node):
         self.create_subscription(String, self.get_parameter('candidates_topic').value, self._on_candidates, 10)
         qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self._mission = None
-        self.create_subscription(String, '/mission_state', self._on_mission, qos)
+        self.create_subscription(
+            String, self.get_parameter('mission_state_topic').value, self._on_mission, qos
+        )
         self._steady = Clock(clock_type=ClockType.STEADY_TIME)
         self.create_timer(.1, self._poll_result, clock=self._steady)
         self.get_logger().info(f'Mission Brain ready: {self._config.model}; bounded candidate ranking')

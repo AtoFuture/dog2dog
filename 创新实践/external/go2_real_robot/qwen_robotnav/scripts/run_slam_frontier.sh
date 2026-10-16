@@ -3,7 +3,7 @@
 set -euo pipefail
 if [[ "${1:-}" == "--help" ]]; then
     echo 'Usage: run_slam_frontier.sh [OUTPUT_DIR] [GOALS=5] [--prepare-only]'
-    echo 'Environment: SLAM_ROS_DOMAIN_ID, SLAM_IGN_PARTITION, G1_SIM_WORKSPACE, G1_ROS_WRAPPER, G1_GPU_WRAPPER, SLAM_MISSION_BRAIN=1, SLAM_PERCEPTION=1, SLAM_MAX_RANGE, SLAM_RECON_TASK=1, SLAM_RECON_PERSON_MODEL, SLAM_RECON_SCENARIO=single|multi|partial|full|moving_crossing|moving_parallel|moving_occlusion, SLAM_RECON_IDENTITY_POLICY, SLAM_RECON_REQUIRED_PERSONS, SLAM_EXPLORATION_TIMEOUT, SLAM_ACTIVE_OBSERVATION=1, SLAM_INJECT_RETURN_HOLD_S=0..30, SLAM_DYNAMIC_OBSTACLE=crossing|blocked, SLAM_JOINT_RECON=1, SLAM_JOINT_SAME_CLOTHING=1, SLAM_FAULT_RECOVERY=short|long'
+    echo 'Environment: SLAM_ROS_DOMAIN_ID, SLAM_IGN_PARTITION, G1_SIM_WORKSPACE, G1_ROS_WRAPPER, G1_GPU_WRAPPER, SLAM_LEGACY_VALIDATION=1 (historical only), SLAM_RUNTIME_PROFILE, SLAM_RUNTIME_INTERACTIVE=1, SLAM_RUNTIME_CANDIDATE_SELECTOR=deterministic|deepseek, SLAM_MISSION_INSTRUCTION, SLAM_MISSION_BRAIN=1, SLAM_PERCEPTION=1, SLAM_MAX_RANGE, SLAM_RECON_TASK=1, SLAM_RECON_PERSON_MODEL, SLAM_RECON_SCENARIO=single|multi|partial|full|moving_crossing|moving_parallel|moving_occlusion, SLAM_RECON_IDENTITY_POLICY, SLAM_RECON_REQUIRED_PERSONS, SLAM_EXPLORATION_TIMEOUT, SLAM_ACTIVE_OBSERVATION=1, SLAM_INJECT_RETURN_HOLD_S=0..30, SLAM_DYNAMIC_OBSTACLE=crossing|blocked, SLAM_JOINT_RECON=1, SLAM_JOINT_SAME_CLOTHING=1, SLAM_FAULT_RECOVERY=short|long'
     exit 0
 fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -13,8 +13,22 @@ GOALS="${2:-5}"
 ROS_WRAPPER="${G1_ROS_WRAPPER:-${HOME}/.enroot/ros}"
 GPU_WRAPPER="${G1_GPU_WRAPPER:-${HOME}/.enroot/ros-gui}"
 SIM_WORKSPACE="${G1_SIM_WORKSPACE:-${HOME}/go2_sim_ws/ROS2-Gazebo-GO2}"
+RUNTIME_INTERACTIVE="${SLAM_RUNTIME_INTERACTIVE:-0}"
+RUNTIME_CANDIDATE_SELECTOR="${SLAM_RUNTIME_CANDIDATE_SELECTOR:-}"
+RUNTIME_MISSION_INSTRUCTION="${SLAM_MISSION_INSTRUCTION:-}"
+LEGACY_VALIDATION="${SLAM_LEGACY_VALIDATION:-0}"
+[[ "${LEGACY_VALIDATION}" == 0 || "${LEGACY_VALIDATION}" == 1 ]] || { echo 'SLAM_LEGACY_VALIDATION must be 0 or 1' >&2; exit 2; }
+if [[ "${LEGACY_VALIDATION}" == 0 ]]; then
+    [[ "${SLAM_RECON_TASK:-0}" == 0 && "${SLAM_PERCEPTION:-0}" == 0 && -z "${SLAM_DYNAMIC_OBSTACLE:-}" && -z "${SLAM_FAULT_RECOVERY:-}" && "${SLAM_JOINT_RECON:-0}" == 0 && "${SLAM_INJECT_RETURN_HOLD_S:-0}" == 0 && "${SLAM_ACTIVE_OBSERVATION:-0}" == 0 ]] || { echo 'Frozen scenarios require explicit SLAM_LEGACY_VALIDATION=1; current entry uses the single runtime' >&2; exit 2; }
+    SLAM_RUNTIME_PROFILE="${SLAM_RUNTIME_PROFILE:-${SCRIPT_DIR}/../config/sim_runtime.yaml}"
+else
+    [[ -z "${SLAM_RUNTIME_PROFILE:-}" && "${RUNTIME_INTERACTIVE}" == 0 ]] || { echo 'Historical validation and current runtime are mutually exclusive' >&2; exit 2; }
+fi
 [[ "${GOALS}" =~ ^[1-9][0-9]*$ ]] || { echo 'GOALS must be positive' >&2; exit 2; }
 [[ "${3:-}" == "" || "${3:-}" == "--prepare-only" ]] || { echo 'Unknown third argument' >&2; exit 2; }
+[[ "${RUNTIME_INTERACTIVE}" == 0 || "${RUNTIME_INTERACTIVE}" == 1 ]] || { echo 'SLAM_RUNTIME_INTERACTIVE must be 0 or 1' >&2; exit 2; }
+[[ -z "${RUNTIME_CANDIDATE_SELECTOR}" || "${RUNTIME_CANDIDATE_SELECTOR}" == deterministic || "${RUNTIME_CANDIDATE_SELECTOR}" == deepseek ]] || { echo 'Unknown runtime candidate selector' >&2; exit 2; }
+[[ "${RUNTIME_INTERACTIVE}" == 0 || -n "${SLAM_RUNTIME_PROFILE:-}" ]] || { echo 'Interactive runtime requires SLAM_RUNTIME_PROFILE' >&2; exit 2; }
 REQUIRED_PERSONS="${SLAM_RECON_REQUIRED_PERSONS:-}"
 if [[ -z "${REQUIRED_PERSONS}" ]]; then
     if [[ "${SLAM_RECON_SCENARIO:-single}" == "single" ]]; then REQUIRED_PERSONS=1; else REQUIRED_PERSONS=2; fi
@@ -42,6 +56,10 @@ fi
 if [[ -n "${SLAM_FAULT_RECOVERY:-}" ]]; then
     [[ "${SLAM_FAULT_RECOVERY}" == short || "${SLAM_FAULT_RECOVERY}" == long ]] || { echo 'Unknown fault recovery mode' >&2; exit 2; }
     [[ "${SLAM_RECON_TASK:-0}" == 0 && "${SLAM_MISSION_BRAIN:-0}" == 0 && "${SLAM_PERCEPTION:-0}" == 0 && "${SLAM_JOINT_RECON:-0}" == 0 && -z "${SLAM_DYNAMIC_OBSTACLE:-}" && "${SLAM_INJECT_RETURN_HOLD_S:-0}" == 0 ]] || { echo 'Fault recovery trial requires isolated ordinary exploration' >&2; exit 2; }
+fi
+if [[ -n "${SLAM_RUNTIME_PROFILE:-}" ]]; then
+    [[ "${SLAM_RECON_TASK:-0}" == 0 && "${SLAM_PERCEPTION:-0}" == 0 && -z "${SLAM_DYNAMIC_OBSTACLE:-}" && -z "${SLAM_FAULT_RECOVERY:-}" && "${SLAM_JOINT_RECON:-0}" == 0 && "${SLAM_INJECT_RETURN_HOLD_S:-0}" == 0 && "${SLAM_ACTIVE_OBSERVATION:-0}" == 0 ]] || { echo 'Runtime trial requires ordinary exploration' >&2; exit 2; }
+    SLAM_RUNTIME_PROFILE="$(realpath "${SLAM_RUNTIME_PROFILE}")"
 fi
 TRIAL_DOMAIN="${SLAM_ROS_DOMAIN_ID:-192}"
 TRIAL_PARTITION="${SLAM_IGN_PARTITION:-frontier_${TRIAL_DOMAIN}_$$}"
@@ -154,8 +172,23 @@ if [[ "${17}" == 1 ]]; then BRAIN_ARGS+=(--joint-recon); fi
 if [[ -n "${16}" ]]; then BRAIN_ARGS+=(--dynamic-obstacle "${16}"); fi
 if [[ -n "${18}" ]]; then BRAIN_ARGS+=(--fault-recovery "${18}"); fi
 BRAIN_ARGS+=(--recon-identity-policy "${14}" --inject-return-hold-s "${15}")
-exec python3 "$6/validate_slam_frontier.py" "${BRAIN_ARGS[@]}" --output-dir "$2" --expected-domain "$3" --goals "$7" --exploration-timeout "${12}"
-' _ "${SIM_WORKSPACE}" "${OUTPUT_DIR}" "${TRIAL_DOMAIN}" "${TRIAL_PARTITION}" "${PROJECT_DIR}" "${SCRIPT_DIR}" "${GOALS}" "${SLAM_MISSION_BRAIN:-${SLAM_RECON_TASK:-0}}" "${SLAM_PERCEPTION:-${SLAM_RECON_TASK:-0}}" "${SLAM_RECON_TASK:-0}" "${REQUIRED_PERSONS}" "${SLAM_EXPLORATION_TIMEOUT:-600}" "${SLAM_ACTIVE_OBSERVATION:-0}" "${IDENTITY_POLICY}" "${SLAM_INJECT_RETURN_HOLD_S:-0}" "${SLAM_DYNAMIC_OBSTACLE:-}" "${SLAM_JOINT_RECON:-0}" "${SLAM_FAULT_RECOVERY:-}" >"${OUTPUT_DIR}/trial.log" 2>&1 &
+if [[ -n "${19}" ]]; then
+    export PYTHONPATH="$6/..:$6/../ros2_ws/src/qwen_robotnav_ros:${PYTHONPATH:-}"
+    if [[ -f "$5/.env" ]]; then
+        set -a
+        source "$5/.env"
+        set +a
+    fi
+    RUNTIME_ARGS=(--profile "${19}" --expected-domain "$3")
+    if [[ -n "${21}" ]]; then RUNTIME_ARGS+=(--candidate-selector "${21}"); fi
+    if [[ -n "${22}" ]]; then RUNTIME_ARGS+=(--mission-instruction "${22}"); fi
+    if [[ "${20}" == 1 ]]; then
+        exec python3 "$6/run_navigation_runtime.py" "${RUNTIME_ARGS[@]}" --navigation-dir "$2" --enable-motion
+    fi
+    exec python3 "$6/validate_runtime.py" "${RUNTIME_ARGS[@]}" --output-dir "$2" --goals "$7" --exploration-timeout "${12}"
+fi
+exec python3 "$6/legacy/validate_slam_frontier.py" --legacy-validation "${BRAIN_ARGS[@]}" --output-dir "$2" --expected-domain "$3" --goals "$7" --exploration-timeout "${12}"
+' _ "${SIM_WORKSPACE}" "${OUTPUT_DIR}" "${TRIAL_DOMAIN}" "${TRIAL_PARTITION}" "${PROJECT_DIR}" "${SCRIPT_DIR}" "${GOALS}" "${SLAM_MISSION_BRAIN:-${SLAM_RECON_TASK:-0}}" "${SLAM_PERCEPTION:-${SLAM_RECON_TASK:-0}}" "${SLAM_RECON_TASK:-0}" "${REQUIRED_PERSONS}" "${SLAM_EXPLORATION_TIMEOUT:-600}" "${SLAM_ACTIVE_OBSERVATION:-0}" "${IDENTITY_POLICY}" "${SLAM_INJECT_RETURN_HOLD_S:-0}" "${SLAM_DYNAMIC_OBSTACLE:-}" "${SLAM_JOINT_RECON:-0}" "${SLAM_FAULT_RECOVERY:-}" "${SLAM_RUNTIME_PROFILE:-}" "${RUNTIME_INTERACTIVE}" "${RUNTIME_CANDIDATE_SELECTOR}" "${RUNTIME_MISSION_INSTRUCTION}" >"${OUTPUT_DIR}/trial.log" 2>&1 &
 VALIDATION_GROUP=$!
 if wait "${VALIDATION_GROUP}"; then
     TRIAL_STATUS=0
@@ -163,7 +196,9 @@ else
     TRIAL_STATUS=$?
 fi
 VALIDATION_GROUP=""
-if [[ -n "${SLAM_FAULT_RECOVERY:-}" ]]; then
+if [[ -n "${SLAM_RUNTIME_PROFILE:-}" && "${RUNTIME_INTERACTIVE}" != 1 ]]; then
+    "${ROS_WRAPPER}" bash -c 'source /opt/ros/humble/setup.bash; export PYTHONPATH="$1/..:${PYTHONPATH:-}"; python3 "$1/evaluate_runtime.py" "$2"' _ "${SCRIPT_DIR}" "${OUTPUT_DIR}" || { if [[ "${TRIAL_STATUS}" == 0 ]]; then TRIAL_STATUS=1; fi; }
+elif [[ -n "${SLAM_FAULT_RECOVERY:-}" ]]; then
     "${ROS_WRAPPER}" bash -c 'source /opt/ros/humble/setup.bash; python3 "$1/evaluate_fault_recovery.py" "$2"' _ "${SCRIPT_DIR}" "${OUTPUT_DIR}" || { if [[ "${TRIAL_STATUS}" == 0 ]]; then TRIAL_STATUS=1; fi; }
 elif [[ -f "${OUTPUT_DIR}/slam_map.yaml" ]]; then
     "${ROS_WRAPPER}" bash -c '

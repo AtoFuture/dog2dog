@@ -21,6 +21,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'velocity_guard = qwen_robotnav_ros.velocity_guard:main',
             'nav_node = qwen_robotnav_ros.nav_node:main',
             'nav2_waypoint_bridge = qwen_robotnav_ros.nav2_waypoint_bridge:main',
             'go2_controller = qwen_robotnav_ros.go2_controller:main',

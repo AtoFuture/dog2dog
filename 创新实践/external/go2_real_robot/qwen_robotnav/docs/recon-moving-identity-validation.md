@@ -1,5 +1,7 @@
 # 移动多人身份关联与去重
 
+> 历史验收记录：当前正式主线见 [统一运行说明](navigation-runtime.md)。本页保留既有结果；使用旧场景 runner 复现须显式加 `--legacy-validation`，旧 shell 场景须设置 `SLAM_LEGACY_VALIDATION=1`。人物、动态障碍实验继续冻结，本轮不重跑。
+
 ## 实现与范围
 
 任务层新增 `recon_identity_policy=motion_appearance_v1`。它不再按静止位置划分人员，

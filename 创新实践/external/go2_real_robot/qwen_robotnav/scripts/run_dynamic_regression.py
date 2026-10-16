@@ -26,7 +26,10 @@ def summarize(root, codes):
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('output_dir',type=Path)
     p.add_argument('--start-domain',type=int,default=226)
-    a=p.parse_args();root=a.output_dir.resolve()
+    p.add_argument('--legacy-validation',action='store_true')
+    a=p.parse_args()
+    if not a.legacy_validation:p.error('Frozen historical experiment requires --legacy-validation')
+    root=a.output_dir.resolve()
     if not 1<=a.start_domain<=231 or {a.start_domain,a.start_domain+1} & {42,43}:
         p.error('Require two valid isolated ROS domains')
     if root.exists():p.error('Choose a fresh output directory')
@@ -35,7 +38,7 @@ def main():
     body=script.read_text();codes={}
     for i,name in enumerate(CASES):
         domain=a.start_domain+i
-        env=dict(os.environ,SLAM_DYNAMIC_OBSTACLE=name,SLAM_ROS_DOMAIN_ID=str(domain),
+        env=dict(os.environ,SLAM_LEGACY_VALIDATION='1',SLAM_RUNTIME_PROFILE='',SLAM_DYNAMIC_OBSTACLE=name,SLAM_ROS_DOMAIN_ID=str(domain),
             SLAM_IGN_PARTITION=f'dynamic_{domain}_{uuid.uuid4().hex[:8]}',SLAM_RECON_TASK='0',
             SLAM_MISSION_BRAIN='0',SLAM_PERCEPTION='0',SLAM_RECON_SCENARIO='single',
             SLAM_ACTIVE_OBSERVATION='0',SLAM_INJECT_RETURN_HOLD_S='0')

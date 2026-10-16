@@ -43,7 +43,10 @@ def main():
     parser.add_argument('output_dir',type=Path)
     parser.add_argument('--person-model',type=Path,required=True)
     parser.add_argument('--start-domain',type=int,default=224)
-    args=parser.parse_args();root=args.output_dir.resolve()
+    parser.add_argument('--legacy-validation',action='store_true')
+    args=parser.parse_args()
+    if not args.legacy_validation:parser.error('Frozen historical experiment requires --legacy-validation')
+    root=args.output_dir.resolve()
     if not 1<=args.start_domain<=230 or set(range(args.start_domain,args.start_domain+3)) & {42,43}:
         parser.error('Choose three isolated valid ROS domains')
     if root.exists():parser.error('Choose a fresh suite output directory')
@@ -52,7 +55,7 @@ def main():
     exit_codes={}
     for index,(name,scene,hold) in enumerate(CASE_SPECS):
         directory=root/name;domain=args.start_domain+index
-        env=dict(os.environ,SLAM_RECON_TASK='1',SLAM_PERCEPTION='1',SLAM_MISSION_BRAIN='1',
+        env=dict(os.environ,SLAM_LEGACY_VALIDATION='1',SLAM_RUNTIME_PROFILE='',SLAM_RECON_TASK='1',SLAM_PERCEPTION='1',SLAM_MISSION_BRAIN='1',
             SLAM_RECON_SCENARIO=scene,SLAM_RECON_IDENTITY_POLICY='motion_appearance_v1',
             SLAM_RECON_REQUIRED_PERSONS='2',SLAM_ACTIVE_OBSERVATION='0',
             SLAM_RECON_PERSON_MODEL=str(args.person_model.resolve()),SLAM_ROS_DOMAIN_ID=str(domain),

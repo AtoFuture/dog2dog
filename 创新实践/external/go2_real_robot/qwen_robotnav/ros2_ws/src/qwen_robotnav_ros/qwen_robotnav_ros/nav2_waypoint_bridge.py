@@ -32,7 +32,12 @@ class Nav2WaypointBridge(Node):
             'max_goal_distance_m': 2.5,
             'waypoint_timeout_sec': 8.0,
             'goal_timeout_sec': 120.0,
-            'require_mission_state': False,
+            'require_mission_state': True,
+            'mission_state_topic': '/mission_state',
+            'handoff_request_topic': '/navigation/handoff_request',
+            'handoff_ack_topic': '/navigation/handoff_ack',
+            'event_topic': '/deepseek/nav2_events',
+            'goal_topic': '/deepseek/nav2_goal',
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -54,12 +59,28 @@ class Nav2WaypointBridge(Node):
         self._buffer = Buffer()
         self._listener = TransformListener(self._buffer, self)
         self._client = ActionClient(self, NavigateToPose, str(self.get_parameter('nav_action').value))
-        self._events = self.create_publisher(String, '/deepseek/nav2_events', 10)
-        self._goals = self.create_publisher(PoseStamped, '/deepseek/nav2_goal', 10)
+        self._events = self.create_publisher(
+            String, str(self.get_parameter('event_topic').value), 10
+        )
+        self._goals = self.create_publisher(
+            PoseStamped, str(self.get_parameter('goal_topic').value), 10
+        )
         self.create_subscription(PoseArray, str(self.get_parameter('waypoint_topic').value), self._on_waypoints, 1)
-        self.create_subscription(String, '/mission_state', self._on_mission, QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
-        self._handoff_ack = self.create_publisher(String, '/navigation/handoff_ack', 10)
-        self.create_subscription(String, '/navigation/handoff_request', self._on_handoff, 10)
+        self.create_subscription(
+            String,
+            str(self.get_parameter('mission_state_topic').value),
+            self._on_mission,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL),
+        )
+        self._handoff_ack = self.create_publisher(
+            String, str(self.get_parameter('handoff_ack_topic').value), 10
+        )
+        self.create_subscription(
+            String,
+            str(self.get_parameter('handoff_request_topic').value),
+            self._on_handoff,
+            10,
+        )
         self._watchdog_clock = Clock(clock_type=ClockType.STEADY_TIME)
         self._timer = self.create_timer(0.2, self._tick, clock=self._watchdog_clock)
         self.get_logger().info('DeepSeek → Nav2 bridge ready; Nav2 owns planning and velocity control')

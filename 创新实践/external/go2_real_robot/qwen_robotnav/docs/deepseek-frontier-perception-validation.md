@@ -1,5 +1,7 @@
 # DeepSeek frontier 排序与检测联调（2026-10-15）
 
+> 历史验收记录：当前正式主线见 [统一运行说明](navigation-runtime.md)。本页保留既有结果；使用旧场景 runner 复现须显式加 `--legacy-validation`，旧 shell 场景须设置 `SLAM_LEGACY_VALIDATION=1`。人物、动态障碍实验继续冻结，本轮不重跑。
+
 本轮接通 DeepSeek 安全候选排序，并补充 RGB-D 检测和 G3 证据记录。全部运动在独立 ROS/Gazebo 域中完成，未控制真机。参考地图与 Gazebo 真值仅用于离线评测。
 
 ## 排序与导航结果

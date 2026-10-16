@@ -32,6 +32,11 @@ class NavNode(Node):
 
         # Parameters
         self.declare_parameter("camera_topic", "/camera/color/image_raw")
+        self.declare_parameter("instruction_topic", "/qwen_robotnav/instruction")
+        self.declare_parameter("mission_state_topic", "/mission_state")
+        self.declare_parameter("waypoint_topic", "/qwen_robotnav/waypoints")
+        self.declare_parameter("debug_image_topic", "/qwen_robotnav/debug_image")
+        self.declare_parameter("observation_frame", "base_link")
         self.declare_parameter("instruction", "Move forward safely.")
         self.declare_parameter("task_mode", "VLN")
         self.declare_parameter("history_length", 4)
@@ -42,11 +47,14 @@ class NavNode(Node):
         self.declare_parameter("publish_debug_image", True)
         self.declare_parameter("inference_timeout_sec", 15.0)
         self.declare_parameter("max_frame_age_sec", 15.0)
-        self.declare_parameter("require_mission_state", False)
+        self.declare_parameter("require_mission_state", True)
         self._gate_by_mission = bool(self.get_parameter("require_mission_state").value)
         self._mission_allowed = not self._gate_by_mission
 
         self.camera_topic = self.get_parameter("camera_topic").value
+        self.observation_frame = str(self.get_parameter("observation_frame").value)
+        if not self.observation_frame.strip():
+            raise ValueError("observation_frame must not be empty")
         self.instruction = self.get_parameter("instruction").value
         self.history_length = int(self.get_parameter("history_length").value)
         self.inference_period = float(self.get_parameter("inference_period").value)
@@ -97,13 +105,20 @@ class NavNode(Node):
             Image, self.camera_topic, self._image_callback, 1
         )
         self.instruction_sub = self.create_subscription(
-            String, "/qwen_robotnav/instruction", self._instruction_callback, 1
+            String,
+            str(self.get_parameter("instruction_topic").value),
+            self._instruction_callback,
+            1,
         )
         self.mission_sub = self.create_subscription(
-            String, '/mission_state', self._mission_callback,
+            String, str(self.get_parameter("mission_state_topic").value), self._mission_callback,
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
-        self.waypoint_pub = self.create_publisher(PoseArray, "/qwen_robotnav/waypoints", 1)
-        self.debug_image_pub = self.create_publisher(Image, "/qwen_robotnav/debug_image", 1)
+        self.waypoint_pub = self.create_publisher(
+            PoseArray, str(self.get_parameter("waypoint_topic").value), 1
+        )
+        self.debug_image_pub = self.create_publisher(
+            Image, str(self.get_parameter("debug_image_topic").value), 1
+        )
 
         # Timer for periodic inference
         self._inference_clock = Clock(clock_type=ClockType.STEADY_TIME)
@@ -218,7 +233,7 @@ class NavNode(Node):
         # Relative goals belong to the image acquisition pose, not the pose
         # reached after several seconds of model inference.
         msg.header.stamp = self._inference_frame_stamp or self.get_clock().now().to_msg()
-        msg.header.frame_id = "base_link"
+        msg.header.frame_id = self.observation_frame
         for w in waypoints:
             pose = Pose()
             pose.position.x = float(w[0])

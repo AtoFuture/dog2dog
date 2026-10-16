@@ -207,6 +207,10 @@ class G3StateMachineNode(Node):
             5.0, self._check_battery_timeout
         )
         self._publish_state()
+        self.declare_parameter('state_publish_period_sec', .5)
+        period=float(self.get_parameter('state_publish_period_sec').value)
+        if not math.isfinite(period) or period<=0:raise ValueError('State heartbeat period must be finite and positive')
+        self.create_timer(period,self._publish_state,clock=self._handoff_clock)
 
     def _on_command(self, message: String) -> None:
         try:

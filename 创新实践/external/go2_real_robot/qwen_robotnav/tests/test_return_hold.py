@@ -8,10 +8,10 @@ import pytest
 pytest.importorskip('rclpy')
 from geometry_msgs.msg import Twist
 
-script=Path(__file__).resolve().parents[1]/'scripts/validate_slam_frontier.py'
+script=Path(__file__).resolve().parents[1]/'scripts/legacy/validate_slam_frontier.py'
 @pytest.fixture(scope='module')
 def validation_module():
-    project=script.parents[4]
+    project=script.parents[5]
     with pytest.MonkeyPatch.context() as patch:
         for relative in ('baseline/g3_integration_eval','baseline/g2_vision_explore',
                          'baseline/g2_vision_explore/vision_explorer'):

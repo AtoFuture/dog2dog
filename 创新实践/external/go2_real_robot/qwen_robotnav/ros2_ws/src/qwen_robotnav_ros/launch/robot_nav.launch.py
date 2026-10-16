@@ -1,12 +1,12 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackagePrefix
 
 
-def generate_launch_description():
+def _legacy_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             "camera_topic",
@@ -45,7 +45,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "start_unitree_bridge",
-            default_value="true",
+            default_value="false",
             description="Start the standalone Unitree SDK2 motion/camera bridge",
         ),
         DeclareLaunchArgument(
@@ -109,4 +109,21 @@ def generate_launch_description():
                 "waypoint_timeout_sec": 2.5,
             }],
         ),
+    ])
+
+
+from qwen_robotnav_ros.experimental_gate import assert_no_runtime
+
+
+def _legacy_gate(context):
+    if LaunchConfiguration('enable_legacy_direct_control').perform(context).lower()!='true':
+        raise RuntimeError('Direct visual-to-velocity control is archived. Use run_navigation_runtime.py; explicit enable_legacy_direct_control:=true is required for historical experiments')
+    assert_no_runtime()
+    return list(_legacy_launch_description().entities)
+
+
+def generate_launch_description():
+    return LaunchDescription([
+        DeclareLaunchArgument('enable_legacy_direct_control',default_value='false'),
+        OpaqueFunction(function=_legacy_gate),
     ])

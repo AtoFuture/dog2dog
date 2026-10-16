@@ -15,13 +15,16 @@ def main():
     p.add_argument('--same-clothing',action='store_true',help='Hard same-appearance stress case; baseline uses different clothing materials')
     p.add_argument('--scenario',choices=('moving_parallel','moving_crossing'),default='moving_parallel')
     p.add_argument('--exploration-timeout',type=float,default=300.)
-    a=p.parse_args();root=a.output_dir.resolve()
+    p.add_argument('--legacy-validation',action='store_true',help='Explicitly reproduce frozen historical experiments')
+    a=p.parse_args()
+    if not a.legacy_validation:p.error('Frozen historical experiment: add --legacy-validation to reproduce; current runtime is run_navigation_runtime.py')
+    root=a.output_dir.resolve()
     if not 1<=a.domain<=232 or a.domain in (42,43):p.error('Choose an isolated valid domain')
     if root.exists() or not str(root).isascii():p.error('Choose a fresh ASCII output directory')
     if not (a.person_model/'model.sdf').is_file():p.error('Person model missing')
     if not 60<=a.exploration_timeout<=600:p.error('Search deadline must be between 60 and 600 wall seconds')
     root.mkdir(parents=True);script=Path(__file__).with_name('run_slam_frontier.sh');body=script.read_text()
-    env=dict(os.environ,SLAM_JOINT_RECON='1',SLAM_JOINT_SAME_CLOTHING='1' if a.same_clothing else '0',SLAM_DYNAMIC_OBSTACLE='crossing',SLAM_ROS_DOMAIN_ID=str(a.domain),
+    env=dict(os.environ,SLAM_LEGACY_VALIDATION='1',SLAM_RUNTIME_PROFILE='',SLAM_JOINT_RECON='1',SLAM_JOINT_SAME_CLOTHING='1' if a.same_clothing else '0',SLAM_DYNAMIC_OBSTACLE='crossing',SLAM_ROS_DOMAIN_ID=str(a.domain),
         SLAM_IGN_PARTITION=f'joint_{a.domain}_{uuid.uuid4().hex[:8]}',SLAM_RECON_TASK='1',SLAM_MISSION_BRAIN='1',
         SLAM_PERCEPTION='1',SLAM_RECON_SCENARIO=a.scenario,SLAM_RECON_PERSON_MODEL=str(a.person_model.resolve()),
         SLAM_RECON_REQUIRED_PERSONS='2',SLAM_RECON_IDENTITY_POLICY='motion_appearance_v1',SLAM_ACTIVE_OBSERVATION='0',

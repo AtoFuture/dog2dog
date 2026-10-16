@@ -157,6 +157,10 @@ class VisionExplorer(Node):
             raise ValueError("brain_timeout_s must be .1..60")
         if not 1 <= p["brain_max_candidates"] <= 16:
             raise ValueError("brain_max_candidates must be 1..16")
+        if not isinstance(p["mission_instruction"], str) or not p["mission_instruction"].strip():
+            raise ValueError("mission_instruction must not be empty")
+        if len(p["mission_instruction"]) > 2000:
+            raise ValueError("mission_instruction must not exceed 2000 characters")
 
         if (p['active_observation'] or p['track_observation']) and (not p['use_mission_brain'] or not Path(p['observation_bt_path']).is_file()):
             raise ValueError('Active observation requires mission brain and a generated observation BT file')
@@ -229,6 +233,7 @@ class VisionExplorer(Node):
             ("use_mission_brain", False),
             ("brain_timeout_s", 15.0),
             ("brain_max_candidates", 6),
+            ("mission_instruction", "Explore the unknown environment safely."),
             ("active_observation", False),
             ("track_observation", False),
             ("observation_bt_path", ""),
@@ -240,7 +245,8 @@ class VisionExplorer(Node):
             "map_topic", "mission_state_topic", "nav_action", "tick_period_s",
             "max_nav_timeout_s", "robot_frame", "map_frame",
             "min_frontier_area_m2", "require_mission_state", "map_timeout_s", "min_goal_distance_m",
-            "use_mission_brain", "brain_timeout_s", "brain_max_candidates", "active_observation", "track_observation", "observation_bt_path")}
+            "use_mission_brain", "brain_timeout_s", "brain_max_candidates", "mission_instruction",
+            "active_observation", "track_observation", "observation_bt_path")}
 
     # ------------------------------------------------------------------
     # 订阅回调
@@ -413,9 +419,14 @@ class VisionExplorer(Node):
         budget = float(self._p()['brain_timeout_s'])
         self._brain_pending = dict(id=request_id, goals=goals, robot_xy=robot_xy,
                                    deadline=time.monotonic()+budget)
-        context = dict(mission_state='EXPLORE', localization_healthy=True,
-                       task='Rank supplied safe frontiers for reconnaissance; choose SELECT_FRONTIER. '
-                            'Balance unknown-space gain and travel cost. Never infer that a hidden person exists.')
+        context = dict(
+            mission_state='EXPLORE',
+            localization_healthy=True,
+            operator_instruction=self._p()['mission_instruction'],
+            task='Rank only the supplied safe frontiers for the operator mission; choose '
+                 'SELECT_FRONTIER. Balance mission relevance, unknown-space gain, and travel '
+                 'cost. Never invent coordinates, observations, or hidden people.',
+        )
         if observation and observation[0].purpose=='observe_targets':
             context.update(task='Select one supplied safe viewpoint to observe the confirmed moving people. Prefer the highest deterministic score to keep the camera facing them during travel. Preserve standoff; do not invent targets.',
                            candidate_views={k:dict(purpose=g.purpose,look_at=g.look_at) for k,g in goals.items()})

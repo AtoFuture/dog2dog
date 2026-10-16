@@ -1,10 +1,15 @@
 # Qwen-RobotNav on Jetson Orin NX → Unitree Go2
 
-本项目基于 Qwen-RobotNav 的导航流程实现观察编码、提示构建、航点解码和 Go2 控制接口。
-**当前视觉推理后端已切换为 DeepSeek**：`https://api.deepseek.com`，模型 `deepseek-flash`。
+本项目基于Qwen-RobotNav和G2探索流程实现Go2自主导航。
+**当前统一链路使用DeepSeek作为Mission Brain**：它选择G2根据雷达地图生成的安全候选点，不根据相机画面直接生成导航坐标。
 `qwen_robotnav` 包名、节点名和话题名保留以兼容已有启动脚本。
 
-## 当前 DeepSeek 接入
+
+> 当前唯一正式入口为 `scripts/run_navigation_runtime.py`；普通启动和只读验收均调用它。默认由 DeepSeek 对 G2 安全候选排序，确定性选择作为同一 G2 模块的回退/对照模式。历史人物、推车及旧故障实验已冻结，需显式 `--legacy-validation` 或 `SLAM_LEGACY_VALIDATION=1` 复现。使用方法见 [统一运行说明](docs/navigation-runtime.md)。
+
+## 旧视觉航点组件
+
+统一导航运行栈已停止使用相机直接生成导航点。下面的视觉航点节点保留用于旧实验复现；当前正式链路使用G2根据雷达SLAM地图生成安全候选点，DeepSeek Mission Brain只选择候选ID。
 
 - 视觉节点优先读取 `DEEPSEEK_API_KEY`；API 地址与模型通过历史参数名
   `vllm_base_url` / `vllm_model` 配置，默认就是 DeepSeek。
@@ -20,26 +25,22 @@
 - DeepSeek 排队时可能不断发送保活空行，网络读超时不代表请求总时限。
   参见 [DeepSeek 保活说明](https://api-docs.deepseek.com/quick_start/rate_limit/)。
 
-```bash
-ros2 launch qwen_robotnav_ros robot_nav.launch.py \
-  vllm_base_url:=https://api.deepseek.com \
-  vllm_model:=deepseek-flash \
-  inference_timeout_sec:=15.0 \
-  max_frame_age_sec:=15.0
-```
+完整的 DeepSeek、Nav2、G3 和最终速度保护通过统一运行入口启动，见
+[统一导航链路](#统一导航链路)。`robot_nav.launch.py` 与 `deepseek_nav2.launch.py` 已默认禁用，仅显式历史开关可启动。
 
 以下 Jetson、vLLM 和本地 Qwen 部署说明保留为历史及可选后端配置，不代表当前默认接入。
 
-## DeepSeek → Nav2 避障导航
+## 旧 DeepSeek → Nav2 视觉航点实验
 
-先启动地图、定位、雷达和 Nav2（默认 action 为 `/robot1/navigate_to_pose`），再启动：
+下面的launch只用于复现历史视觉航点实验，不属于当前统一运行链路：
 
 ```bash
-ros2 launch qwen_robotnav_ros deepseek_nav2.launch.py \
+ros2 launch qwen_robotnav_ros deepseek_nav2.launch.py enable_experimental_waypoints:=true \
   camera_topic:=/robot1/color/image_raw use_sim_time:=true
 ```
 
 该入口只启动视觉推理节点和 `nav2_waypoint_bridge`，不启动直接速度控制器或真机 SDK 桥。
+两节点默认等待 `/mission_state` 的 `exploring` 状态；单独接入时需要由任务状态节点发布该状态。
 Nav2 负责代价地图、全局规划、局部跟踪、恢复及速度输出；仿真沿用 G1 的速度缩放器。
 不要同时启动旧的 `go2_controller` 向同一个底盘速度话题发指令。
 探索目标也应保持单一入口，停用同时向该 Nav2 action 发探索目标的旧发送器。
@@ -254,13 +255,13 @@ sg docker -c "docker build -t qwen-robotnav:latest -f docker/Dockerfile.nav ."
 ```bash
 ./docker/run.sh
 # 容器内
-ros2 launch qwen_robotnav_ros robot_nav.launch.py
+ros2 launch qwen_robotnav_ros robot_nav.launch.py enable_legacy_direct_control:=true
 ```
 
 或者覆盖参数：
 
 ```bash
-ros2 launch qwen_robotnav_ros robot_nav.launch.py \
+ros2 launch qwen_robotnav_ros robot_nav.launch.py enable_legacy_direct_control:=true \
   instruction:="go to the living room" \
   task_mode:="ObjNav" \
   camera_topic:="/camera/color/image_raw" \
@@ -336,7 +337,7 @@ cd ~/qwen_robotnav
 
 ```bash
 ./docker/run_go2.sh
-ros2 launch qwen_robotnav_ros robot_nav.launch.py instruction:="go forward"
+ros2 launch qwen_robotnav_ros robot_nav.launch.py enable_legacy_direct_control:=true instruction:="go forward"
 ```
 
 4. 接入 Go2 自带相机和运动控制接口（根据实际 SDK 版本调整 `nav_node.py` 中的 camera_topic 和 `go2_controller.py` 中的控制模式）。
@@ -358,7 +359,7 @@ Apache-2.0
 ## DeepSeek 排序与检测证据
 
 ```bash
-SLAM_MISSION_BRAIN=1 SLAM_PERCEPTION=1 SLAM_ROS_DOMAIN_ID=197   ./scripts/run_slam_frontier.sh /tmp/deepseek_frontier_run 5
+SLAM_LEGACY_VALIDATION=1 SLAM_MISSION_BRAIN=1 SLAM_PERCEPTION=1 SLAM_ROS_DOMAIN_ID=197   ./scripts/run_slam_frontier.sh /tmp/deepseek_frontier_run 5
 ```
 
 入口读取项目 `.env` 中的 `DEEPSEEK_API_KEY`；可用 `MISSION_BRAIN_*` 覆盖任务脑配置。
@@ -381,7 +382,7 @@ G3 把 `/detections_3d` 与 `/detections_snapshot` 持久化为 `detections/evid
 
 ```bash
 python3 ./scripts/fetch_recon_person.py /tmp/go2_person_asset
-SLAM_RECON_TASK=1 SLAM_RECON_PERSON_MODEL=/tmp/go2_person_asset \
+SLAM_LEGACY_VALIDATION=1 SLAM_RECON_TASK=1 SLAM_RECON_PERSON_MODEL=/tmp/go2_person_asset \
   SLAM_ROS_DOMAIN_ID=200 ./scripts/run_slam_frontier.sh /tmp/go2_recon_run 1
 ```
 
@@ -430,10 +431,14 @@ source install/local_setup.bash
 
 已加入推车横穿与临时堵路基准，记录真实雷达命中、代价地图清障、Nav2 停车/绕行和往返结果。两轮独立隔离仿真通过，84 项导航回归通过；尚未验证实机或移动多人任务与动态避障同时运行。
 
-复现入口：`python3 scripts/run_dynamic_regression.py /tmp/dynamic_nav_suite --start-domain 226`。详见 [场景、证据与边界](docs/dynamic-obstacle-validation.md)。
+复现入口：`python3 scripts/run_dynamic_regression.py /tmp/dynamic_nav_suite --start-domain 226 --legacy-validation`。详见 [场景、证据与边界](docs/dynamic-obstacle-validation.md)。
 
 ## 移动观察与动态障碍联合任务
 
 新增 `run_joint_recon.py`，将机器人移动、双人取证和推车横穿并行运行，通过 G3 自动返航。安全观察候选由已确认的图像时刻 map 证据生成，DeepSeek 只排序候选 ID；任务支持持续观察时窗和近期证据门槛。参见 [联合场景、独立验收与失败样本](docs/recon-joint-validation.md)。
 
 固定的不同服装双人平行移动与推车横穿场景已完成联合验收：零身份交换/重复，返航误差约 0.24 m，597 项分包回归通过。同衣长遮挡和近距离横穿仍保留为未通过压力样本。
+
+### 统一导航链路
+
+`scripts/run_navigation_runtime.py` 现在始终使用G2作为唯一探索目标所有者。G2从雷达SLAM地图生成并过滤安全Frontier候选；默认由Mission Brain根据任务、信息增益和路径代价选择候选ID，随后由G2用最新地图复核并提交Nav2；离线时可切换为确定性评分。相机视觉航点节点不再由统一入口启动。完整执行链路为：雷达SLAM → G2候选 → DeepSeek选择ID → G2复核 → Nav2 → `/runtime/nav2_cmd` → `/runtime/scaled_cmd` → 速度监护 → `/robot1/cmd_vel`。启动命令与边界见[运行说明](docs/navigation-runtime.md)。

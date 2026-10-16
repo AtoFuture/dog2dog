@@ -1,5 +1,7 @@
 # 空地图 SLAM / frontier / 低电量返航验证
 
+> 历史验收记录：当前正式主线见 [统一运行说明](navigation-runtime.md)。本页保留既有结果；使用旧场景 runner 复现须显式加 `--legacy-validation`，旧 shell 场景须设置 `SLAM_LEGACY_VALIDATION=1`。人物、动态障碍实验继续冻结，本轮不重跑。
+
 日期：2026-10-15。仅 Go2 warehouse 仿真，ROS domain 191，独立 Gazebo partition。
 静态地图、AMCL、真值定位 TF、真机 SDK 均未启动。目标来自 G2 确定性 frontier，
 本轮未启用 DeepSeek 视觉目标发送器；DeepSeek 接入配置保持此前状态。

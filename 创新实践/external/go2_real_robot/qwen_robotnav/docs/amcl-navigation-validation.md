@@ -1,5 +1,7 @@
 # AMCL / DeepSeek / G3 隔离仿真验证
 
+> 历史验收记录：当前正式主线见 [统一运行说明](navigation-runtime.md)。本页保留既有结果；使用旧场景 runner 复现须显式加 `--legacy-validation`，旧 shell 场景须设置 `SLAM_LEGACY_VALIDATION=1`。人物、动态障碍实验继续冻结，本轮不重跑。
+
 日期：2026-10-15。地图为现有 warehouse 静态地图，ROS_DOMAIN_ID=189，独立 Gazebo partition。
 调用真实 DeepSeek API；底盘为 Go2 仿真，无真机 SDK。已停止测试仿真及导航进程。
 

@@ -1,0 +1,125 @@
+"""One validated configuration for the Gazebo navigation runtime."""
+import hashlib
+import json
+import math
+from pathlib import Path
+from urllib.parse import urlparse
+import yaml
+
+KEYS={
+ 'topics':set('nav_command guarded_input actuator_command scan odometry imu battery mission command guard_status map action tf tf_static'.split()),
+ 'frames':{'map','odom','base'},
+ 'guard':set('rate_hz command_timeout_s sensor_timeout_s battery_timeout_s mission_timeout_s stamp_future_tolerance_s linear_max angular_max front_half_angle_rad front_clearance_m max_tilt_rad'.split()),
+ 'scaler':set('linear_scale linear_max linear_min nav_deadband angular_scale angular_max linear_accel linear_decel angular_accel angular_decel ramp_rate cmd_timeout'.split()),
+ 'navigation':{'robot_radius_m','inflation_radius_m','desired_linear_velocity_mps'},
+ 'mission':set('heartbeat_period_s recovery_stale_s recovery_stable_s recovery_timeout_s low_battery_threshold home_x home_y home_yaw'.split()),
+ 'explorer':{'tick_period_s','min_goal_distance_m'},
+ 'decision':set('candidate_selector mission_instruction brain_base_url brain_model brain_timeout brain_max_candidates'.split()),
+ 'battery_model':{'initial_percentage','moving_drain_per_sec','idle_drain_per_sec','publish_rate_hz'},
+}
+
+
+def load_profile(path):
+    return validate_profile(yaml.safe_load(Path(path).read_text()))
+
+
+def validate_profile(value):
+    if not isinstance(value,dict) or set(value)!={'schema_version','backend','use_sim_time',*KEYS}:
+        raise ValueError('Unknown or missing runtime profile fields')
+    if type(value['schema_version']) is not int or value['schema_version']!=1 or value['backend']!='gazebo_go2' or value['use_sim_time'] is not True:
+        raise ValueError('Only the measured gazebo_go2 simulation profile is supported')
+    for section,keys in KEYS.items():
+        data=value[section]
+        if not isinstance(data,dict) or set(data)!=keys:raise ValueError('Unknown or missing '+section+' fields')
+        for key,item in data.items():
+            if section=='decision':continue
+            if section in ('topics','frames'):
+                if not isinstance(item,str) or not item.strip() or any(c.isspace() for c in item):raise ValueError('Invalid '+key)
+                if section=='topics' and not item.startswith('/'):raise ValueError('Use absolute topics')
+            else:
+                if isinstance(item,bool) or not isinstance(item,(int,float)) or not math.isfinite(item):raise ValueError('Invalid numeric '+key)
+                if not key.startswith('home_') and item<=0:raise ValueError('Expected positive '+key)
+    t,g,s,n,m=(value[k] for k in ('topics','guard','scaler','navigation','mission'))
+    if len(set(t.values()))!=len(t):raise ValueError('Runtime topics must be distinct')
+    if len(set(value['frames'].values()))!=3:raise ValueError('Runtime frames must be distinct')
+    if not 1<=g['rate_hz']<=100 or g['linear_max']>.03 or g['angular_max']>.8:raise ValueError('Unvalidated simulator guard limits')
+    if not 0<g['front_half_angle_rad']<=math.pi/2 or not 0<g['max_tilt_rad']<math.pi/2:raise ValueError('Invalid guard angle')
+    if g['front_clearance_m']<.24 or g['sensor_timeout_s']>1 or g['command_timeout_s']>.5:raise ValueError('Weaker than measured simulator guard')
+    if g['mission_timeout_s']<=2*m['heartbeat_period_s']:raise ValueError('Heartbeat margin is too small')
+    if m['recovery_timeout_s']<=m['recovery_stable_s'] or not 0<m['low_battery_threshold']<1:raise ValueError('Invalid mission budgets')
+    if s['linear_min']>s['linear_max'] or s['linear_max']>g['linear_max']:raise ValueError('Scaler exceeds guard limits')
+    if n['inflation_radius_m']<n['robot_radius_m'] or n['robot_radius_m']<.4:raise ValueError('Invalid navigation clearance')
+    if not 0<value['battery_model']['initial_percentage']<=1:raise ValueError('Invalid simulated initial battery')
+    if t['action']!='/robot1/navigate_to_pose':raise ValueError('This backend requires the robot1 Nav2 action')
+    d=value['decision']
+    if d['candidate_selector'] not in ('deepseek','deterministic'):raise ValueError('Invalid candidate selector')
+    if not isinstance(d['mission_instruction'],str) or not d['mission_instruction'].strip() or len(d['mission_instruction'])>2000:raise ValueError('Invalid mission instruction')
+    if not isinstance(d['brain_model'],str) or not d['brain_model'].strip():raise ValueError('Invalid brain model')
+    if isinstance(d['brain_timeout'],bool) or not isinstance(d['brain_timeout'],(int,float)) or not math.isfinite(d['brain_timeout']) or not .1<=d['brain_timeout']<=60:raise ValueError('Invalid brain timeout')
+    if type(d['brain_max_candidates']) is not int or not 1<=d['brain_max_candidates']<=16:raise ValueError('Invalid brain candidate limit')
+    if not isinstance(d['brain_base_url'],str):raise ValueError('Invalid brain endpoint')
+    url=urlparse(d['brain_base_url'])
+    if url.scheme!='https' or not url.hostname or url.username or url.password or url.query or url.fragment:raise ValueError('Use credential-free HTTPS brain endpoint')
+    return value
+
+
+def profile_hash(profile):
+    return hashlib.sha256(json.dumps(profile,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+
+
+def ros_parameters(p):
+    t,f,m=p['topics'],p['frames'],p['mission']
+    common={'use_sim_time':p['use_sim_time']};d=p['decision']
+    result={
+      'g3_sim_battery':{'ros__parameters':dict(common,battery_topic=t['battery'],cmd_vel_topic=t['actuator_command'],**p['battery_model'])},
+      'cmd_vel_scaler':{'ros__parameters':dict(common,input_topic=t['nav_command'],output_topic=t['guarded_input'],**p['scaler'])},
+      'g3_state_machine':{'ros__parameters':dict(common,command_topic=t['command'],mission_state_topic=t['mission'],
+        battery_topic=t['battery'],navigate_action=t['action'],enable_navigation_transmission=True,require_navigation_handoff=True,
+        enable_fault_recovery=True,recovery_scan_topic=t['scan'],recovery_map_frame=f['map'],recovery_robot_frame=f['base'],
+        state_publish_period_sec=m['heartbeat_period_s'],recovery_stale_sec=m['recovery_stale_s'],
+        recovery_stable_sec=m['recovery_stable_s'],recovery_timeout_sec=m['recovery_timeout_s'],
+        low_battery_threshold=m['low_battery_threshold'],home_frame=f['map'],home_x=m['home_x'],home_y=m['home_y'],home_yaw=m['home_yaw'])},
+      'vision_explorer':{'ros__parameters':dict(common,require_mission_state=True,use_mission_brain=d['candidate_selector']=='deepseek',
+        mission_instruction=d['mission_instruction'],brain_timeout_s=d['brain_timeout'],brain_max_candidates=d['brain_max_candidates'],
+        map_topic=t['map'],mission_state_topic=t['mission'],nav_action=t['action'],map_frame=f['map'],robot_frame=f['base'],**p['explorer'])},
+    }
+    if d['candidate_selector']=='deepseek':
+        result['mission_brain']={'ros__parameters':dict(common,mission_state_topic=t['mission'],
+            context_topic='/mission/context',candidates_topic='/exploration/candidates',decision_topic='/brain/decision')}
+    return result
+
+
+def configure_navigation(root,p):
+    """Update only generated simulator configs, preserving original source files."""
+    root=Path(root);t,f,n=p['topics'],p['frames'],p['navigation']
+    path=root/'nav2.yaml';config=yaml.safe_load(path.read_text())
+    def replace(v):
+        if isinstance(v,dict):return {k:replace(x) for k,x in v.items()}
+        if isinstance(v,list):return [replace(x) for x in v]
+        if isinstance(v,str):return {'/robot1/velodyne':t['scan'],'/robot1/odometry/filtered':t['odometry'],'map':f['map'],'odom':f['odom'],'base_link':f['base']}.get(v,v)
+        return v
+    config=replace(config)
+    for name in ('local_costmap','global_costmap'):
+        params=config[name][name]['ros__parameters'];params['robot_radius']=n['robot_radius_m']
+        params['inflation_layer']['inflation_radius']=n['inflation_radius_m']
+    config['controller_server']['ros__parameters']['FollowPath']['desired_linear_vel']=n['desired_linear_velocity_mps']
+    path.write_text(yaml.safe_dump(config,sort_keys=False))
+    path=root/'slam.yaml';slam=yaml.safe_load(path.read_text())['slam_toolbox']['ros__parameters']
+    slam.update(scan_topic=t['scan'],base_frame=f['base'],odom_frame=f['odom'],map_frame=f['map'])
+    path.write_text(yaml.safe_dump({'slam_toolbox':{'ros__parameters':slam}},sort_keys=False))
+    for name in ('navigation.launch.py','slam_navigation.launch.py'):
+        path=root/name;s=path.read_text()
+        for old,key in [('/robot1/tf_static','tf_static'),('/robot1/tf','tf'),('/robot1/map','map'),('/deepseek/nav_cmd','nav_command')]:s=s.replace(repr(old),repr(t[key]))
+        path.write_text(s)
+
+
+def expected_runtime_roles(profile):
+    roles={'guard','battery','scaler','g3','navigation','frontier'}
+    if profile['decision']['candidate_selector']=='deepseek':roles.add('mission_brain')
+    return roles
+
+
+def runtime_exit_ok(info,roles):
+    codes=info.get('child_exit_codes',{})
+    return bool(info.get('exit_code')==0 and set(codes)==set(roles)
+                and all(type(code) is int and code==0 for code in codes.values()))

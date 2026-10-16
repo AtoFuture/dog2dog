@@ -114,11 +114,12 @@ def test_waypoints_keep_image_acquisition_timestamp_for_nav2():
 
     messages=[]
     stamp=Time(sec=42,nanosec=123)
-    obj=SimpleNamespace(_inference_frame_stamp=stamp,
+    obj=SimpleNamespace(_inference_frame_stamp=stamp,observation_frame='camera_observation',
                         waypoint_pub=SimpleNamespace(publish=messages.append),
                         get_clock=lambda:pytest.fail('Publication time replaced image time'))
     nav_node.NavNode._publish_waypoints(obj,np.zeros((1,3)))
     assert messages[0].header.stamp==stamp
+    assert messages[0].header.frame_id=='camera_observation'
 
 
 def test_return_suspends_requests_and_invalidates_inflight_prediction(node):
