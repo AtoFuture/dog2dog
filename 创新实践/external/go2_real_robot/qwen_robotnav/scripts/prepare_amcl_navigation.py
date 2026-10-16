@@ -2,6 +2,7 @@
 
 Run in ROS Humble. Pair with prepare_simulator_launch.py --single-odom-tf.
 The generated navigation output must go through the simulator velocity scaler.
+Build and source qwen_robotnav_progress before launching generated Nav2.
 """
 
 import argparse
@@ -46,7 +47,13 @@ def main():
     controller = config['controller_server']['ros__parameters']
     controller['odom_topic'] = '/robot1/odometry/filtered'
     controller['controller_frequency'] = 10.0
-    controller['progress_checker'].update(required_movement_radius=0.1, movement_time_allowance=30.0)
+    controller['progress_checker'].update(plugin='qwen_robotnav_progress::StableProgressChecker',
+        required_movement_radius=.25, movement_time_allowance=12., median_window_s=2.)
+    # Include localization/mesh uncertainty in the private simulator configuration.
+    for layer in ('local_costmap','global_costmap'):
+        params=config[layer][layer]['ros__parameters']
+        params['robot_radius']=.40
+        params['inflation_layer']['inflation_radius']=.65
     controller['FollowPath']['desired_linear_vel'] = 0.20
     controller['goal_checker_plugins'].append('observation_goal_checker')
     controller['observation_goal_checker']=copy.deepcopy(controller['general_goal_checker'])
@@ -110,6 +117,7 @@ def generate_launch_description():
     target.write_text(launch)
     print(target)
     print('Velocity output: /deepseek/nav_cmd; use cmd_vel_scaler before simulator cmd_vel.')
+    print('Build/source qwen_robotnav_progress before launching (run_slam_frontier.sh does this automatically).')
 
 
 if __name__ == '__main__':

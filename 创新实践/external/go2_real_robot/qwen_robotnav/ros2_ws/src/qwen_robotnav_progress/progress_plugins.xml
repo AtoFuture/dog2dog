@@ -1,0 +1,5 @@
+<library path="qwen_robotnav_progress">
+  <class name="qwen_robotnav_progress::StableProgressChecker" type="qwen_robotnav_progress::StableProgressChecker" base_class_type="nav2_core::ProgressChecker">
+    <description>Require net median map-pose translation within a bounded interval.</description>
+  </class>
+</library>

@@ -17,6 +17,13 @@ def test_generated_controller_receives_filtered_odometry(tmp_path):
 
     import xml.etree.ElementTree as ET
     controller=config['controller_server']['ros__parameters']
+    assert controller['progress_checker']['plugin']=='qwen_robotnav_progress::StableProgressChecker'
+    assert controller['progress_checker']['median_window_s']==2.
+    assert controller['progress_checker']['movement_time_allowance']==12.
+    for name in ('local_costmap','global_costmap'):
+        layer=config[name][name]['ros__parameters']
+        assert layer['robot_radius']==.4 and layer['inflation_layer']['inflation_radius']==.65
+    assert controller['general_goal_checker']['xy_goal_tolerance']==.25
     assert controller['general_goal_checker']['yaw_goal_tolerance']==6.28
     assert controller['observation_goal_checker']['yaw_goal_tolerance']==.25
     tree=ET.parse(tmp_path/'observation_bt.xml')

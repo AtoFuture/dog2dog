@@ -411,3 +411,17 @@ Z 属于当前 map 坐标系，尚未标定为离地高度；本实验不证明�
 移动场景使用 `SLAM_RECON_SCENARIO=moving_crossing|moving_parallel|moving_occlusion`，
 自动启用移动策略；静态场景继续使用原静态去重。
 算法边界、复现方法和实际验证见[移动多人跟踪记录](docs/recon-moving-identity-validation.md)。
+
+## 返航停滞与自动回归
+
+私有 Nav2 配置新增基于稳定地图位姿的 `qwen_robotnav_progress` 插件，防止足端打滑里程
+被误当作任务进度，并为仓库仿真增加导航余量。单轮入口自动构建和加载插件。
+单独生成 AMCL/SLAM 配置时，先在已加载 ROS 的环境中构建并 source：
+
+```bash
+colcon build --base-paths ros2_ws/src/qwen_robotnav_progress --packages-select qwen_robotnav_progress
+source install/local_setup.bash
+```
+
+多轮入口为 `scripts/run_return_regression.py`，包含独立交叉、并行及 18 秒返航零速度保持。
+详见[返航诊断与恢复验证](docs/return-progress-recovery-validation.md)。

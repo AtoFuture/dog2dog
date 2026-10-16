@@ -20,3 +20,11 @@ def test_invalid_policy_fails_before_starting_simulator(tmp_path,settings,error)
     result=subprocess.run(['bash',str(SCRIPT),str(output),'1'],env=env,capture_output=True,text=True,timeout=5)
     assert result.returncode==2 and error in result.stderr
     assert not output.exists()
+
+
+def test_memory_snapshot_keeps_original_script_directory_and_argument_positions(tmp_path):
+    env=dict(os.environ,SLAM_RECON_IDENTITY_POLICY='unknown')
+    result=subprocess.run(['bash','-c',SCRIPT.read_text(),str(SCRIPT),str(tmp_path/'never_created'),'1'],
+        env=env,capture_output=True,text=True,timeout=5)
+    assert result.returncode==2 and 'Unknown identity policy' in result.stderr
+    assert not (tmp_path/'never_created').exists()

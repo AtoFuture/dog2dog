@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>qwen_robotnav_progress</name><version>0.1.0</version>
+  <description>Map pose progress checking resistant to leg odometry slip and scan jitter.</description>
+  <maintainer email="robotnav@example.com">RobotNav</maintainer><license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>nav2_core</depend><depend>rclcpp</depend><depend>rclcpp_lifecycle</depend>
+  <depend>tf2_ros</depend><depend>tf2_geometry_msgs</depend>
+  <depend>geometry_msgs</depend><depend>pluginlib</depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

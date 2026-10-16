@@ -44,6 +44,9 @@ class Monitor(Node):
         self.poses=[];self.events=[];self.returns=[];self.maps=[];self.states=[];self.perception=[]
         self.latest_map=None;self.command=None;self.command_at=-math.inf
         self.scan_at=-math.inf;self.front=math.inf;self.minimum_front=math.inf
+        self.return_hold_s=0.;self.return_hold_start=None;self.return_hold_released=False
+        self.fault_events=[];self.held_control_cycles=0
+        self.fault_pub=self.create_publisher(String,'/frontier_trial/fault_events',10)
         self.running=False;self.battery_level=.8;self.blocked=0;self.forwarded=0
         self.buffer=Buffer();self.listener=TransformListener(self.buffer,self)
         self.pub=self.create_publisher(Twist,'/robot1/cmd_vel',10)
@@ -93,6 +96,9 @@ class Monitor(Node):
 
     def return_event(self,msg):
         e=json.loads(msg.data);self.returns.append(e)
+        if e.get('status')=='accepted' and self.return_hold_s>0 and self.return_hold_start is None:
+            self.return_hold_start=self.get_clock().now().nanoseconds*1e-9
+            self._fault('return_hold_started',goal_id=e.get('goal_id'),attempt_id=e.get('attempt_id'))
         print(json.dumps({'return':e}),flush=True)
 
     def state(self,msg):
@@ -104,9 +110,22 @@ class Monitor(Node):
         msg=BatteryState(present=True,percentage=self.battery_level)
         self.battery_pub.publish(msg)
 
+    def _fault(self,status,**values):
+        event=dict(status=status,stamp_ns=self.get_clock().now().nanoseconds,
+                   wall_time_s=time.time(),duration_sim_s=self.return_hold_s,**values)
+        self.fault_events.append(event);self.fault_pub.publish(String(data=json.dumps(event)))
+
+    def _holding_return(self):
+        if self.return_hold_start is None:return False
+        if self.get_clock().now().nanoseconds*1e-9-self.return_hold_start<self.return_hold_s:
+            self.held_control_cycles+=1;return True
+        if not self.return_hold_released:
+            self.return_hold_released=True;self._fault('return_hold_released')
+        return False
+
     def control(self):
         out=Twist();now=time.monotonic()
-        if self.running and self.command is not None and now-self.command_at<.5 and now-self.scan_at<1 \
+        if self.running and not self._holding_return() and self.command is not None and now-self.command_at<.5 and now-self.scan_at<1 \
                 and self.poses and now-self.poses[-1][0]<1 and self.poses[-1][3]>.15:
             out.angular.z=max(-.8,min(.8,self.command.angular.z))
             if self.front>.24:out.linear.x=max(-.03,min(.03,self.command.linear.x))
@@ -130,8 +149,11 @@ def main():
     parser.add_argument('--required-person-count',type=int,default=1)
     parser.add_argument('--recon-identity-policy',choices=('stationary','motion_appearance_v1'),default='stationary')
     parser.add_argument('--goals',type=int,default=5)
+    parser.add_argument('--inject-return-hold-s',type=float,default=0.)
     parser.add_argument('--exploration-timeout',type=float,default=600)
     args=parser.parse_args()
+    if not math.isfinite(args.inject_return_hold_s) or not 0<=args.inject_return_hold_s<=30:
+        parser.error('Return hold must be between 0 and 30 simulation seconds')
     if args.expected_domain in (0,42,43) or int(os.environ.get('ROS_DOMAIN_ID','0'))!=args.expected_domain:
         parser.error('Use a matching isolated simulator ROS domain')
     if not os.environ.get('IGN_PARTITION') or args.goals<1 or args.required_person_count<1:
@@ -157,7 +179,7 @@ def main():
     signal.signal(signal.SIGINT,signal.default_int_handler)
     def interrupted(signum, frame):raise KeyboardInterrupt('Validation interrupted')
     signal.signal(signal.SIGTERM,interrupted)
-    monitor=Monitor();g3=G3StateMachineNode();explorer=None;brain=None;recon=None
+    monitor=Monitor();monitor.return_hold_s=args.inject_return_hold_s;g3=G3StateMachineNode();explorer=None;brain=None;recon=None
     executor=SingleThreadedExecutor();executor.add_node(monitor);executor.add_node(g3)
     children=[];logs=[];report={};baseline=None;home=None;anchor=None;recorder=None
 
@@ -189,7 +211,7 @@ def main():
         if not spin_until(lambda:monitor.poses and .18<monitor.poses[-1][3]<.35 and time.monotonic()-monitor.scan_at<1,150):
             raise RuntimeError('Simulator sensors or standing posture unavailable')
         recorder=start(['ros2','bag','record','--include-hidden-topics','-o',str(root/'bag'),'/clock','/robot1/map','/robot1/tf','/robot1/tf_static',
-               '/robot1/velodyne','/robot1/odometry/filtered','/robot1/cmd_vel','/deepseek/nav_cmd','/robot1/cmd_vel_nav','/frontier_trial/scaled_cmd','/exploration/events',
+               '/robot1/velodyne','/robot1/odometry/filtered','/robot1/cmd_vel','/deepseek/nav_cmd','/robot1/cmd_vel_nav','/frontier_trial/scaled_cmd','/frontier_trial/fault_events','/exploration/events',
                '/mission_state','/g3/state','/g3/return_event','/frontier_trial/gt_pose','/frontier_trial/battery',
                '/robot1/navigate_to_pose/_action/status','/robot1/navigate_to_pose/_action/feedback',
                '/navigation/handoff_request','/navigation/handoff_ack',
@@ -338,6 +360,18 @@ def main():
             report['success']=False;report.setdefault('error','Recording did not finalize metadata')
         report['return_trigger']=(getattr(recon,'return_reason',None) or 'not_triggered') if args.recon_task else 'simulated_low_battery'
         report['active_observation']=args.active_observation
+        nav_log=(root/'nav2.log').read_text(errors='replace') if (root/'nav2.log').exists() else ''
+        report['progress_checker_loaded']='Stable map progress checker enabled' in nav_log
+        report['stable_progress_failures']=nav_log.count('Stable map progress stalled;')
+        report['map_progress_transform_failures']=nav_log.count('Map progress transform unavailable:')
+        report['return_hold_s']=monitor.return_hold_s
+        report['return_hold_events']=monitor.fault_events
+        report['return_hold_completed']=monitor.return_hold_released
+        report['held_control_cycles']=monitor.held_control_cycles
+        if not report['progress_checker_loaded']:
+            report['success']=False;report.setdefault('error','Stable progress checker did not load')
+        if args.inject_return_hold_s>0 and not (monitor.return_hold_released and report['stable_progress_failures']>0):
+            report['success']=False;report.setdefault('error','Return hold did not exercise progress recovery')
         report['navigation_return_success']=bool(home is not None and any(e['status']=='succeeded' for e in monitor.returns)
                                                  and report.get('truth_home_error_m',float('inf'))<=.4)
         if args.recon_task:
