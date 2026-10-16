@@ -103,3 +103,50 @@ IMU 倾角和里程计健康替代了旧 Monitor 的 GT 高度依赖；它们不
 保留之前两次不作为最终通过的记录：`.runtime/standalone_runtime_v1` 的运动与返航完成，但 guard 退出 1、旧汇总漏查子进程；`.runtime/converged_runtime_v1` 的 Gazebo 被 SIGKILL 终止，未进入任务或生成录包。没有修改旧记录使其变绿。
 
 最终回归：导航 163、G3 241、G2 279 项通过，合计 683 项；ROS Python 包构建通过。另有独立子进程测试验证 SIGINT、SIGTERM 下发送零指令后退出 0。实测为独立一次普通仓库完整任务，不作为统计成功率或新运行栈故障注入/实机验收。
+
+## 自主结束探索与有界恢复
+
+正式 profile 默认启用任务闭环，G2 和 G3 从同一配置同时启用。旧历史模式默认不启用，冻结的人物与动态障碍算法保持原有行为。
+
+G3 每次从 standby 开始探索生成新 `session_id`，通过 `/g3/exploration_session` 发布；暂停和继续沿用任务编号。G2 收到编号后才允许本轮发点，并重置时间、访问记录和区域失败计数。G2 发布 `/exploration/completion`，G3 校验当前任务编号和结束原因，将结果发布到 `/g3/exploration_result`，再走原有 RETURN 取消交接。收到取消回执不等于释放控制权，必须等旧 action 真实终态；交接超时由 G3 进入 ESTOP。
+
+| 原因 | 默认条件 | 结果含义 |
+| --- | --- | --- |
+| `no_frontiers` | 至少 3 个不同地图时间戳，跨越 ≥10 秒有效探索时间，最新地图已重新选点且持续无 frontier | `completed=true`，当前地图已无探索边界 |
+| `time_budget` | 有效探索时间 ≥900 秒 | `completed=false`，时间预算到达后返航 |
+| `coverage_stalled` | 已知面积连续 180 秒累计增长不足 0.5m² | `completed=false`，覆盖增长停滞后返航 |
+| `candidates_unavailable` | `NO_CANDIDATE` 或 `SMALL_FRONTIERS` 持续 90 秒 | `completed=false`，当前无法继续探索 |
+| `navigation_failures` | 连续 6 次导航失败或 action 服务不可用 | `completed=false`，导航失败预算耗尽 |
+
+预算使用单调时钟，只累计 exploring 时间；暂停不消耗预算，继续不会清空失败计数。已知面积为 `非未知格数 × 分辨率²`，不把地图数组扩张当作覆盖增长，也不声称是实际场地覆盖率。SLAM 对地图的修正可能改变该面积，此指标用于判定持续收益停滞。
+
+仅在地图与定位可用时提出自主返航；数据异常仍由现有 G3 健康检查、暂停恢复和速度监护处理。地图未到、位姿缺失、短期黑名单和小 frontier 不会被报告成探索完成。开始确认无 frontier 后，新地图必须重新选点；重复旧地图不能凑足确认帧。结果一旦产生即停止新目标和待定模型请求，重复探索心跳不能恢复发点。结束请求在 G3 暂停期间被拒绝时，恢复后重发请求。
+
+失败目标保留原有 30 秒临时黑名单（ROS 时间），优先换其他安全候选；过期后允许重新选择该区域。同一任务内，半径 1 米的区域累计失败 2 次后隔离至任务结束，新任务才清除。连续失败另有总预算，不会无限重试同一区域。任务取消、返航抢占和结束时的取消不消耗导航失败次数。DeepSeek 超时继续使用同一 G2 内的确定性回退。
+
+自动闭环验收使用：
+
+```bash
+PYTHONPATH=创新实践/external/go2_real_robot/qwen_robotnav \
+python3 创新实践/external/go2_real_robot/qwen_robotnav/scripts/run_runtime_trial.py \
+  /home/wy/data1/.runtime/autonomous_trial_NEW --domain 232 --autonomous-completion
+```
+
+观察器只发送 `EXPLORE`，结束清理时发送 `ESTOP`；不发送 `RETURN`。录包额外保存任务编号、结束请求和 G3 结果。闭包审计要求请求/结果编号与内容匹配、返航触发原因来自探索结束、录包内无外部 RETURN，且原有真实运动、至少 2 个有效目标、身体返航误差和七进程正常退出等要求继续成立。可用 `--profile` 指定单独的验收预算；不要通过改变目标数伪造自主完成。
+
+ROS 协议测试使用合成静态地图、注入定位和假 action 服务，分别验证无 frontier 完成、预算到达取消在途目标及自动返航；这些测试不作为实际移动或覆盖率证据。普通仓库 Gazebo 的自动闭环验收单独记录。
+
+### 自主任务验收（2026-10-16）
+
+验收目录 `.runtime/autonomous_completion_v1/trial`，隔离 ROS 域 232。验收专用 profile 将有效探索预算设为 180 秒、覆盖停滞预算设为 240 秒；正式默认预算仍是 900/180 秒。闭包 15 项检查全部通过。
+
+- 180.096 秒有效探索后自动以 `time_budget` 结束，`completed=false`，没有宣称仓库已经探完。
+- 共完成 7 个目标，其中 5 个满足 geodesic≥0.75m 的有效目标要求；8 次真实 DeepSeek 选择，0 次回退。
+- 取消第 8 个在途目标并等待真实取消终态后，G3 才发送返航目标。身体返航误差 0.233757m；返航 UUID `fdbb6c2f372a4bf9aa0a4fba315a78e0` 与 Nav2 成功终态一致。
+- 原始命令话题只有 `EXPLORE` 和清理时的 `ESTOP`；真实返航触发原因为 `exploration:time_budget`。结束请求与 G3 结果的任务编号和内容一致。
+- 唯一 guard 发布最终速度；5375 条最终指令，其中 4928 条非零。guard、battery、scaler、G3、Nav2、Mission Brain、G2 七个进程全部退出 0，录包正常关闭。
+- 验收配置 SHA-256 为 `b883998089a8ee91be04bfdc3027505698ff236579ef2b33711663fdcf7e5910`。
+
+本轮回归：G2 304、G3 251、导航 176 项通过，合计 731 项。三项真实 DDS/action 协议测试覆盖无 frontier、时间预算与连续导航失败后自动返航，使用合成地图、注入定位和假 action 服务；普通仓库实测覆盖的是时间预算自动返航。区域隔离、覆盖停滞与候选长期不可用有针对性回归，尚未进行各类真实场景的重复统计和实机验收。
+
+联调还修正了已有返航客户端在通知成功后才释放活动目标的问题：现在先确认终态并清理，再通知 G3，避免成功退出 RETURN 时重复取消。一次 G3 回归在 ROS 原生垃圾回收层崩溃，日志 `.runtime/mission_completion_g3_final_tests.log` 保留；新测试保留真实导航客户端、仅替换测试方法后，独立完整复验通过，日志为 `.runtime/mission_completion_g3_verified_tests.log`。该崩溃运行不作为通过证据。

@@ -29,6 +29,7 @@ from std_msgs.msg import String
 
 from g2_core.explorer import ExplorerParams, Goal, GoalSelector, GoalSelection, SelectStatus
 from g2_core.grid import GridMap
+from g2_core.mission_progress import MissionProgress, ProgressLimits
 from g2_core.observation import observation_candidates, tracked_observation_candidates
 from g2_core.state_machine import (MISSION_EXPLORING, Command,
                                    ExplorerStateMachine, Phase)
@@ -104,6 +105,7 @@ def select_and_report(
     now: float,
     *,
     on_status=None,
+    confirm_exhaustion=True,
 ) -> Goal | None:
     """选一个目标点，并把结果**如实**回报给状态机。返回要发的目标（没有则 ``None``）。
 
@@ -139,7 +141,7 @@ def select_and_report(
             on_status(SelectStatus.GOAL)
         return result.goal
 
-    sm.on_select_failed(result.status is SelectStatus.NO_FRONTIER)
+    sm.on_select_failed(confirm_exhaustion and result.status is SelectStatus.NO_FRONTIER)
     if on_status is not None:
         on_status(result.status)
     return None
@@ -164,6 +166,12 @@ class VisionExplorer(Node):
 
         if (p['active_observation'] or p['track_observation']) and (not p['use_mission_brain'] or not Path(p['observation_bt_path']).is_file()):
             raise ValueError('Active observation requires mission brain and a generated observation BT file')
+        self._progress_limits = ProgressLimits(**{key: p[key] for key in ProgressLimits.__dataclass_fields__})
+        self._progress = None
+        self._completion_pending = None
+        self._completion_published_at = -math.inf
+        self._map_frame_id = None
+        self._selection_frame_id = None
         self._sm = ExplorerStateMachine()
         # 安全与增益参数沿用内核默认值，物理目标的最小距离由 ROS 参数指定。
         self._selector = GoalSelector(ExplorerParams(min_goal_distance_m=p['min_goal_distance_m']))
@@ -201,6 +209,8 @@ class VisionExplorer(Node):
         self._context_pub = self.create_publisher(String, '/mission/context', 10)
         self.create_subscription(String, '/brain/decision', self._on_brain_decision, 10)
         self._events = self.create_publisher(String, '/exploration/events', 10)
+        self._completion_pub = self.create_publisher(String, '/exploration/completion', _MISSION_QOS)
+        self.create_subscription(String, '/g3/exploration_session', self._on_exploration_session, _MISSION_QOS)
         self._handoff_ack = self.create_publisher(String, '/navigation/handoff_ack', 10)
         self.create_subscription(String, '/navigation/handoff_request', self._on_handoff, 10)
         self._watchdog_clock = Clock(clock_type=ClockType.STEADY_TIME)
@@ -234,6 +244,8 @@ class VisionExplorer(Node):
             ("brain_timeout_s", 15.0),
             ("brain_max_candidates", 6),
             ("mission_instruction", "Explore the unknown environment safely."),
+            ("task_completion_enabled", False),
+            *[(key, value) for key, value in vars(ProgressLimits()).items()],
             ("active_observation", False),
             ("track_observation", False),
             ("observation_bt_path", ""),
@@ -246,7 +258,8 @@ class VisionExplorer(Node):
             "max_nav_timeout_s", "robot_frame", "map_frame",
             "min_frontier_area_m2", "require_mission_state", "map_timeout_s", "min_goal_distance_m",
             "use_mission_brain", "brain_timeout_s", "brain_max_candidates", "mission_instruction",
-            "active_observation", "track_observation", "observation_bt_path")}
+            "active_observation", "track_observation", "observation_bt_path", "task_completion_enabled",
+            *ProgressLimits.__dataclass_fields__)}
 
     # ------------------------------------------------------------------
     # 订阅回调
@@ -285,6 +298,9 @@ class VisionExplorer(Node):
             self.get_logger().error(f"地图解析失败，丢弃这一帧：{exc}")
             return
         self._grid_stamp = time.monotonic()
+        self._map_frame_id = (msg.header.stamp.sec, msg.header.stamp.nanosec)
+        if self._progress is not None:
+            self._progress.observe_area(float(np.count_nonzero(self._grid.data >= 0))*self._grid.resolution**2)
         if not self._frontier_threshold_adapted:
             self._adapt_frontier_threshold(self._grid.resolution)
             self._frontier_threshold_adapted = True
@@ -292,7 +308,8 @@ class VisionExplorer(Node):
         # （典型场景：探索到一半失联，G1 重新建图后又有可探区域了）。
         # ``revive()`` 的 docstring 说的就是这个用法。没有新 frontier 时
         # 下一轮 select() 会立刻返回 NO_FRONTIER 再次进 DONE，不会空转。
-        self._sm.revive()
+        if self._completion_pending is None:
+            self._sm.revive()
 
     def _on_mission_state(self, msg: String) -> None:
         """G3 的任务状态。
@@ -302,15 +319,75 @@ class VisionExplorer(Node):
         G2 不需要跟着改就能正确让出。
         反过来（未知当可探索）会在 G3 引入新状态时**静默地让 G2 继续抢道**。
         """
+        if self._stopped:
+            return
+        if (getattr(self, '_completion_pending', None) is not None and msg.data == MISSION_EXPLORING):
+            # A completion rejected during a safety pause must be retried on
+            # resume; keep goal generation blocked while refreshing mission state.
+            self._mission_state = msg.data
+            self._progress.advance(time.monotonic(), active=True)
+            return
         if self._stopped or (self._handoff_token is not None and msg.data == MISSION_EXPLORING):
             return
         if msg.data != self._mission_state:
             self.get_logger().info(f"任务状态：{self._mission_state} → {msg.data}")
         self._mission_state = msg.data
+        if getattr(self, '_progress', None) is not None:
+            self._progress.advance(time.monotonic(), active=msg.data == MISSION_EXPLORING)
         self._sm.on_mission_state(msg.data)
         if not self._sm.should_explore:
             self._discard_brain("mission:"+msg.data)
             self._cancel_goal(self._now(), reason="mission:"+msg.data)
+
+    def _on_exploration_session(self, msg):
+        if not self._p().get('task_completion_enabled', False) or self._stopped:
+            return
+        try:
+            session = json.loads(msg.data)
+            token = session['session_id']
+            if session['state'] != 'exploring' or not isinstance(token, str) or len(token) != 32:
+                return
+            if any(c not in '0123456789abcdef' for c in token):
+                return
+        except (ValueError, TypeError, KeyError):
+            return
+        if self._progress is not None and token == self._progress.session_id:
+            return
+        # A replacement G3 session must first release any old navigation ownership.
+        self._discard_brain('new_session')
+        self._cancel_goal(reason='new_session')
+        self._progress = MissionProgress(token, self._progress_limits, now=time.monotonic())
+        self._progress.advance(time.monotonic(), active=self._mission_state == MISSION_EXPLORING)
+        self._completion_pending = None
+        self._selector.reset_mission()
+        self._selector.params.max_region_failures = self._progress_limits.max_region_failures
+        self._sm.revive()
+        self._event('exploration_started', session_id=token)
+
+    def _watch_progress(self):
+        progress = getattr(self, '_progress', None)
+        if progress is None or self._stopped:
+            return
+        now = time.monotonic()
+        progress.advance(now, active=self._mission_state == MISSION_EXPLORING)
+        if self._mission_state != MISSION_EXPLORING:
+            return
+        if self._completion_pending is None:
+            xy = self._robot_xy()
+            healthy = xy is not None and self._map_pose_healthy(xy)
+            if healthy:
+                progress.observe_area(float(np.count_nonzero(self._grid.data >= 0))*self._grid.resolution**2)
+            result = progress.evaluate(healthy=healthy, selection_current=self._selection_frame_id == self._map_frame_id)
+            if result is None:
+                return
+            self._completion_pending = result
+            self._discard_brain('exploration_ended')
+            self._sm.on_mission_state('standby')
+            self._cancel_goal(reason='exploration_ended')
+            self._event('exploration_ended', **result)
+        if now-self._completion_published_at >= .5:
+            self._completion_pub.publish(String(data=json.dumps(self._completion_pending)))
+            self._completion_published_at = now
 
     # ------------------------------------------------------------------
     # 控制循环
@@ -321,6 +398,8 @@ class VisionExplorer(Node):
         now = self._now()
         self._watch_navigation()
         if self._stopped or self._attempt is not None or self._handoff_token is not None or self._brain_pending is not None:
+            return
+        if self._p().get('task_completion_enabled', False) and (self._progress is None or self._completion_pending is not None):
             return
         status=getattr(self,'_recon_status',None)
         if (self._p().get('track_observation',False) and status and status.get('state')=='searching'
@@ -352,7 +431,8 @@ class VisionExplorer(Node):
             return
         goal = select_and_report(
             self._selector, self._sm, self._grid, robot_xy, now,
-            on_status=self._record_select_status)
+            on_status=self._record_select_status,
+            confirm_exhaustion=getattr(self, '_progress', None) is None)
         if goal is not None:
             self._send_goal(goal, now)
         else:
@@ -411,7 +491,7 @@ class VisionExplorer(Node):
                     max_candidates=int(self._p()['brain_max_candidates'])))
         self._record_select_status(result.status)
         if result.goal is None:
-            self._sm.on_select_failed(result.is_complete)
+            self._sm.on_select_failed(result.is_complete and getattr(self, '_progress', None) is None)
             self._track_select_failure()
             return
         request_id = uuid.uuid4().hex
@@ -496,6 +576,10 @@ class VisionExplorer(Node):
 
     def _record_select_status(self, status) -> None:
         self._last_select_status = status
+        if getattr(self, '_progress', None) is not None:
+            self._selection_frame_id = self._map_frame_id
+            self._progress.selection(status.value if status is not None else None,
+                                     frame_id=self._map_frame_id)
 
     def _track_select_failure(self) -> None:
         status = self._last_select_status
@@ -536,6 +620,8 @@ class VisionExplorer(Node):
 
     def _event(self, status, attempt=None, **details):
         payload = {'status': status, 'monotonic_time': time.monotonic(), **details}
+        if getattr(self, '_progress', None) is not None:
+            payload['session_id'] = self._progress.session_id
         if attempt is not None:
             goal = attempt['goal']
             payload.update(attempt_id=attempt['id'], target={'x':goal.x,'y':goal.y,'yaw':goal.yaw},
@@ -547,6 +633,9 @@ class VisionExplorer(Node):
     def _send_goal(self, goal: Goal, now: float) -> None:
         if not self._nav.server_is_ready():
             self._sm.on_goal_result(False)
+            self._event('server_unavailable')
+            if getattr(self, '_progress', None) is not None:
+                self._progress.navigation_result(False)
             return
         msg = NavigateToPose.Goal()
         if goal.purpose in ('observe_occlusion','observe_targets'):
@@ -613,6 +702,8 @@ class VisionExplorer(Node):
         success = status == 'succeeded'
         if not attempt['cancel'] or attempt['reason'] == 'timeout':
             self._selector.on_result(attempt['goal'], success, self._now())
+            if getattr(self, '_progress', None) is not None:
+                self._progress.navigation_result(success)
             if success:
                 self._selector.mark_visited(attempt['goal'].x,attempt['goal'].y,self._now())
         self._attempt = self._goal = self._goal_handle = None
@@ -656,6 +747,7 @@ class VisionExplorer(Node):
         self._cancel_goal(reason='handoff')
 
     def _watch_navigation(self):
+        self._watch_progress()
         pending = getattr(self, '_brain_pending', None)
         if pending is not None and time.monotonic() >= pending['deadline']:
             self._resolve_brain(None, 'deadline')

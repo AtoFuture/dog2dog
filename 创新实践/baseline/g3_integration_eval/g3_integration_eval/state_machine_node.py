@@ -99,6 +99,13 @@ class G3StateMachineNode(Node):
         self._handoff_clock = Clock(clock_type=ClockType.STEADY_TIME)
         self._handoff_timer = self.create_timer(0.1, self._check_handoff, clock=self._handoff_clock)
         self._state = State.STANDBY
+        self._exploration_session = None
+        self._exploration_result = None
+        self._exploration_session_pub = self.create_publisher(String, '/g3/exploration_session', MISSION_STATE_QOS)
+        self._exploration_result_pub = self.create_publisher(String, '/g3/exploration_result', MISSION_STATE_QOS)
+        self.declare_parameter('enable_exploration_completion', False)
+        self._enable_exploration_completion = bool(self.get_parameter('enable_exploration_completion').value)
+        self.create_subscription(String, '/exploration/completion', self._on_exploration_completion, MISSION_STATE_QOS)
         self._battery_fault_active = False
         self._last_battery_time = self.get_clock().now()
         self._battery_timeout_sec = float(
@@ -212,6 +219,24 @@ class G3StateMachineNode(Node):
         if not math.isfinite(period) or period<=0:raise ValueError('State heartbeat period must be finite and positive')
         self.create_timer(period,self._publish_state,clock=self._handoff_clock)
 
+    def _on_exploration_completion(self, message: String) -> None:
+        if not self._enable_exploration_completion or self._state is not State.EXPLORE:
+            return
+        try:
+            result = json.loads(message.data)
+            reasons = {'no_frontiers': True, 'time_budget': False, 'coverage_stalled': False,
+                       'candidates_unavailable': False, 'navigation_failures': False}
+            if (not isinstance(result, dict) or not self._exploration_session
+                or result.get('session_id') != self._exploration_session
+                or result.get('reason') not in reasons
+                or result.get('completed') is not reasons[result['reason']]):
+                return
+        except (ValueError, TypeError):
+            return
+        self._exploration_result = result
+        self._exploration_result_pub.publish(String(data=json.dumps(result)))
+        self._apply_event(Event.RETURN, source='exploration:'+result['reason'])
+
     def _on_command(self, message: String) -> None:
         try:
             event = parse_event(message.data)
@@ -289,6 +314,9 @@ class G3StateMachineNode(Node):
             self.get_logger().warning(str(exc))
             return
 
+        if self._state is State.EXPLORE and previous is State.STANDBY:
+            self._exploration_session = uuid.uuid4().hex
+            self._exploration_result = None
         self.get_logger().info(
             f"state transition: {previous.value} --{event.value}--> "
             f"{self._state.value} (source={source})"
@@ -507,6 +535,8 @@ class G3StateMachineNode(Node):
         mission_message = String()
         mission_message.data = mission_state_value(self._state)
         self._mission_state_publisher.publish(mission_message)
+        self._exploration_session_pub.publish(String(data=json.dumps(dict(
+            session_id=self._exploration_session, state=mission_message.data))))
 
 
 def main(args: Optional[Sequence[str]] = None) -> None:

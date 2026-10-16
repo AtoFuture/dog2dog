@@ -413,3 +413,18 @@ def test_invalid_server_timeout_is_rejected(timeout):
             action_client=FakeActionClient(),
             goal_factory=FakeGoal,
         )
+
+
+def test_terminal_callback_can_leave_return_without_canceling_finished_goal():
+    result = FakeFuture(complete_immediately=False)
+    handle = FakeGoalHandle(accepted=True, result_future=result)
+    observed = []
+    def callback(event):
+        if event['status'] == 'succeeded':
+            observed.append((client.has_active_goal, client.cancel_current_goal(reason='return_succeeded')))
+    client = NavigateToPoseClient(FakeNode(), enable_navigation_transmission=True,
+        action_client=FakeActionClient(response_future=FakeFuture(handle)),
+        goal_factory=FakeGoal, event_callback=callback)
+    client.request_return(FakeGoal(), trigger='exploration:no_frontiers', home_target=HOME)
+    result.complete(SimpleNamespace(status=4))
+    assert observed == [(False, False)] and handle.cancel_calls == 0

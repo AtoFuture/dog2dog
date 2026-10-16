@@ -26,8 +26,9 @@ from qwen_robotnav.runtime_profile import load_profile,profile_hash
 class Observer(Node):
     def __init__(self,profile):
         super().__init__('runtime_validation_observer');self.profile=profile
-        self.poses=[];self.events=[];self.returns=[];self.states=[];self.status=[];self.command_samples=[];self.latest_map=None;self.first_area=None
+        self.poses=[];self.events=[];self.returns=[];self.states=[];self.status=[];self.command_samples=[];self.latest_map=None;self.first_area=None;self.exploration_results=[];self.operator_commands=[]
         self.tf=Buffer();self.listener=TransformListener(self.tf,self)
+        self.create_subscription(String,'/g3/exploration_result',lambda m:self.exploration_results.append(json.loads(m.data)),QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.command_pub=self.create_publisher(String,profile['topics']['command'],10)
         self.create_subscription(TFMessage,'/frontier_trial/gt_pose',self.truth,10)
         self.create_subscription(String,'/exploration/events',lambda m:self.events.append(json.loads(m.data)),30)
@@ -36,6 +37,10 @@ class Observer(Node):
         self.create_subscription(String,profile['topics']['mission'],lambda m:self.states.append(m.data),QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_subscription(OccupancyGrid,profile['topics']['map'],self.mapping,QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_subscription(Twist,profile['topics']['actuator_command'],lambda m:self.command_samples.append((time.monotonic(),m.linear.x,m.angular.z)),10)
+
+    def command(self, value):
+        self.operator_commands.append(value)
+        self.command_pub.publish(String(data=value))
 
     def truth(self,msg):
         for t in msg.transforms:
@@ -53,6 +58,7 @@ def main():
     p.add_argument('--goals',type=int,default=2);p.add_argument('--exploration-timeout',type=float,default=300.)
     p.add_argument('--candidate-selector',choices=('deepseek','deterministic'))
     p.add_argument('--mission-instruction')
+    p.add_argument('--autonomous-completion',action='store_true',help='Observe runtime termination; never send RETURN')
     a=p.parse_args();profile=load_profile(a.profile);root=a.output_dir.resolve();topics=profile['topics']
     if a.expected_domain in (0,42,43) or os.environ.get('ROS_DOMAIN_ID')!=str(a.expected_domain) or not os.environ.get('IGN_PARTITION') or a.goals<1:p.error('Require isolated Gazebo domain and positive goals')
     rclpy.init(args=['--ros-args','-p','use_sim_time:=true','-r','/tf:='+topics['tf'],'-r','/tf_static:='+topics['tf_static']],signal_handler_options=SignalHandlerOptions.NO)
@@ -81,7 +87,7 @@ def main():
         baseline=node.poses[-1]
         recorder=start(['ros2','bag','record','--include-hidden-topics','-o',str(root/'bag'),'/clock',
             *topics.values(),'/exploration/events','/g3/return_event','/g3/recovery_event','/frontier_trial/gt_pose',
-            '/navigation/handoff_request','/navigation/handoff_ack','/brain/decision','/mission/context','/exploration/candidates',topics['action']+'/_action/status'],'bag.log')
+            '/navigation/handoff_request','/navigation/handoff_ack','/g3/exploration_session','/exploration/completion','/g3/exploration_result','/brain/decision','/mission/context','/exploration/candidates',topics['action']+'/_action/status'],'bag.log')
         runtime=start(['python3',str(Path(__file__).with_name('run_navigation_runtime.py')),'--profile',str(a.profile),
             '--navigation-dir',str(root),'--expected-domain',str(a.expected_domain),
             *runtime_args,'--enable-motion'],'runtime_supervisor.log')
@@ -99,10 +105,13 @@ def main():
         # Wait for G3 localization debounce before allowing exploration.
         end=time.monotonic()+4
         while time.monotonic()<end:executor.spin_once(timeout_sec=.05)
-        node.command_pub.publish(String(data='EXPLORE'))
+        node.command('EXPLORE')
         wait(lambda:'exploring' in node.states,10)
-        wait(lambda:sum(e['status']=='succeeded' and e.get('geodesic_dist_m',0)>=.75 for e in node.events)>=a.goals,a.exploration_timeout)
-        node.command_pub.publish(String(data='RETURN'))
+        if a.autonomous_completion:
+            wait(lambda:bool(node.exploration_results),a.exploration_timeout)
+        else:
+            wait(lambda:sum(e['status']=='succeeded' and e.get('geodesic_dist_m',0)>=.75 for e in node.events)>=a.goals,a.exploration_timeout)
+            node.command('RETURN')
         wait(lambda:any(e['status']=='succeeded' for e in node.returns),180)
         wait(lambda:node.states[-1]=='standby',5)
         end=time.monotonic()+2
@@ -115,7 +124,7 @@ def main():
             initial_known_area_m2=node.first_area,final_known_area_m2=sum(v>=0 for v in node.latest_map.data)*node.latest_map.info.resolution**2)
     except (Exception,KeyboardInterrupt) as exc:report=dict(success=False,error=str(exc))
     finally:
-        node.command_pub.publish(String(data='ESTOP'))
+        node.command('ESTOP')
         end=time.monotonic()+1
         while time.monotonic()<end:executor.spin_once(timeout_sec=.05)
         for child in reversed(children):
@@ -128,7 +137,7 @@ def main():
                 os.killpg(child.pid,signal.SIGTERM)
                 try:child.wait(timeout=5)
                 except subprocess.TimeoutExpired:os.killpg(child.pid,signal.SIGKILL);child.wait()
-        report.update(recorder_exit_code=recorder.returncode if recorder else None,runtime_exit_code=runtime.returncode if runtime else None,
+        report.update(autonomous_completion=a.autonomous_completion,operator_commands=node.operator_commands,exploration_results=node.exploration_results,recorder_exit_code=recorder.returncode if recorder else None,runtime_exit_code=runtime.returncode if runtime else None,
             recording_complete=(root/'bag/metadata.yaml').is_file(),return_events=node.returns,guard_status=node.status[-1] if node.status else None)
         if report['recorder_exit_code']!=0 or report['runtime_exit_code']!=0 or not report['recording_complete']:report['success']=False
         (root/'report.json').write_text(json.dumps(report,indent=2));print(json.dumps(report),flush=True)

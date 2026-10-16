@@ -202,6 +202,9 @@ class ExplorerParams:
     visit_penalty_factor: float = 0.3
 
     # --- 失败黑名单 ---
+    max_region_failures: int = 0
+    """Failures allowed per region per mission; zero preserves historical TTL-only behavior."""
+
     blacklist_ttl_s: float = 30.0
     """失败点拉黑时长。**不能永久** —— 地图更新后该点可能重新变得可达。"""
     blacklist_radius_m: float = 1.0
@@ -232,6 +235,7 @@ class GoalSelector:
         self.params = params or ExplorerParams()
         self._blacklist: list[_BlacklistEntry] = []
         self._visits: list[_Visit] = []
+        self._region_failures: list[tuple[float, float, int]] = []
 
     # ------------------------------------------------------------------
     # 状态维护
@@ -239,6 +243,11 @@ class GoalSelector:
     def _expire(self, now: float) -> None:
         self._blacklist = [e for e in self._blacklist if e.expires_at > now]
         self._visits = [v for v in self._visits if now - v.at < self.params.visit_history_s]
+
+    def reset_mission(self) -> None:
+        self._blacklist.clear()
+        self._visits.clear()
+        self._region_failures.clear()
 
     def on_result(self, goal: Goal, success: bool, now: float) -> None:
         """回报一次导航结果。
@@ -252,6 +261,13 @@ class GoalSelector:
         if success:
             self._visits.append(_Visit(goal.x, goal.y, now))
         else:
+            if self.params.max_region_failures:
+                for i, (x, y, count) in enumerate(self._region_failures):
+                    if math.hypot(goal.x-x, goal.y-y) < self.params.blacklist_radius_m:
+                        self._region_failures[i] = (x, y, count+1)
+                        break
+                else:
+                    self._region_failures.append((goal.x, goal.y, 1))
             self._blacklist.append(
                 _BlacklistEntry(goal.x, goal.y, now + self.params.blacklist_ttl_s)
             )
@@ -286,6 +302,8 @@ class GoalSelector:
                 f"  退回距离小于安全半径时，**任何候选都过不了校验**，"
                 f"选择器会永远返回「无候选」。"
             )
+        if type(p.max_region_failures) is not int or p.max_region_failures < 0:
+            raise ValueError('max_region_failures must be a non-negative integer')
         if p.blacklist_radius_m <= 0 or p.visit_penalty_radius_m <= 0:
             raise ValueError("blacklist_radius_m 与 visit_penalty_radius_m 必须为正")
         if not 0.0 < p.visit_penalty_factor <= 1.0:
@@ -303,15 +321,19 @@ class GoalSelector:
     # ------------------------------------------------------------------
     def _filter_blacklisted(self, grid: GridMap, candidates: np.ndarray) -> np.ndarray:
         """从候选格里剔除落在黑名单半径内的（向量化，避免逐格 Python 循环）。"""
-        if not self._blacklist or candidates.size == 0:
+        excluded = [(e.x, e.y) for e in self._blacklist]
+        if self.params.max_region_failures:
+            excluded += [(x, y) for x, y, count in self._region_failures
+                         if count >= self.params.max_region_failures]
+        if not excluded or candidates.size == 0:
             return candidates
 
         wx, wy = grid.grid_to_world(candidates[:, 0].astype(float),
                                     candidates[:, 1].astype(float))
         radius2 = self.params.blacklist_radius_m ** 2
         blocked = np.zeros(len(candidates), dtype=bool)
-        for e in self._blacklist:
-            blocked |= (wx - e.x) ** 2 + (wy - e.y) ** 2 < radius2
+        for x, y in excluded:
+            blocked |= (wx - x) ** 2 + (wy - y) ** 2 < radius2
 
         return candidates[~blocked]
 

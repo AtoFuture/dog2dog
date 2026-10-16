@@ -13,7 +13,7 @@ KEYS={
  'scaler':set('linear_scale linear_max linear_min nav_deadband angular_scale angular_max linear_accel linear_decel angular_accel angular_decel ramp_rate cmd_timeout'.split()),
  'navigation':{'robot_radius_m','inflation_radius_m','desired_linear_velocity_mps'},
  'mission':set('heartbeat_period_s recovery_stale_s recovery_stable_s recovery_timeout_s low_battery_threshold home_x home_y home_yaw'.split()),
- 'explorer':{'tick_period_s','min_goal_distance_m'},
+ 'explorer':set('tick_period_s min_goal_distance_m task_completion_enabled exploration_budget_s coverage_stall_s coverage_min_gain_m2 candidate_wait_s no_frontier_confirm_s max_region_failures max_consecutive_failures'.split()),
  'decision':set('candidate_selector mission_instruction brain_base_url brain_model brain_timeout brain_max_candidates'.split()),
  'battery_model':{'initial_percentage','moving_drain_per_sec','idle_drain_per_sec','publish_rate_hz'},
 }
@@ -33,6 +33,9 @@ def validate_profile(value):
         if not isinstance(data,dict) or set(data)!=keys:raise ValueError('Unknown or missing '+section+' fields')
         for key,item in data.items():
             if section=='decision':continue
+            if section=='explorer' and key=='task_completion_enabled':
+                if item is not True:raise ValueError('Formal runtime requires task completion')
+                continue
             if section in ('topics','frames'):
                 if not isinstance(item,str) or not item.strip() or any(c.isspace() for c in item):raise ValueError('Invalid '+key)
                 if section=='topics' and not item.startswith('/'):raise ValueError('Use absolute topics')
@@ -51,6 +54,10 @@ def validate_profile(value):
     if n['inflation_radius_m']<n['robot_radius_m'] or n['robot_radius_m']<.4:raise ValueError('Invalid navigation clearance')
     if not 0<value['battery_model']['initial_percentage']<=1:raise ValueError('Invalid simulated initial battery')
     if t['action']!='/robot1/navigate_to_pose':raise ValueError('This backend requires the robot1 Nav2 action')
+    e=value['explorer']
+    if e['candidate_wait_s']<=30:raise ValueError('Candidate wait must exceed blacklist TTL')
+    for key in ('max_region_failures','max_consecutive_failures'):
+        if type(e[key]) is not int:raise ValueError('Expected integer '+key)
     d=value['decision']
     if d['candidate_selector'] not in ('deepseek','deterministic'):raise ValueError('Invalid candidate selector')
     if not isinstance(d['mission_instruction'],str) or not d['mission_instruction'].strip() or len(d['mission_instruction'])>2000:raise ValueError('Invalid mission instruction')
@@ -75,7 +82,7 @@ def ros_parameters(p):
       'cmd_vel_scaler':{'ros__parameters':dict(common,input_topic=t['nav_command'],output_topic=t['guarded_input'],**p['scaler'])},
       'g3_state_machine':{'ros__parameters':dict(common,command_topic=t['command'],mission_state_topic=t['mission'],
         battery_topic=t['battery'],navigate_action=t['action'],enable_navigation_transmission=True,require_navigation_handoff=True,
-        enable_fault_recovery=True,recovery_scan_topic=t['scan'],recovery_map_frame=f['map'],recovery_robot_frame=f['base'],
+        enable_exploration_completion=p['explorer']['task_completion_enabled'],enable_fault_recovery=True,recovery_scan_topic=t['scan'],recovery_map_frame=f['map'],recovery_robot_frame=f['base'],
         state_publish_period_sec=m['heartbeat_period_s'],recovery_stale_sec=m['recovery_stale_s'],
         recovery_stable_sec=m['recovery_stable_s'],recovery_timeout_sec=m['recovery_timeout_s'],
         low_battery_threshold=m['low_battery_threshold'],home_frame=f['map'],home_x=m['home_x'],home_y=m['home_y'],home_yaw=m['home_yaw'])},

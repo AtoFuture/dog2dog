@@ -279,6 +279,9 @@ class NavigateToPoseClient:
         try:
             result_response = future.result()
             status = RESULT_STATUS_NAMES.get(int(result_response.status), "unknown")
+            # G3 may synchronously leave RETURN in the callback. Release the
+            # terminal goal before notifying it, so it cannot cancel success.
+            self._finish_context(context)
             self._emit(context, status, goal_id=goal_id)
         except Exception as exc:
             self._emit(context, "result_error", goal_id=goal_id, detail=str(exc))

@@ -118,3 +118,21 @@ def test_public_validation_scripts_do_not_publish_velocity_and_old_amcl_requires
     result=subprocess.run([sys.executable,str(ROOT/'scripts/validate_amcl_navigation.py')],capture_output=True,text=True)
     assert result.returncode!=0 and '--legacy-validation' in result.stderr
     assert 'Traceback' not in result.stderr
+
+
+@pytest.mark.parametrize('field,value', [('task_completion_enabled',False),('max_region_failures',1.5),
+    ('max_consecutive_failures',True),('candidate_wait_s',30),('exploration_budget_s',float('inf'))])
+def test_exploration_limits_cannot_silently_disable_or_escape_bounds(field,value):
+    from qwen_robotnav.runtime_profile import load_profile,validate_profile
+    profile=load_profile(Path(__file__).parents[1]/'config/sim_runtime.yaml')
+    profile['explorer'][field]=value
+    with pytest.raises(ValueError): validate_profile(profile)
+
+
+def test_completion_is_enabled_in_both_task_owners_from_same_profile():
+    from qwen_robotnav.runtime_profile import load_profile,ros_parameters
+    profile=load_profile(Path(__file__).parents[1]/'config/sim_runtime.yaml')
+    params=ros_parameters(profile)
+    assert params['g3_state_machine']['ros__parameters']['enable_exploration_completion'] is True
+    assert params['vision_explorer']['ros__parameters']['max_region_failures']==2
+    assert params['vision_explorer']['ros__parameters']['task_completion_enabled'] is True

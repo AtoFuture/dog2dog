@@ -59,6 +59,14 @@ mission:
   home_y: 0.0
   home_yaw: 0.0
 explorer:
+  task_completion_enabled: true
+  exploration_budget_s: 900.0
+  coverage_stall_s: 180.0
+  coverage_min_gain_m2: 0.5
+  candidate_wait_s: 90.0
+  no_frontier_confirm_s: 10.0
+  max_region_failures: 2
+  max_consecutive_failures: 6
   tick_period_s: 0.75
   min_goal_distance_m: 0.5
 battery_model:

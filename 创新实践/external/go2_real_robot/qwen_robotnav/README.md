@@ -7,6 +7,8 @@
 
 > 当前唯一正式入口为 `scripts/run_navigation_runtime.py`；普通启动和只读验收均调用它。默认由 DeepSeek 对 G2 安全候选排序，确定性选择作为同一 G2 模块的回退/对照模式。历史人物、推车及旧故障实验已冻结，需显式 `--legacy-validation` 或 `SLAM_LEGACY_VALIDATION=1` 复现。使用方法见 [统一运行说明](docs/navigation-runtime.md)。
 
+正式运行已支持探索时间预算、覆盖增长停滞和候选耗尽后的自动返航；只有多帧确认无 frontier 才记为探索完成。失败区域采用临时拉黑和每轮次数上限。运行 `run_runtime_trial.py --autonomous-completion` 可验证运行栈自行结束任务，详见 [任务闭环](docs/navigation-runtime.md#自主结束探索与有界恢复)。
+
 ## 旧视觉航点组件
 
 统一导航运行栈已停止使用相机直接生成导航点。下面的视觉航点节点保留用于旧实验复现；当前正式链路使用G2根据雷达SLAM地图生成安全候选点，DeepSeek Mission Brain只选择候选ID。

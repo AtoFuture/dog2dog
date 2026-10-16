@@ -10,6 +10,21 @@ from rosidl_runtime_py.utilities import get_message
 from qwen_robotnav.runtime_profile import load_profile,profile_hash,ros_parameters,expected_runtime_roles,runtime_exit_ok
 
 
+
+def autonomous_termination_ok(results, requests, commands, triggers):
+    if not results or any(e != results[0] for e in results):
+        return False
+    result = results[0]
+    reasons = {'no_frontiers': True, 'time_budget': False, 'coverage_stalled': False,
+               'candidates_unavailable': False, 'navigation_failures': False}
+    return (result.get('reason') in reasons
+            and result.get('completed') is reasons[result['reason']]
+            and isinstance(result.get('session_id'), str) and bool(result['session_id'])
+            and any(e == result for e in requests)
+            and 'return' not in commands and 'explore' in commands
+            and triggers == ['exploration:'+result['reason']])
+
+
 def evaluate(root):
     root=Path(root);report=json.loads((root/'report.json').read_text())
     if report.get('recorder_exit_code')!=0 or not (root/'bag/metadata.yaml').exists():raise ValueError('Require finalized closed recording')
@@ -17,6 +32,8 @@ def evaluate(root):
     manifest=json.loads((root/'runtime_manifest.json').read_text());exit_info=json.loads((root/'runtime_exit.json').read_text())
     successes=set();accepted=set();returned=[];goals=set();commands=[];status=[];poses=[];states=[]
     names={t['actuator_command'],t['guard_status'],t['mission'],'/exploration/events','/g3/return_event',t['action']+'/_action/status','/frontier_trial/gt_pose'}
+    completions=[];exploration_results=[];operator_commands=[];return_triggers=[]
+    names.update({t['command'],'/exploration/completion','/g3/exploration_result'})
     brain_selected=0;brain_fallback=0
     last_pose=-math.inf
     with sqlite3.connect('file:'+str(next((root/'bag').glob('*.db3')))+'?mode=ro',uri=True) as db:
@@ -33,9 +50,13 @@ def evaluate(root):
                     if tr.child_frame_id=='robot1_my_bot':poses.append((wall,tr.transform.translation.x,tr.transform.translation.y));last_pose=wall
             elif name.endswith('/_action/status'):
                 successes.update(bytes(v.goal_info.goal_id.uuid).hex() for v in msg.status_list if v.status==4)
+            elif name==t['command']:operator_commands.append(msg.data.lower())
+            elif name=='/exploration/completion':completions.append(json.loads(msg.data))
+            elif name=='/g3/exploration_result':exploration_results.append(json.loads(msg.data))
             elif name=='/g3/return_event':
                 e=json.loads(msg.data)
-                if e['status']=='accepted':accepted.add((e['attempt_id'],e['goal_id']))
+                if e['status']=='accepted':
+                    accepted.add((e['attempt_id'],e['goal_id']));return_triggers.append(e.get('trigger'))
                 if e['status']=='succeeded':returned.append((e['attempt_id'],e['goal_id']))
             else:
                 e=json.loads(msg.data)
@@ -57,6 +78,8 @@ def evaluate(root):
     checks['single_goal_pipeline']={c['name'] for c in manifest.get('children',[])}==expected_runtime_roles(profile) and manifest.get('goal_source')=='g2_frontier'
     checks['one_effective_configuration']=yaml.safe_load((root/'runtime_ros_params.yaml').read_text())==ros_parameters(profile) and manifest.get('candidate_selector')==profile['decision']['candidate_selector']
     if profile['decision']['candidate_selector']=='deepseek':checks['real_deepseek_selection']=brain_selected>0
+    if report.get('autonomous_completion'):
+        checks['autonomous_termination'] = autonomous_termination_ok(exploration_results,completions,operator_commands,return_triggers)
     # Verify zero outputs after final STANDBY (then ESTOP during cleanup).
     ends=[wall for wall,state in states if state=='standby' and returned and wall>commands[0][0] and any(c[0]<wall for c in motion)] if commands else []
     quiet=[c for c in commands if ends and c[0]>=ends[0]+.2]
@@ -64,6 +87,7 @@ def evaluate(root):
     result=dict(success=all(checks.values()),checks=checks,home_error_m=home_error if math.isfinite(home_error) else None,completed_frontiers=len(goals),
                 actuator_command_samples=len(commands),moving_command_samples=len(motion),profile_sha256=profile_hash(profile),
                 candidate_selector=profile['decision']['candidate_selector'],deepseek_selections=brain_selected,brain_fallback_selections=brain_fallback,
+                exploration_results=exploration_results,operator_commands=operator_commands,return_triggers=return_triggers,
                 return_goal_ids=[goal for attempt,goal in returned],scope='ordinary Gazebo warehouse; standalone runtime without evaluator velocity publisher')
     (root/'runtime_validation.json').write_text(json.dumps(result,indent=2));return result
 
