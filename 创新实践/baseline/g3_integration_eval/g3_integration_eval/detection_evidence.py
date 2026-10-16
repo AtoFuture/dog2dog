@@ -32,9 +32,11 @@ class DetectionEvidenceStore:
                 evidence_id INTEGER PRIMARY KEY, track_id INTEGER, stamp_ns INTEGER,
                 source TEXT, payload TEXT);
             CREATE TABLE IF NOT EXISTS snapshots (
-                track_id INTEGER, stamp_ns INTEGER, sha256 TEXT,
+                track_id INTEGER, stamp_ns INTEGER, sha256 TEXT, appearance TEXT,
                 PRIMARY KEY(track_id, stamp_ns, sha256));
         ''')
+        if 'appearance' not in {row[1] for row in self.db.execute('PRAGMA table_info(snapshots)')}:
+            self.db.execute('ALTER TABLE snapshots ADD COLUMN appearance TEXT')
 
     @_locked
     def add_detection(self, value):
@@ -59,7 +61,10 @@ class DetectionEvidenceStore:
         return cursor.lastrowid
 
     @_locked
-    def add_snapshot(self, track_id, stamp_ns, jpeg):
+    def add_snapshot(self, track_id, stamp_ns, jpeg, appearance=None):
+        from g3_integration_eval.person_appearance import valid_descriptor
+        if appearance is not None and not valid_descriptor(appearance):
+            raise ValueError('invalid appearance descriptor')
         jpeg = bytes(jpeg)
         if not 4 <= len(jpeg) <= 4*1024*1024 or not jpeg.startswith(b'\xff\xd8') or not jpeg.endswith(b'\xff\xd9'):
             raise ValueError('invalid JPEG snapshot')
@@ -70,7 +75,9 @@ class DetectionEvidenceStore:
             temporary.write_bytes(jpeg)
             temporary.replace(image)
         with self.db:
-            self.db.execute('INSERT OR IGNORE INTO snapshots VALUES(?,?,?)', (int(track_id),int(stamp_ns),digest))
+            self.db.execute('INSERT INTO snapshots(track_id,stamp_ns,sha256,appearance) VALUES(?,?,?,?) '
+                            'ON CONFLICT(track_id,stamp_ns,sha256) DO UPDATE SET appearance=COALESCE(excluded.appearance,snapshots.appearance)',
+                            (int(track_id),int(stamp_ns),digest,json.dumps(appearance) if appearance is not None else None))
 
     @_locked
     def export(self):
@@ -85,6 +92,9 @@ class DetectionEvidenceStore:
             value.update(evidence_id=evidence_id, snapshot_status=status,
                          snapshot_file=hashes[0]+'.jpg' if status=='available' else None,
                          frame_id='map', position_validation='detector output; no independent ground-truth check')
+            if status == 'available':
+                row = self.db.execute('SELECT appearance FROM snapshots WHERE track_id=? AND stamp_ns=? AND sha256=?', (track,stamp,hashes[0])).fetchone()
+                if row and row[0]:value['appearance'] = json.loads(row[0])
             values.append(value)
         result = dict(observation_count=len(values), observations=values,
                       ready_evidence_ids=[v['evidence_id'] for v in values if v['snapshot_status']=='available'])

@@ -8,6 +8,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 from vision_interfaces.msg import Detection3D, DetectionSnapshot
 from g3_integration_eval.detection_evidence import DetectionEvidenceStore
+from g3_integration_eval.person_appearance import describe
 
 
 def stamp_ns(stamp):
@@ -47,9 +48,11 @@ class DetectionEvidenceNode(Node):
     def _snapshot(self, msg):
         try:
             data = bytes(msg.image.data)
-            if len(data)>4*1024*1024 or cv2.imdecode(np.frombuffer(data,dtype=np.uint8),cv2.IMREAD_COLOR) is None:
+            if len(data)>4*1024*1024:raise ValueError('JPEG too large')
+            image=cv2.imdecode(np.frombuffer(data,dtype=np.uint8),cv2.IMREAD_COLOR)
+            if image is None:
                 raise ValueError('JPEG cannot be decoded')
-            self.store.add_snapshot(msg.id, stamp_ns(msg.stamp), data)
+            self.store.add_snapshot(msg.id, stamp_ns(msg.stamp), data, appearance=describe(image))
             self._publish()
         except (ValueError,cv2.error) as exc:
             self.get_logger().warning(f'Snapshot rejected: {exc}')

@@ -9,12 +9,18 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy
 from std_msgs.msg import String
 from g3_integration_eval.recon_task import confirmed_instances
+from g3_integration_eval.moving_identity import MovingIdentityResolver
 
 
 class ReconTaskNode(Node):
     def __init__(self):
         super().__init__('recon_task')
         self.declare_parameter('required_classes',['person'])
+        self.declare_parameter('recon_identity_policy','motion_appearance_v1')
+        self.identity_policy=self.get_parameter('recon_identity_policy').value
+        if self.identity_policy not in ('stationary','motion_appearance_v1'):
+            raise ValueError('Unknown recon identity policy')
+        self.identity_resolver=MovingIdentityResolver()
         self.declare_parameter('minimum_exploration_goals',1)
         self.declare_parameter('required_person_count',1)
         self.declare_parameter('recon_output_dir','')
@@ -50,9 +56,9 @@ class ReconTaskNode(Node):
         self._save()
 
     def _save(self):
-        report=dict(state=self.state,objective='confirm declared counts of stationary targets with two tracked JPEG observations per instance, then return',
+        report=dict(state=self.state,objective='confirm declared counts of distinct targets with two JPEG observations per identity, then return',
             required_classes=self.required,required_counts={c:self.required_person_count if c=='person' else 1 for c in self.required},
-            identity_policy='stationary targets; merge track IDs within 0.8 m XY; closer people unresolved',minimum_exploration_goals=self.minimum_goals,
+            identity_policy=self.identity_policy,identity_diagnostics=self.identity_resolver.diagnostics,minimum_exploration_goals=self.minimum_goals,
             completed_exploration_goals=len(self.completed_goals),targets=self.targets,
             return_requested=self.return_requested,return_attempt_id=self.return_attempt,
             success=self.state=='returned',return_success=self.state in ('returned','returned_incomplete'),
@@ -79,7 +85,11 @@ class ReconTaskNode(Node):
     def _evidence(self,msg):
         if self.started_stamp is None or self.return_requested or self.state!='searching':return
         try:
-            self.targets=confirmed_instances(json.loads(msg.data),self.required,min_stamp_ns=self.started_stamp)
+            payload=json.loads(msg.data)
+            if self.identity_policy=='motion_appearance_v1':
+                self.targets=self.identity_resolver.resolve(payload,self.required,min_stamp_ns=self.started_stamp)
+            else:
+                self.targets=confirmed_instances(payload,self.required,min_stamp_ns=self.started_stamp)
         except (ValueError,TypeError,AttributeError):return
         self._maybe_return()
 

@@ -404,3 +404,10 @@ Z 属于当前 map 坐标系，尚未标定为离地高度；本实验不证明�
 多人及实体遮挡场景入口、人数确认规则和实测结果见 [多人及遮挡验证](docs/recon-multi-occlusion-validation.md)。设置 `SLAM_RECON_SCENARIO=multi|partial|full` 后默认要求确认两人；每人仍需两次独立 JPEG 证据，换 ID 不能直接增加人数。
 
 主动绕遮挡观察和搜索预算耗尽后的返航，见 [主动观察验收](docs/recon-active-observation-validation.md)。在侦查入口加 `SLAM_ACTIVE_OBSERVATION=1`；未找齐但回家会记录为 `returned_incomplete`，不算完整任务成功。
+
+## 移动多人身份关联
+
+新增持续身份、运动与抓拍外观关联，以及交叉、并行和遮挡的移动人物仿真入口。
+移动场景使用 `SLAM_RECON_SCENARIO=moving_crossing|moving_parallel|moving_occlusion`，
+自动启用移动策略；静态场景继续使用原静态去重。
+算法边界、复现方法和实际验证见[移动多人跟踪记录](docs/recon-moving-identity-validation.md)。

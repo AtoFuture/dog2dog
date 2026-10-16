@@ -39,3 +39,17 @@ def test_multiple_people_and_physical_occluder_geometry(tmp_path,scenario,panels
         assert panel.findtext('static')=='true'
         assert panel.findtext('link/collision/geometry/box/size')==panel.findtext('link/visual/geometry/box/size')
         assert manifest['targets'][1]['initial_visibility']==scenario+'_occlusion'
+
+
+@pytest.mark.parametrize('scenario',('moving_crossing','moving_parallel','moving_occlusion'))
+def test_moving_scene_manifest_matches_generated_initial_trajectory(tmp_path,scenario):
+    import json
+    from qwen_robotnav.person_motion import positions
+    world=tmp_path/'world.sdf';world.write_text('<sdf><world name="world_demo"/></sdf>')
+    asset=tmp_path/'person';asset.mkdir()
+    (asset/'model.sdf').write_text('<sdf><model name="person"><link name="body"/></model></sdf>')
+    output=module.prepare(world,asset,tmp_path/'output',scenario)
+    manifest=json.loads((output.parent/'scene_manifest.json').read_text())
+    assert manifest['moving_people'] and manifest['evaluation_only']
+    assert [t['position_world_m'][:2] for t in manifest['targets']]==[list(p) for p in positions(scenario,0)]
+    assert len(manifest['occluders'])==(1 if scenario=='moving_occlusion' else 0)

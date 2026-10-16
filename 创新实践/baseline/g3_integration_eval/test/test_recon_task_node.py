@@ -86,3 +86,28 @@ def test_startup_hold_pauses_budget_and_pose_loss_resets_no_candidate_timer(monk
     assert node.unavailable_since is None
     node.search_budget_paused=False;node.search_started_at=10.;node._check_budget()
     assert not node.commands
+
+
+def test_moving_person_changed_track_does_not_complete_two_person_objective():
+    from g3_integration_eval.moving_identity import MovingIdentityResolver
+    node=node_fixture();node.required_person_count=2;node.completed_goals={1}
+    node.identity_policy='motion_appearance_v1';node.identity_resolver=MovingIdentityResolver()
+    observations=[dict(evidence_id=i+1,stamp_ns=i*10**9,track_id=i//3+1,
+        class_name='person',confidence=.9,source='coco',frame_id='map',position_m=[i*.4,0,.8],
+        snapshot_status='available',snapshot_file=f'{i}.jpg') for i in range(10)]
+    node._evidence(message(observations=observations,ready_evidence_ids=list(range(1,11))))
+    assert len(node.targets)==1 and not node.commands and node.missing_counts()=={'person':1}
+
+
+def test_moving_two_people_still_need_navigation_before_exactly_one_return():
+    from g3_integration_eval.moving_identity import MovingIdentityResolver
+    node=node_fixture();node.required_person_count=2
+    node.identity_policy='motion_appearance_v1';node.identity_resolver=MovingIdentityResolver()
+    observations=[dict(evidence_id=2*i+p+1,stamp_ns=i*10**9,track_id=p+1,
+        class_name='person',confidence=.9,source='coco',frame_id='map',position_m=[i*.3,p*1.5,.8],
+        snapshot_status='available',snapshot_file=f'{i}-{p}.jpg') for i in range(4) for p in range(2)]
+    node._evidence(message(observations=observations,ready_evidence_ids=list(range(1,9))))
+    assert len(node.targets)==2 and not node.commands
+    node._navigation(message(status='succeeded',attempt_id=1,geodesic_dist_m=1.))
+    node._navigation(message(status='succeeded',attempt_id=1,geodesic_dist_m=1.))
+    assert node.commands==['RETURN'] and node.return_reason=='objective_completed'

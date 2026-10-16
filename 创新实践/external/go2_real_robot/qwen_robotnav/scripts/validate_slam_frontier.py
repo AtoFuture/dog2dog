@@ -128,6 +128,7 @@ def main():
     parser.add_argument('--recon-task',action='store_true')
     parser.add_argument('--active-observation',action='store_true')
     parser.add_argument('--required-person-count',type=int,default=1)
+    parser.add_argument('--recon-identity-policy',choices=('stationary','motion_appearance_v1'),default='stationary')
     parser.add_argument('--goals',type=int,default=5)
     parser.add_argument('--exploration-timeout',type=float,default=600)
     args=parser.parse_args()
@@ -145,6 +146,7 @@ def main():
         '-p','active_observation:='+str(args.active_observation).lower(),
         '-p','observation_bt_path:='+str(root/'observation_bt.xml'),
         '-p','search_timeout_s:='+str(float(args.exploration_timeout)),
+        '-p','recon_identity_policy:='+args.recon_identity_policy,
         '-p','required_person_count:='+str(args.required_person_count),'-p','recon_output_dir:='+str(root),'-p','minimum_exploration_goals:='+str(args.goals),
         '-p','battery_topic:=/frontier_trial/battery','-p','map_topic:=/robot1/map',
         '-p','use_mission_brain:='+str(args.mission_brain).lower(),
@@ -229,6 +231,7 @@ def main():
                 '-p','camera_info_topic:=/robot1/rgbd_d435/camera_info',
                 '-p','weights:='+str(project/'baseline/g2_vision_explore'/('yolo26n-seg.pt' if args.recon_task else 'yolo26n.pt')),
                 '-p','mask_depth_cluster_gap_m:='+('0.35' if args.recon_task else '0.0'),
+                '-p','min_publish_interval_s:='+('0.4' if args.recon_identity_policy=='motion_appearance_v1' else '2.0'),
                 '-p','tf_fallback_to_latest:=false',
                 '-r','/tf:=/robot1/tf','-r','/tf_static:=/robot1/tf_static'],'detector.log')
         started=time.monotonic()
@@ -241,6 +244,13 @@ def main():
                 start_stamp_ns=initial_view_start,end_stamp_ns=monitor.get_clock().now().nanoseconds,
                 motion_enabled=False,targets=recon.targets,required_person_count=args.required_person_count,
                 objective_confirmed=recon.objective_confirmed()),indent=2))
+        scene_path=root/'scene_manifest.json'
+        if scene_path.exists() and json.loads(scene_path.read_text()).get('moving_people'):
+            if args.recon_identity_policy!='motion_appearance_v1':raise RuntimeError('Moving scenes require motion_appearance_v1')
+            print(json.dumps({'phase':'moving_person_observation','robot_motion_enabled':False}),flush=True)
+            motion=start(['python3',str(Path(__file__).with_name('move_recon_people.py')),str(root)],'person_motion.log')
+            if not spin_until(lambda:motion.poll() is not None,230) or motion.returncode!=0:
+                raise RuntimeError('Moving-person scenario did not complete; inspect person_motion.log')
         if recon is not None:
             recon.search_budget_paused=False;recon.search_started_at=time.monotonic()
         explorer=VisionExplorer();executor.add_node(explorer)
@@ -264,9 +274,9 @@ def main():
             monitor.battery_level=.1;monitor.battery()
         def returned():
             if any(e['status'] in ('aborted','canceled','rejected','server_unavailable') for e in monitor.returns):
-                raise RuntimeError('Battery RETURN failed')
+                raise RuntimeError('RETURN failed')
             return any(e['status']=='succeeded' for e in monitor.returns)
-        if not spin_until(returned,180):raise RuntimeError('Battery RETURN timed out')
+        if not spin_until(returned,180):raise RuntimeError('RETURN timed out')
         monitor.running=False;explorer.stop_navigation()
         spin_until(lambda:False,2)
         end=monitor.poses[-1];home_error=math.hypot(end[1]-baseline[1],end[2]-baseline[2])

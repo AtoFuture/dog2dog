@@ -3,11 +3,14 @@ import argparse
 import copy
 import hashlib
 import json
+import sys
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
 
-SCENARIOS=('single','multi','partial','full')
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+
+SCENARIOS=('single','multi','partial','full','moving_crossing','moving_parallel','moving_occlusion')
 
 
 def prepare(world_path, person_directory, output_directory, scenario='single'):
@@ -36,6 +39,9 @@ def prepare(world_path, person_directory, output_directory, scenario='single'):
     world=ET.parse(world_path)
     root=world.getroot().find('world')
     positions=[(10.3,6.0)] if scenario=='single' else [(10.3,5.25),(10.3,7.05)]
+    if scenario.startswith('moving_'):
+        from qwen_robotnav.person_motion import positions as moving_positions
+        positions=moving_positions(scenario,0.)
     targets=[]
     for index,(x,y) in enumerate(positions,1):
         person=copy.deepcopy(model);name=f'recon_person_{index}';person.set('name',name)
@@ -43,10 +49,10 @@ def prepare(world_path, person_directory, output_directory, scenario='single'):
         root.append(person)
         targets.append(dict(name=name,class_name='person',position_world_m=[x,y,0.],
                             yaw_world_rad=-1.5707963267948966,
-                            initial_visibility='full_occlusion' if scenario=='full' and index==2 else
+                            initial_visibility='full_occlusion' if scenario in ('full','moving_occlusion') and index==2 else
                             'partial_occlusion' if scenario=='partial' and index==2 else 'unoccluded'))
     occluders=[]
-    if scenario in ('partial','full'):
+    if scenario in ('partial','full','moving_occlusion'):
         # Vertical side panel for partial: hide roughly half the silhouette rather
         # than just its feet (the camera already crops the upper body at close range).
         x=9.65;y=6.96 if scenario=='partial' else 6.83
@@ -67,7 +73,7 @@ def prepare(world_path, person_directory, output_directory, scenario='single'):
     target=output_directory/'recon_warehouse.sdf'
     world.write(target,encoding='utf-8',xml_declaration=True)
     manifest=dict(world=str(target),target=targets[0],targets=targets,scenario=scenario,occluders=occluders,
-        evaluation_only=True,source_model=str(model_file),
+        moving_people=scenario.startswith('moving_'),evaluation_only=True,source_model=str(model_file),
         source_model_sha256=hashlib.sha256(model_file.read_bytes()).hexdigest(),
         asset_source='https://fuel.gazebosim.org/1.0/OpenRobotics/models/Standing%20person',
         asset_version=3,asset_license='CC0-1.0',
