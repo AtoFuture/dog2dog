@@ -19,7 +19,7 @@ def actor_person(name, pts, speed=0.3):
     return f'''
     <actor name="{name}">
       <pose>{x0} {y0} 0 0 0 0</pose>
-      <skin><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale></skin>
+      <skin><filename>model://person_standing/meshes/standing.dae</filename><scale>1.0</scale></skin>
       <animation name="walk"><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x></animation>
       <script>
         <loop>true</loop><auto_start>true</auto_start>
