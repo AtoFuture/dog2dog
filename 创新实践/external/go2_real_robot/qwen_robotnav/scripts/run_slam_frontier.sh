@@ -3,7 +3,7 @@
 set -euo pipefail
 if [[ "${1:-}" == "--help" ]]; then
     echo 'Usage: run_slam_frontier.sh [OUTPUT_DIR] [GOALS=5] [--prepare-only]'
-    echo 'Environment: SLAM_ROS_DOMAIN_ID, SLAM_IGN_PARTITION, G1_SIM_WORKSPACE, G1_ROS_WRAPPER, G1_GPU_WRAPPER, SLAM_MISSION_BRAIN=1, SLAM_PERCEPTION=1, SLAM_MAX_RANGE, SLAM_RECON_TASK=1, SLAM_RECON_PERSON_MODEL, SLAM_RECON_SCENARIO=single|multi|partial|full|moving_crossing|moving_parallel|moving_occlusion, SLAM_RECON_IDENTITY_POLICY, SLAM_RECON_REQUIRED_PERSONS, SLAM_EXPLORATION_TIMEOUT, SLAM_ACTIVE_OBSERVATION=1, SLAM_INJECT_RETURN_HOLD_S=0..30, SLAM_DYNAMIC_OBSTACLE=crossing|blocked, SLAM_JOINT_RECON=1, SLAM_JOINT_SAME_CLOTHING=1'
+    echo 'Environment: SLAM_ROS_DOMAIN_ID, SLAM_IGN_PARTITION, G1_SIM_WORKSPACE, G1_ROS_WRAPPER, G1_GPU_WRAPPER, SLAM_MISSION_BRAIN=1, SLAM_PERCEPTION=1, SLAM_MAX_RANGE, SLAM_RECON_TASK=1, SLAM_RECON_PERSON_MODEL, SLAM_RECON_SCENARIO=single|multi|partial|full|moving_crossing|moving_parallel|moving_occlusion, SLAM_RECON_IDENTITY_POLICY, SLAM_RECON_REQUIRED_PERSONS, SLAM_EXPLORATION_TIMEOUT, SLAM_ACTIVE_OBSERVATION=1, SLAM_INJECT_RETURN_HOLD_S=0..30, SLAM_DYNAMIC_OBSTACLE=crossing|blocked, SLAM_JOINT_RECON=1, SLAM_JOINT_SAME_CLOTHING=1, SLAM_FAULT_RECOVERY=short|long'
     exit 0
 fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -38,6 +38,10 @@ if [[ -n "${SLAM_DYNAMIC_OBSTACLE:-}" ]]; then
     else
         [[ "${SLAM_RECON_TASK:-0}" == 0 && "${SLAM_MISSION_BRAIN:-0}" == 0 ]] || { echo 'Dynamic benchmark uses deterministic Nav2 goals' >&2; exit 2; }
     fi
+fi
+if [[ -n "${SLAM_FAULT_RECOVERY:-}" ]]; then
+    [[ "${SLAM_FAULT_RECOVERY}" == short || "${SLAM_FAULT_RECOVERY}" == long ]] || { echo 'Unknown fault recovery mode' >&2; exit 2; }
+    [[ "${SLAM_RECON_TASK:-0}" == 0 && "${SLAM_MISSION_BRAIN:-0}" == 0 && "${SLAM_PERCEPTION:-0}" == 0 && "${SLAM_JOINT_RECON:-0}" == 0 && -z "${SLAM_DYNAMIC_OBSTACLE:-}" && "${SLAM_INJECT_RETURN_HOLD_S:-0}" == 0 ]] || { echo 'Fault recovery trial requires isolated ordinary exploration' >&2; exit 2; }
 fi
 TRIAL_DOMAIN="${SLAM_ROS_DOMAIN_ID:-192}"
 TRIAL_PARTITION="${SLAM_IGN_PARTITION:-frontier_${TRIAL_DOMAIN}_$$}"
@@ -148,9 +152,10 @@ if [[ "${10}" == "1" ]]; then BRAIN_ARGS+=(--recon-task --required-person-count 
 if [[ "${13}" == "1" ]]; then BRAIN_ARGS+=(--active-observation); fi
 if [[ "${17}" == 1 ]]; then BRAIN_ARGS+=(--joint-recon); fi
 if [[ -n "${16}" ]]; then BRAIN_ARGS+=(--dynamic-obstacle "${16}"); fi
+if [[ -n "${18}" ]]; then BRAIN_ARGS+=(--fault-recovery "${18}"); fi
 BRAIN_ARGS+=(--recon-identity-policy "${14}" --inject-return-hold-s "${15}")
 exec python3 "$6/validate_slam_frontier.py" "${BRAIN_ARGS[@]}" --output-dir "$2" --expected-domain "$3" --goals "$7" --exploration-timeout "${12}"
-' _ "${SIM_WORKSPACE}" "${OUTPUT_DIR}" "${TRIAL_DOMAIN}" "${TRIAL_PARTITION}" "${PROJECT_DIR}" "${SCRIPT_DIR}" "${GOALS}" "${SLAM_MISSION_BRAIN:-${SLAM_RECON_TASK:-0}}" "${SLAM_PERCEPTION:-${SLAM_RECON_TASK:-0}}" "${SLAM_RECON_TASK:-0}" "${REQUIRED_PERSONS}" "${SLAM_EXPLORATION_TIMEOUT:-600}" "${SLAM_ACTIVE_OBSERVATION:-0}" "${IDENTITY_POLICY}" "${SLAM_INJECT_RETURN_HOLD_S:-0}" "${SLAM_DYNAMIC_OBSTACLE:-}" "${SLAM_JOINT_RECON:-0}" >"${OUTPUT_DIR}/trial.log" 2>&1 &
+' _ "${SIM_WORKSPACE}" "${OUTPUT_DIR}" "${TRIAL_DOMAIN}" "${TRIAL_PARTITION}" "${PROJECT_DIR}" "${SCRIPT_DIR}" "${GOALS}" "${SLAM_MISSION_BRAIN:-${SLAM_RECON_TASK:-0}}" "${SLAM_PERCEPTION:-${SLAM_RECON_TASK:-0}}" "${SLAM_RECON_TASK:-0}" "${REQUIRED_PERSONS}" "${SLAM_EXPLORATION_TIMEOUT:-600}" "${SLAM_ACTIVE_OBSERVATION:-0}" "${IDENTITY_POLICY}" "${SLAM_INJECT_RETURN_HOLD_S:-0}" "${SLAM_DYNAMIC_OBSTACLE:-}" "${SLAM_JOINT_RECON:-0}" "${SLAM_FAULT_RECOVERY:-}" >"${OUTPUT_DIR}/trial.log" 2>&1 &
 VALIDATION_GROUP=$!
 if wait "${VALIDATION_GROUP}"; then
     TRIAL_STATUS=0
@@ -158,7 +163,9 @@ else
     TRIAL_STATUS=$?
 fi
 VALIDATION_GROUP=""
-if [[ -f "${OUTPUT_DIR}/slam_map.yaml" ]]; then
+if [[ -n "${SLAM_FAULT_RECOVERY:-}" ]]; then
+    "${ROS_WRAPPER}" bash -c 'source /opt/ros/humble/setup.bash; python3 "$1/evaluate_fault_recovery.py" "$2"' _ "${SCRIPT_DIR}" "${OUTPUT_DIR}" || { if [[ "${TRIAL_STATUS}" == 0 ]]; then TRIAL_STATUS=1; fi; }
+elif [[ -f "${OUTPUT_DIR}/slam_map.yaml" ]]; then
     "${ROS_WRAPPER}" bash -c '
 if [[ -f "$3/baseline/install/local_setup.bash" ]]; then source "$3/baseline/install/local_setup.bash"; fi
 set -e

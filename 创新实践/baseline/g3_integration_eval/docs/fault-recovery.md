@@ -39,6 +39,6 @@ ros2 run g3_integration_eval g3_state_machine --ros-args \
 
 新增测试覆盖状态转换、连续健康恢复、旧时间戳拒绝、扫描有效性、取消 token、交接超时、恢复超时、低电量优先、手动暂停、任务进度与预算保留。真实 ROS DDS 测试发布 TF/激光，停止激光，验证暂停，再恢复消息并通过交接确认续跑；测试期间导航发送关闭，不发布机器人速度。
 
-尚未进行新的 Gazebo 运动故障注入或实机故障试验；多人跟踪和动态障碍实验保持冻结。
+后续已完成普通仓库 Gazebo 运动故障注入，记录见 [运动验收](../../../external/go2_real_robot/qwen_robotnav/docs/fault-recovery-validation.md)。尚未进行实机故障试验；多人跟踪和动态障碍实验保持冻结。
 
 2026-10-16 验证：G3 全量 240 项、G2 兼容性回归 279 项通过。两项 DDS 故障测试分别覆盖激光和定位 TF 断流；未启动 Gazebo 或机器人执行器。

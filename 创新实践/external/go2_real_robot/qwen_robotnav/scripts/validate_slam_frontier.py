@@ -54,7 +54,8 @@ class Monitor(Node):
         self.command_pub=self.create_publisher(String,'/g3/command',10)
         self.create_subscription(TFMessage,'/frontier_trial/gt_pose',self.truth,10)
         self.create_subscription(Twist,'/frontier_trial/scaled_cmd',self.velocity,10)
-        self.create_subscription(LaserScan,'/robot1/velodyne',self.scan,qos_profile_sensor_data)
+        self.declare_parameter('validation_scan_topic','/robot1/velodyne')
+        self.create_subscription(LaserScan,self.get_parameter('validation_scan_topic').value,self.scan,qos_profile_sensor_data)
         self.create_subscription(OccupancyGrid,'/robot1/map',self.mapping,
                                  QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_subscription(String,'/exploration/events',self.event,10)
@@ -151,6 +152,7 @@ def main():
     parser.add_argument('--goals',type=int,default=5)
     parser.add_argument('--dynamic-obstacle',choices=('crossing','blocked'))
     parser.add_argument('--joint-recon',action='store_true')
+    parser.add_argument('--fault-recovery',choices=('short','long'))
     parser.add_argument('--inject-return-hold-s',type=float,default=0.)
     parser.add_argument('--exploration-timeout',type=float,default=600)
     args=parser.parse_args()
@@ -166,10 +168,18 @@ def main():
         parser.error('Joint recon requires moving identity, real mission brain, recon and crossing cart')
     if args.dynamic_obstacle and not args.joint_recon and (args.recon_task or args.mission_brain or args.inject_return_hold_s):
         parser.error('Dynamic benchmark uses deterministic Nav2 goals without recon, brain or injected holds')
+    if args.fault_recovery and (args.recon_task or args.perception or args.mission_brain or args.dynamic_obstacle or args.inject_return_hold_s):
+        parser.error('Fault trials isolate G2/G3 recovery without perception, dynamic scenarios or other injected faults')
     if args.recon_task and not args.perception:parser.error('--recon-task requires --perception')
     root=args.output_dir.resolve();project=Path(__file__).resolve().parents[4]
     if not (root/'slam_navigation.launch.py').exists():
         parser.error('Generate --localization slam into --output-dir first')
+    recovery_args=[]
+    if args.fault_recovery:
+        from fault_recovery_trial import SCAN, TF, prepare_navigation
+        prepare_navigation(root)
+        recovery_args=['-p','enable_fault_recovery:=true','-p','recovery_scan_topic:='+SCAN,
+                       '-p','validation_scan_topic:='+SCAN]
     rclpy.init(args=['--ros-args','-p','use_sim_time:=true','-p','require_mission_state:=true',
         '-p','require_navigation_handoff:=true','-p','enable_navigation_transmission:=true',
         '-p','active_observation:='+str(args.active_observation).lower(),
@@ -184,7 +194,7 @@ def main():
         '-p','battery_topic:=/frontier_trial/battery','-p','map_topic:=/robot1/map',
         '-p','use_mission_brain:='+str(args.mission_brain).lower(),
         '-p','nav_action:=/robot1/navigate_to_pose','-p','tick_period_s:=0.75','-p','min_goal_distance_m:=0.5',
-        '-r','/tf:=/robot1/tf','-r','/tf_static:=/robot1/tf_static'],signal_handler_options=SignalHandlerOptions.NO)
+        '-r','/tf:='+ (TF if args.fault_recovery else '/robot1/tf'),'-r','/tf_static:=/robot1/tf_static',*recovery_args],signal_handler_options=SignalHandlerOptions.NO)
     # Background shells can inherit SIGINT=SIG_IGN. Restore graceful shutdown so
     # interruption still reaches finally and finalizes the recorder.
     signal.signal(signal.SIGINT,signal.default_int_handler)
@@ -192,6 +202,10 @@ def main():
     signal.signal(signal.SIGTERM,interrupted)
     monitor=Monitor();monitor.return_hold_s=args.inject_return_hold_s;g3=G3StateMachineNode();explorer=None;brain=None;recon=None
     executor=SingleThreadedExecutor();executor.add_node(monitor);executor.add_node(g3)
+    relay=None
+    if args.fault_recovery:
+        from fault_recovery_trial import SensorRelay
+        relay=SensorRelay();executor.add_node(relay)
     children=[];logs=[];report={};baseline=None;home=None;anchor=None;recorder=None
 
     def start(command,name):
@@ -226,7 +240,8 @@ def main():
                '/frontier_trial/cart_events','/robot1/local_costmap/costmap','/robot1/global_costmap/costmap','/robot1/plan',
                '/mission_state','/g3/state','/g3/return_event','/frontier_trial/gt_pose','/frontier_trial/battery',
                '/robot1/navigate_to_pose/_action/status','/robot1/navigate_to_pose/_action/feedback',
-               '/navigation/handoff_request','/navigation/handoff_ack',
+               '/navigation/handoff_request','/navigation/handoff_ack','/g3/recovery_event',
+               '/frontier_trial/recovery_fault','/frontier_trial/recovery_scan','/frontier_trial/recovery_tf',
                '/exploration/candidates','/mission/context','/brain/decision',
                '/detections_3d','/detections_snapshot','/mission/detection_evidence','/perception/status','/mission/recon_status',
                *(['/robot1/rgbd_d435/image','/robot1/rgbd_d435/depth_image','/robot1/rgbd_d435/camera_info'] if args.recon_task else [])],'bag.log')
@@ -293,7 +308,11 @@ def main():
                 raise RuntimeError('Joint recon requires moving people in its world')
             joint_drivers=[start(['python3',str(Path(__file__).with_name('move_recon_people.py')),str(root),'--wait-for-robot-motion'],'person_motion.log'),
                            start(['python3',str(Path(__file__).with_name('drive_dynamic_cart.py')),str(root)],'cart_motion.log')]
-        if args.dynamic_obstacle and not args.joint_recon:
+        if args.fault_recovery:
+            from fault_recovery_trial import run_trial
+            explorer=VisionExplorer();executor.add_node(explorer)
+            report=run_trial(monitor,g3,explorer,relay,root,home,baseline,spin_until,args.fault_recovery)
+        elif args.dynamic_obstacle and not args.joint_recon:
             from dynamic_obstacle_trial import run_trial
             report=run_trial(monitor,root,home,baseline,start,spin_until)
         else:
@@ -426,8 +445,12 @@ def main():
             final_zero_command_published=True)
         if args.dynamic_obstacle and not args.joint_recon:report['goal_source']='fixed map-frame Nav2 benchmark goals'
         if args.joint_recon:report['goal_source']='DeepSeek-ranked G2 safe target observation viewpoints'
+        report['fault_recovery_mode']=args.fault_recovery
+        if args.fault_recovery:
+            report['goal_source']='G2 frontier exploration with real G3 health recovery'
+            report['return_trigger']='fault_trial_low_battery' if args.fault_recovery=='short' else 'not_triggered'
         (root/'report.json').write_text(json.dumps(report,indent=2));print(json.dumps(report),flush=True)
-        for node in [explorer,recon,brain,g3,monitor]:
+        for node in [explorer,recon,brain,g3,relay,monitor]:
             if node is not None:executor.remove_node(node);node.destroy_node()
         executor.shutdown();rclpy.shutdown()
     return 0 if report['success'] else 1
