@@ -55,6 +55,8 @@ class ReconTaskNode(Node):
             raise ValueError('Search and no-candidate budgets must be finite and positive')
         self.search_started_at=None;self.unavailable_since=None;self.return_reason=None
         self.search_budget_paused=False
+        self.pause_started_at=None;self.paused_duration_s=0.;self.paused_sim_duration_s=0.;self.pause_started_stamp=None
+        self.recovery_history=[]
         self.history=[]
         self.publisher=self.create_publisher(String,'/mission/recon_status',10)
         self.command=self.create_publisher(String,'/g3/command',10)
@@ -62,12 +64,18 @@ class ReconTaskNode(Node):
         self.create_subscription(String,'/mission_state',self._mission,qos)
         self.create_subscription(String,'/mission/detection_evidence',self._evidence,10)
         self.create_subscription(String,'/exploration/events',self._navigation,30)
+        self.create_subscription(String,'/g3/recovery_event',self._recovery,30)
         self.create_subscription(String,'/g3/return_event',self._return_event,30)
         self._budget_clock=Clock(clock_type=ClockType.STEADY_TIME)
         self.create_timer(1.,self._check_budget,clock=self._budget_clock)
         self._save()
 
     def _save(self):
+        paused_wall=self.paused_duration_s
+        paused_sim=self.paused_sim_duration_s
+        if self.state=='paused':
+            paused_wall+=time.monotonic()-self.pause_started_at
+            paused_sim+=max(0.,(self.get_clock().now().nanoseconds-self.pause_started_stamp)*1e-9)
         report=dict(state=self.state,objective='confirm declared counts of distinct targets with two JPEG observations per identity, then return',
             required_classes=self.required,required_counts={c:self.required_person_count if c=='person' else 1 for c in self.required},
             identity_policy=self.identity_policy,identity_diagnostics=self.identity_resolver.diagnostics,minimum_exploration_goals=self.minimum_goals,
@@ -79,13 +87,34 @@ class ReconTaskNode(Node):
             return_requested=self.return_requested,return_attempt_id=self.return_attempt,
             success=self.state=='returned',return_success=self.state in ('returned','returned_incomplete'),
             return_reason=self.return_reason,missing_counts=self.missing_counts(),
-            search_timeout_s=self.search_timeout,history=self.history)
+            search_timeout_s=self.search_timeout,paused_duration_s=paused_wall,
+            paused_sim_duration_s=paused_sim,recovery_history=self.recovery_history,history=self.history)
         temp=self.directory/'mission_report.json.tmp'
         temp.write_text(json.dumps(report,ensure_ascii=False,indent=2));temp.replace(self.directory/'mission_report.json')
         self.publisher.publish(String(data=json.dumps(report,ensure_ascii=False)))
 
+    def _recovery(self,msg):
+        try:
+            event=json.loads(msg.data)
+            if not isinstance(event,dict) or event.get('status') not in (
+                'fault','paused','navigation_released','resumed','recovery_timeout','return_fault'):
+                return
+        except (ValueError,TypeError):return
+        self.recovery_history.append(event)
+        self.recovery_history=self.recovery_history[-1000:]
+        self._save()
+
     def _transition(self,state):
         if self.state==state:return
+        if self.state=='paused':
+            duration=time.monotonic()-self.pause_started_at
+            self.paused_duration_s=getattr(self,'paused_duration_s',0.)+duration
+            self.paused_sim_duration_s=getattr(self,'paused_sim_duration_s',0.)+max(
+                0.,(self.get_clock().now().nanoseconds-self.pause_started_stamp)*1e-9)
+            if state=='searching':
+                if self.search_started_at is not None:self.search_started_at+=duration
+                self.unavailable_since=None
+            self.pause_started_at=None;self.pause_started_stamp=None
         self.state=state;self.history.append(dict(state=state,monotonic_time=time.monotonic()))
         self._save()
 
@@ -94,6 +123,12 @@ class ReconTaskNode(Node):
         if self.mission=='exploring' and self.started_stamp is None:
             self.started_stamp=self.get_clock().now().nanoseconds
             self.search_started_at=time.monotonic()
+            self._transition('searching')
+        elif self.mission=='paused' and self.state=='searching':
+            self.pause_started_at=time.monotonic()
+            self.pause_started_stamp=self.get_clock().now().nanoseconds
+            self._transition('paused')
+        elif self.mission=='exploring' and self.state=='paused':
             self._transition('searching')
         elif self.mission=='estop':self._transition('failed')
         elif self.mission=='returning' and not self.return_requested:self._transition('interrupted')
@@ -162,8 +197,13 @@ class ReconTaskNode(Node):
 
     def _observation_duration_complete(self):
         minimum=getattr(self,'minimum_observation_duration_s',0.)
-        return minimum==0 or (self.started_stamp is not None and
-            (self.get_clock().now().nanoseconds-self.started_stamp)*1e-9>=minimum)
+        if minimum==0:return True
+        if self.started_stamp is None:return False
+        now=self.get_clock().now().nanoseconds
+        paused=getattr(self,'paused_sim_duration_s',0.)
+        if self.state=='paused' and self.pause_started_stamp is not None:
+            paused+=max(0.,(now-self.pause_started_stamp)*1e-9)
+        return (now-self.started_stamp)*1e-9-paused>=minimum
 
     def _maybe_return(self):
         observed=self._observation_duration_complete()

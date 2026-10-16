@@ -11,6 +11,7 @@ class State(str, Enum):
     STANDBY = "STANDBY"
     EXPLORE = "EXPLORE"
     RETURN = "RETURN"
+    PAUSED = "PAUSED"
     ESTOP = "ESTOP"
 
 
@@ -21,6 +22,8 @@ class Event(str, Enum):
     EXPLORE = "explore"
     RETURN = "return"
     ESTOP = "estop"
+    PAUSE = "pause"
+    RESUME = "resume"
     RESET = "reset"
 
 
@@ -36,6 +39,11 @@ _TRANSITIONS = {
     (State.EXPLORE, Event.STANDBY): State.STANDBY,
     (State.RETURN, Event.RETURN): State.RETURN,
     (State.RETURN, Event.STANDBY): State.STANDBY,
+    (State.EXPLORE, Event.PAUSE): State.PAUSED,
+    (State.PAUSED, Event.PAUSE): State.PAUSED,
+    (State.PAUSED, Event.RESUME): State.EXPLORE,
+    (State.PAUSED, Event.RETURN): State.RETURN,
+    (State.PAUSED, Event.STANDBY): State.STANDBY,
     (State.ESTOP, Event.RESET): State.STANDBY,
 }
 
@@ -44,6 +52,7 @@ _MISSION_STATE_VALUES = {
     State.STANDBY: "standby",
     State.EXPLORE: "exploring",
     State.RETURN: "returning",
+    State.PAUSED: "paused",
     State.ESTOP: "estop",
 }
 
@@ -128,7 +137,7 @@ def battery_return_event(
 ) -> Optional[Event]:
     """Request RETURN once a valid battery reading is below the threshold.
 
-    Only EXPLORE may produce the event. Once RETURN or ESTOP has been entered,
+    EXPLORE and PAUSED may produce the event. Once RETURN or ESTOP has been entered,
     subsequent battery messages therefore cannot retrigger or override it.
     BatteryState uses NaN for an unknown percentage, so non-finite and
     out-of-range readings are deliberately ignored here. The ROS node handles
@@ -138,7 +147,7 @@ def battery_return_event(
     normalized_threshold = validate_low_battery_threshold(threshold)
     normalized_percentage = normalize_battery_percentage(percentage)
 
-    if current is not State.EXPLORE:
+    if current not in (State.EXPLORE, State.PAUSED):
         return None
     if normalized_percentage is None:
         return None

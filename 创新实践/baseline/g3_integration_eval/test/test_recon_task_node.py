@@ -155,3 +155,38 @@ def test_short_views_count_separately_without_replacing_required_long_goal():
     assert len(node.completed_views)==2 and len(node.completed_goals)==1 and not node.commands
     node._navigation(message(status='succeeded',attempt_id=3,purpose='observe_targets',geodesic_dist_m=.5))
     assert node.commands==['RETURN']
+
+
+def test_pause_resume_preserves_progress_and_excludes_paused_budget(monkeypatch):
+    node=node_fixture();node.search_started_at=10.;node.unavailable_since=11.
+    node.targets={'person':{'class_name':'person'}};node.completed_goals={'completed'}
+    node.completed_views={'view'};node.search_timeout=20.;node.no_candidate_timeout=5.
+    clock=[12.];ros=[12*10**9]
+    node.get_clock=lambda:SimpleNamespace(now=lambda:SimpleNamespace(nanoseconds=ros[0]))
+    monkeypatch.setattr('g3_integration_eval.recon_task_node.time.monotonic',lambda:clock[0])
+    node._mission(SimpleNamespace(data='paused'))
+    clock[0]=112.;ros[0]=112*10**9
+    node._check_budget()
+    assert node.state=='paused' and not node.commands
+    node._mission(SimpleNamespace(data='exploring'))
+    assert node.state=='searching' and node.started_stamp==0
+    assert node.search_started_at==110. and node.unavailable_since is None
+    assert node.paused_duration_s==100. and node.paused_sim_duration_s==100.
+    assert node.targets=={'person':{'class_name':'person'}}
+    assert node.completed_goals=={'completed'} and node.completed_views=={'view'}
+    node.minimum_observation_duration_s=15.
+    assert not node._observation_duration_complete()
+    ros[0]=115*10**9
+    assert node._observation_duration_complete()
+
+
+def test_recovery_timeline_is_saved_and_bad_messages_ignored():
+    node=node_fixture();node.recovery_history=[]
+    node._recovery(SimpleNamespace(data='[]'))
+    node._recovery(SimpleNamespace(data='broken'))
+    node._recovery(message(status='unknown'))
+    assert not node.recovery_history
+    node._recovery(message(status='fault',missing=['scan'],stamp_ns=123))
+    node._recovery(message(status='resumed',stamp_ns=456))
+    assert [e['status'] for e in node.recovery_history]==['fault','resumed']
+    assert len(node.saved)==2

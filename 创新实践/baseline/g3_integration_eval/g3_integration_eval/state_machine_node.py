@@ -17,7 +17,10 @@ from rclpy.qos import (
     ReliabilityPolicy,
     qos_profile_sensor_data,
 )
-from sensor_msgs.msg import BatteryState
+from sensor_msgs.msg import BatteryState, LaserScan, Image
+from rclpy.time import Time
+from tf2_ros import Buffer, TransformListener, TransformException
+from g3_integration_eval.recovery import RecoveryHealth
 from std_msgs.msg import String
 
 from g3_integration_eval.navigate_to_pose_client import (
@@ -130,6 +133,37 @@ class G3StateMachineNode(Node):
             event_callback=self._publish_return_event,
         )
 
+        self._pause_released = False
+        self._paused_at = None
+        self._automatic_pause = False
+        self._low_battery_active = False
+        self._recovery_publisher = self.create_publisher(String, '/g3/recovery_event', 30)
+        self.declare_parameter('enable_fault_recovery', False)
+        self.declare_parameter('recovery_stale_sec', 2.)
+        self.declare_parameter('recovery_stable_sec', 3.)
+        self.declare_parameter('recovery_timeout_sec', 60.)
+        self.declare_parameter('recovery_scan_topic', '/robot1/scan')
+        self.declare_parameter('recovery_map_frame', 'map')
+        self.declare_parameter('recovery_robot_frame', 'base_link')
+        self.declare_parameter('recovery_image_topics', [''])
+        self._health = None
+        if self.get_parameter('enable_fault_recovery').value:
+            if not self._require_handoff:
+                raise ValueError('Fault recovery requires require_navigation_handoff:=true')
+            images = [v for v in self.get_parameter('recovery_image_topics').value if v]
+            self._health = RecoveryHealth(['scan', 'localization']+images,
+                stale_s=float(self.get_parameter('recovery_stale_sec').value),
+                stable_s=float(self.get_parameter('recovery_stable_sec').value),
+                timeout_s=float(self.get_parameter('recovery_timeout_sec').value))
+            self._recovery_tf = Buffer()
+            self._recovery_listener = TransformListener(self._recovery_tf, self)
+            self.create_subscription(LaserScan, self.get_parameter('recovery_scan_topic').value,
+                                     self._on_recovery_scan, qos_profile_sensor_data)
+            for topic in images:
+                self.create_subscription(Image, topic,
+                    lambda msg, source=topic: self._on_recovery_image(source, msg), qos_profile_sensor_data)
+        self.create_timer(.2, self._check_recovery, clock=self._handoff_clock)
+
         domain_id = os.environ.get("ROS_DOMAIN_ID", "0")
         self.get_logger().info(
             f"G3 state machine ready in STANDBY (ROS_DOMAIN_ID={domain_id})"
@@ -212,6 +246,7 @@ class G3StateMachineNode(Node):
             return
 
         self._battery_fault_active = False
+        self._low_battery_active = normalized_percentage < self._low_battery_threshold
         self._last_battery_time = self.get_clock().now()
 
         event = battery_return_event(
@@ -230,6 +265,20 @@ class G3StateMachineNode(Node):
 
     def _apply_event(self, event: Event, *, source: str) -> None:
         previous = self._state
+        if event is Event.RETURN and previous is State.PAUSED and self._health is not None and not self._health.ready(time.monotonic()):
+            self._apply_event(Event.ESTOP, source='return_health_fault')
+            return
+        if event is Event.RESUME:
+            if (previous is not State.PAUSED or not self._pause_released or self._battery_fault_active
+                or self._low_battery_active
+                or (self.get_clock().now()-self._last_battery_time).nanoseconds*1e-9 > self._battery_timeout_sec
+                or (self._health is not None and not self._health.ready(time.monotonic()))):
+                self.get_logger().warning('RESUME rejected: cancellation or health recovery is incomplete')
+                return
+        if event is Event.EXPLORE and previous is State.STANDBY and self._health is not None:
+            if not self._health.ready(time.monotonic()):
+                self.get_logger().warning('EXPLORE rejected: health checks are not stable')
+                return
         try:
             self._state = transition(previous, event)
         except InvalidTransition as exc:
@@ -250,10 +299,21 @@ class G3StateMachineNode(Node):
                     f"{previous.value}"
                 )
 
-        if self._state is not State.RETURN:
+        if self._state not in (State.RETURN, State.PAUSED):
             self._handoff_pending = None
         self._publish_state()
 
+        if self._state is State.PAUSED and previous is not State.PAUSED:
+            self._paused_at = time.monotonic()
+            self._pause_released = False
+            self._automatic_pause = source == 'health_fault'
+            self._recovery_event('paused', reason=source)
+            token = uuid.uuid4().hex
+            self._handoff_pending = (token, 'pause', time.monotonic()+self._handoff_timeout)
+            self._handoff_publisher.publish(String(data=json.dumps({'token': token})))
+        elif self._state is State.EXPLORE and previous is State.PAUSED:
+            self._recovery_event('resumed', paused_seconds=time.monotonic()-self._paused_at)
+            self._paused_at = None
         if self._state is State.RETURN and previous is not State.RETURN:
             self._start_return(source)
         elif self._state is State.ESTOP:
@@ -273,7 +333,7 @@ class G3StateMachineNode(Node):
 
     def _on_handoff_ack(self, message: String) -> None:
         pending = self._handoff_pending
-        if pending is None or self._state is not State.RETURN:
+        if pending is None or self._state not in (State.RETURN, State.PAUSED):
             return
         try:
             ack = json.loads(message.data)
@@ -285,7 +345,11 @@ class G3StateMachineNode(Node):
             self._check_handoff()
             return
         self._handoff_pending = None
-        self._send_return(pending[1])
+        if self._state is State.PAUSED:
+            self._pause_released = True
+            self._recovery_event('navigation_released')
+        else:
+            self._send_return(pending[1])
 
     def _check_handoff(self) -> None:
         if self._handoff_pending is not None and time.monotonic() > self._handoff_pending[2]:
@@ -363,7 +427,7 @@ class G3StateMachineNode(Node):
                 self._apply_event(Event.ESTOP, source=f"return_failed:{status}")
 
     def _check_battery_timeout(self) -> None:
-        if self._state is not State.EXPLORE:
+        if self._state not in (State.EXPLORE, State.PAUSED, State.RETURN):
             return
         if self._last_battery_time is None:
             return
@@ -376,6 +440,60 @@ class G3StateMachineNode(Node):
                 f"{self._battery_timeout_sec:.1f}s; 进入 ESTOP"
             )
             self._apply_event(Event.ESTOP, source="battery_timeout")
+
+    def _recovery_event(self, status, **extra):
+        self._recovery_publisher.publish(String(data=json.dumps(dict(status=status,
+            state=self._state.value, monotonic_time=time.monotonic(),
+            stamp_ns=self.get_clock().now().nanoseconds, **extra))))
+
+    def _fresh_stamp(self, stamp):
+        age = (self.get_clock().now().nanoseconds - stamp.sec*10**9 - stamp.nanosec)*1e-9
+        return 0 <= age <= self._health.stale_s
+
+    def _on_recovery_scan(self, msg):
+        if (self._fresh_stamp(msg.header.stamp) and math.isfinite(msg.range_min)
+            and math.isfinite(msg.range_max) and 0 <= msg.range_min < msg.range_max
+            and any(math.isfinite(v) and msg.range_min <= v <= msg.range_max for v in msg.ranges)):
+            self._health.observe('scan', time.monotonic(), msg.header.stamp.sec*10**9+msg.header.stamp.nanosec)
+
+    def _on_recovery_image(self, source, msg):
+        bytes_per_pixel = {'rgb8':3,'bgr8':3,'rgba8':4,'bgra8':4,'mono8':1,
+                           'mono16':2,'16UC1':2,'32FC1':4}.get(msg.encoding)
+        if (bytes_per_pixel is not None and self._fresh_stamp(msg.header.stamp)
+            and msg.width > 0 and msg.height > 0 and msg.step >= msg.width*bytes_per_pixel
+            and len(msg.data) >= msg.step*msg.height):
+            self._health.observe(source, time.monotonic(), msg.header.stamp.sec*10**9+msg.header.stamp.nanosec)
+
+    def _check_recovery(self):
+        health = self._health
+        if health is None:
+            return
+        now = time.monotonic()
+        try:
+            tf = self._recovery_tf.lookup_transform(
+                self.get_parameter('recovery_map_frame').value,
+                self.get_parameter('recovery_robot_frame').value, Time())
+            p, q = tf.transform.translation, tf.transform.rotation
+            values = (p.x,p.y,p.z,q.x,q.y,q.z,q.w)
+            if (self._fresh_stamp(tf.header.stamp) and all(math.isfinite(v) for v in values)
+                and abs(sum(v*v for v in values[3:])-1.) < .01):
+                health.observe('localization', now, tf.header.stamp.sec*10**9+tf.header.stamp.nanosec)
+        except TransformException:
+            pass
+        ready = health.ready(now)
+        missing = health.missing(now)
+        if self._state is State.EXPLORE and missing:
+            self._recovery_event('fault', missing=missing)
+            self._apply_event(Event.PAUSE, source='health_fault')
+        elif self._state is State.RETURN and missing:
+            self._recovery_event('return_fault', missing=missing)
+            self._apply_event(Event.ESTOP, source='return_health_fault')
+        elif self._state is State.PAUSED:
+            if now-self._paused_at >= health.timeout_s:
+                self._recovery_event('recovery_timeout', missing=missing)
+                self._apply_event(Event.ESTOP, source='recovery_timeout')
+            elif ready and self._pause_released and self._automatic_pause:
+                self._apply_event(Event.RESUME, source='health_recovered')
 
     def _publish_state(self) -> None:
         message = String()

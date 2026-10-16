@@ -279,3 +279,7 @@ SLAM 的地图坐标原点/朝向可能不同于参考地图，覆盖率评测�
 `/mission/recon_status` 提供 `targets_fresh` 和 `observation_window_pending`，供 G2 在正确观察朝向持续取证。搜索预算、无可达视点、外部返航和急停仍优先，观察时长不能阻止安全退出。联合仿真当前使用 50 s 观察时窗、5 s 证据新鲜度和三个独立观察位点；短观察位点不能代替必需的至少一个 0.75 m 有效长目标。
 
 新鲜度门槛使用 `motion_appearance_v1` 产生的 `last_seen_stamp_ns`；观察位点计数只接收 `observe_targets` 成功事件。其他模式应保留对应门槛为 0。
+
+### 探索故障暂停与续跑
+
+已加入默认关闭的健康监测与 `PAUSE / RESUME`。激光或定位断流时暂停，等待导航取消终态和持续健康恢复后继续原侦察任务；恢复超时停止。配置、诊断事件和验证边界见 [故障恢复说明](docs/fault-recovery.md)。
