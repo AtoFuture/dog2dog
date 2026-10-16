@@ -1,55 +1,59 @@
-# 仓库世界加"人员 / 车辆"（动态）
+# 仓库世界加"人员 / 车辆"（actor 版）
 
-在迷宫世界 `warehouse_cross.sdf` 基础上新增 `warehouse_cross_objects.sdf`：行人 + 车辆沿闭合路径**运动学驱动**
-（`/world/<w>/set_pose_vector`），不依赖物理受力，所以不摔、不被卡；但也不会让路（幽灵障碍）。
+`warehouse_cross_objects.sdf` = 原迷宫 + **5 个 `<actor>`**（3 行人 + 2 车）。
+actor 不受物理影响、由仿真按 **sim-time 平滑插值**沿轨迹运动 → **不瞬移、不坠落、不穿模**（轨迹在通道内）。
+**无需任何外部驱动进程。**
 
 ## 文件
 
 | 文件 | 说明 |
 |---|---|
-| `src/gazebo_sim/world/warehouse_cross_objects.sdf` | 新世界（原迷宫 + 3 行人 + 2 车） |
-| `tools/objects_motion.py` | 运动驱动脚本 |
+| `src/gazebo_sim/world/warehouse_cross_objects.sdf` | 世界（含 actor） |
+| `tools/obj2dae.py` | OBJ→COLLADA 转换器（把车 mesh 变成 actor 皮肤） |
+| `SOTA_MOVING_ACTORS.md` | **方案调研与最佳实践**（推荐先读） |
 
-## 模型
+## actor
 
-| 名字 | 来源 | 说明 |
-|---|---|---|
-| `person_standing` | Fuel `OpenRobotics/Standing person` (.dae) | 行人 |
-| `suv_vehicle` | Fuel `OpenRobotics/SUV` (.obj) | 车；**原尺寸 5.02×2.60×2.16m 太宽，世界内改为 inline 模型 `scale 0.04` → 3.35×1.74×1.44m** |
+| 名字 | 皮肤 | 通道 | 速度 |
+|---|---|---|---|
+| person_1/2/3 | `walking_actor/meshes/walk.dae`（Fuel `Mingfei/actor`） | 货架间 y=-1.15 / 1.25 / 3.85 | ~0.3 m/s |
+| suv_1/2 | `suv_vehicle/meshes/suv.dae`（`SUV.obj` 转出） | 南侧通道 y=-6.5 | ~0.8 m/s |
 
-> ⚠️ **弃用 Forklift**：该模型视觉网格是 `.glb`，而 Fortress/gz-sim6 的 Ogre2 **不支持 .glb**
-> （`Invalid mesh filename extension`），会导致场景几何加载失败。
+轨迹写法（相对初始位姿的 waypoint + 时间）：
 
-下载/预缓存：
-```bash
-ign fuel download -u 'https://fuel.gazebosim.org/1.0/OpenRobotics/models/SUV' -j 4
-ign fuel download -u 'https://fuel.gazebosim.org/1.0/OpenRobotics/models/Standing%20person' -j 6
-# 复制到 src/gazebo_sim/models/{suv_vehicle,person_standing}
+```xml
+<actor name="person_1">
+  <pose>1.0 -1.15 0 0 0 0</pose>
+  <skin><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale></skin>
+  <animation name="walk"><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x></animation>
+  <script>
+    <loop>true</loop><auto_start>true</auto_start>
+    <trajectory id="0" type="walk" tension="1.0">
+      <waypoint><time>0</time><pose>0 0 0 0 0 0</pose></waypoint>
+      <waypoint><time>33.3</time><pose>10 0 0 0 0 0</pose></waypoint>
+      <waypoint><time>66.7</time><pose>0 0 0 0 0 0</pose></waypoint>
+    </trajectory>
+  </script>
+</actor>
 ```
 
-## 运动对象（互相错开，均在通道内）
+改速度 = 改 waypoint 的 `<time>`；改路线 = 改 `<pose>`（相对初始位姿）。
 
-| 对象 | 通道 | 路径 |
-|---|---|---|
-| person_1 | 货架间 y=-1.15 | x 1.0 ↔ 11.0 |
-| person_2 | 货架间 y=1.25 | x 1.0 ↔ 11.0 |
-| person_3 | 货架间 y=3.85 | x 11.0 ↔ 1.0 |
-| suv_1 | 南侧通道 y=-6.5 | x -6.5 ↔ 1.5 |
-| suv_2 | 南侧通道 y=-6.5 | x 12.0 ↔ 4.5 |
+## 生成车辆 actor 皮肤
 
-## 用法
+```bash
+python3 tools/obj2dae.py models/suv_vehicle/meshes/suv.obj \
+        models/suv_vehicle/meshes/suv.dae -90 0.04   # 旋转-90° + 缩放0.04 全部烘焙进 dae
+```
+
+## 运行
 
 ```bash
 ign gazebo -s -r -v4 $WS/install/gazebo_sim/share/gazebo_sim/world/warehouse_cross_objects.sdf --force-version 6
-# 另开终端（同 IGN_PARTITION）：
-python3 tools/objects_motion.py --world world_demo --rate 15
 ```
 
-## 关键坑（踩过的）
+## 注意
 
-1. **Depot 模型的碰撞体只是一个 100×100 `<plane>`**，货架/墙**只有视觉、没有碰撞** ⇒ 用碰撞图判断会误判；路径必须落在**真实空闲通道**（看仓库地面的黄色通道标线/俯视图）。
-2. **SUV 原始 mesh 5.02×2.60m**，而货架间通道普遍 ~2m，原尺寸必然穿模 ⇒ 必须缩放（现用 0.04）。
-3. **`.glb` 不被 Ogre2 支持** ⇒ 别用 Forklift。
-4. `TrajectoryFollower`（力驱动）会把 80kg 行人掀翻、SUV 卡死 ⇒ 用 kinematic `set_pose`。
-5. 驱动里 `set_pose_vector` 的 `--req` 文本经多层 shell 会被吃引号 ⇒ 用 base64 传内联脚本。
-6. 世界与驱动必须同一 `IGN_PARTITION`；GUI 截图要抓**窗口**（root 常被屏保刷白）。
+- actor **不与机器人发生碰撞**（幽灵式）；需要真碰撞请改用物理刚体方案（见 `SOTA_MOVING_ACTORS.md`）。
+- 轨迹必须在**真实空闲通道**：本世界 Depot 货架**只有视觉、无碰撞体**，不能用碰撞图判断。
+- `tools/objects_motion.py`（外部 set_pose 驱动）**已废弃**：进程+服务延迟会瞬移。

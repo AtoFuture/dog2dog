@@ -704,48 +704,76 @@
       <pose>0 0 0 0 0 0</pose>
     </model>
   
-    <!-- ================= 人员/车辆 (moving, driver-driven) ================= -->
+    <!-- ========= 人员/车辆：<actor>（物理无关，sim-time 平滑插值）========= -->
 
-    <include>
-      <uri>model://person_standing</uri>
-      <name>person_1</name>
-      <pose>1.0 -1.15 0.0 0 0 0</pose>
-    </include>
+    <actor name="person_1">
+      <pose>1.0 -1.15 0 0 0 0</pose>
+      <skin><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x></animation>
+      <script>
+        <loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk" tension="1.0">
+          <waypoint><time>0</time><pose>0 0 0 0 0 0</pose></waypoint>
+          <waypoint><time>33.333</time><pose>10.0 0 0 0 0 0</pose></waypoint>
+          <waypoint><time>66.667</time><pose>0 0 0 0 0 0</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
 
-    <include>
-      <uri>model://person_standing</uri>
-      <name>person_2</name>
-      <pose>1.0 1.25 0.0 0 0 0</pose>
-    </include>
+    <actor name="person_2">
+      <pose>1.0 1.25 0 0 0 0</pose>
+      <skin><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x></animation>
+      <script>
+        <loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk" tension="1.0">
+          <waypoint><time>0</time><pose>0 0 0 0 0 0</pose></waypoint>
+          <waypoint><time>33.333</time><pose>10.0 0 0 0 0 0</pose></waypoint>
+          <waypoint><time>66.667</time><pose>0 0 0 0 0 0</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
 
-    <include>
-      <uri>model://person_standing</uri>
-      <name>person_3</name>
-      <pose>11.0 3.85 0.0 0 0 0</pose>
-    </include>
+    <actor name="person_3">
+      <pose>11.0 3.85 0 0 0 0</pose>
+      <skin><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x></animation>
+      <script>
+        <loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk" tension="1.0">
+          <waypoint><time>0</time><pose>0 0 0 0 0 0</pose></waypoint>
+          <waypoint><time>33.333</time><pose>-10.0 0 0 0 0 0</pose></waypoint>
+          <waypoint><time>66.667</time><pose>0 0 0 0 0 0</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
 
-    <model name="suv_1">
-      <pose>-6.5 -6.5 0.05 0 0 0</pose>
-      <link name="link">
-        <inertial><pose>0 0 0 0 0 0</pose><mass>1200</mass>
-          <inertia><ixx>600</ixx><ixy>0</ixy><ixz>0</ixz><iyy>2500</iyy><iyz>0</iyz><izz>2800</izz></inertia></inertial>
-        <collision name="collision"><pose>0 0 0 0 0 -1.57079632679</pose>
-          <geometry><mesh><scale>0.04 0.04 0.04</scale><uri>model://suv_vehicle/meshes/suv.obj</uri></mesh></geometry></collision>
-        <visual name="visual"><pose>0 0 0 0 0 -1.57079632679</pose>
-          <geometry><mesh><scale>0.04 0.04 0.04</scale><uri>model://suv_vehicle/meshes/suv.obj</uri></mesh></geometry></visual>
-      </link>
-    </model>
+    <actor name="suv_1">
+      <pose>-6.5 -6.5 0 0 0 0</pose>
+      <skin><filename>model://suv_vehicle/meshes/suv.dae</filename><scale>1.0</scale></skin>
+      <animation name="drive"><filename>model://suv_vehicle/meshes/suv.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x></animation>
+      <script>
+        <loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="drive" tension="1.0">
+          <waypoint><time>0</time><pose>0 0 0 0 0 0</pose></waypoint>
+          <waypoint><time>10.0</time><pose>8.0 0 0 0 0 0</pose></waypoint>
+          <waypoint><time>20.0</time><pose>0 0 0 0 0 0</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
 
-    <model name="suv_2">
-      <pose>12.0 -6.5 0.05 0 0 0</pose>
-      <link name="link">
-        <inertial><pose>0 0 0 0 0 0</pose><mass>1200</mass>
-          <inertia><ixx>600</ixx><ixy>0</ixy><ixz>0</ixz><iyy>2500</iyy><iyz>0</iyz><izz>2800</izz></inertia></inertial>
-        <collision name="collision"><pose>0 0 0 0 0 -1.57079632679</pose>
-          <geometry><mesh><scale>0.04 0.04 0.04</scale><uri>model://suv_vehicle/meshes/suv.obj</uri></mesh></geometry></collision>
-        <visual name="visual"><pose>0 0 0 0 0 -1.57079632679</pose>
-          <geometry><mesh><scale>0.04 0.04 0.04</scale><uri>model://suv_vehicle/meshes/suv.obj</uri></mesh></geometry></visual>
-      </link>
-    </model>
+    <actor name="suv_2">
+      <pose>12.0 -6.5 0 0 0 0</pose>
+      <skin><filename>model://suv_vehicle/meshes/suv.dae</filename><scale>1.0</scale></skin>
+      <animation name="drive"><filename>model://suv_vehicle/meshes/suv.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x></animation>
+      <script>
+        <loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="drive" tension="1.0">
+          <waypoint><time>0</time><pose>0 0 0 0 0 0</pose></waypoint>
+          <waypoint><time>9.375</time><pose>-7.5 0 0 0 0 0</pose></waypoint>
+          <waypoint><time>18.75</time><pose>0 0 0 0 0 0</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
 </world>
 </sdf>
