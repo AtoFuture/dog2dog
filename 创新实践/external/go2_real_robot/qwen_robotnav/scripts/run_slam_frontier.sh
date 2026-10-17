@@ -13,6 +13,8 @@ GOALS="${2:-5}"
 ROS_WRAPPER="${G1_ROS_WRAPPER:-${HOME}/.enroot/ros}"
 GPU_WRAPPER="${G1_GPU_WRAPPER:-${HOME}/.enroot/ros-gui}"
 SIM_WORKSPACE="${G1_SIM_WORKSPACE:-${HOME}/go2_sim_ws/ROS2-Gazebo-GO2}"
+STATIC_SCENARIO="${SLAM_STATIC_SCENARIO:-}"
+[[ -z "${STATIC_SCENARIO}" || "${STATIC_SCENARIO}" == narrow || "${STATIC_SCENARIO}" == dead_end || "${STATIC_SCENARIO}" == unreachable ]] || { echo 'Unknown static scenario' >&2; exit 2; }
 RUNTIME_INTERACTIVE="${SLAM_RUNTIME_INTERACTIVE:-0}"
 RUNTIME_AUTONOMOUS_COMPLETION="${SLAM_RUNTIME_AUTONOMOUS_COMPLETION:-0}"
 [[ "${RUNTIME_AUTONOMOUS_COMPLETION}" == 0 || "${RUNTIME_AUTONOMOUS_COMPLETION}" == 1 ]] || { echo 'SLAM_RUNTIME_AUTONOMOUS_COMPLETION must be 0 or 1' >&2; exit 2; }
@@ -63,6 +65,9 @@ if [[ -n "${SLAM_RUNTIME_PROFILE:-}" ]]; then
     [[ "${SLAM_RECON_TASK:-0}" == 0 && "${SLAM_PERCEPTION:-0}" == 0 && -z "${SLAM_DYNAMIC_OBSTACLE:-}" && -z "${SLAM_FAULT_RECOVERY:-}" && "${SLAM_JOINT_RECON:-0}" == 0 && "${SLAM_INJECT_RETURN_HOLD_S:-0}" == 0 && "${SLAM_ACTIVE_OBSERVATION:-0}" == 0 ]] || { echo 'Runtime trial requires ordinary exploration' >&2; exit 2; }
     SLAM_RUNTIME_PROFILE="$(realpath "${SLAM_RUNTIME_PROFILE}")"
 fi
+if [[ -n "${STATIC_SCENARIO}" ]]; then
+    [[ "${LEGACY_VALIDATION}" == 0 && "${RUNTIME_AUTONOMOUS_COMPLETION}" == 1 && "${RUNTIME_INTERACTIVE}" == 0 ]] || { echo 'Static scenes require current autonomous validation' >&2; exit 2; }
+fi
 TRIAL_DOMAIN="${SLAM_ROS_DOMAIN_ID:-192}"
 TRIAL_PARTITION="${SLAM_IGN_PARTITION:-frontier_${TRIAL_DOMAIN}_$$}"
 for executable in "${ROS_WRAPPER}" "${GPU_WRAPPER}"; do
@@ -77,6 +82,9 @@ export PYTHONPATH="$1/..:${PYTHONPATH:-}"
 colcon --log-base "$2/progress_log" build --base-paths "$1/../ros2_ws/src/qwen_robotnav_progress" --packages-select qwen_robotnav_progress --build-base "$2/progress_build" --install-base "$2/progress_install" >"$2/progress_build.log" 2>&1
 python3 "$1/prepare_simulator_launch.py" --single-odom-tf --sim-workspace "$3" --output-dir "$2"
 python3 "$1/prepare_amcl_navigation.py" --localization slam --sim-workspace "$3" --output-dir "$2" --slam-max-range "$4"
+if [[ -n "${11}" ]]; then
+    python3 "$1/prepare_static_scene.py" --world "$3/src/gazebo_sim/world/warehouse.sdf" --output-dir "$2" --scenario "${11}"
+fi
 if [[ "$6" == "1" ]]; then
     RECON_ARGS=()
     if [[ "$9" == 1 ]]; then
@@ -92,7 +100,7 @@ if [[ -n "$8" ]]; then
     if [[ "$9" == 1 ]]; then DYNAMIC_ARGS=(--encounter-distance 1.5 --duration-s 10.0); fi
     python3 "$1/prepare_dynamic_scene.py" --world "${DYNAMIC_SOURCE}" --output-dir "$2" --scenario "$8" "${DYNAMIC_ARGS[@]}"
 fi
-' _ "${SCRIPT_DIR}" "${OUTPUT_DIR}" "${SIM_WORKSPACE}" "${SLAM_MAX_RANGE:-4.0}" "${SLAM_RECON_PERSON_MODEL:-}" "${SLAM_RECON_TASK:-0}" "${SLAM_RECON_SCENARIO:-single}" "${SLAM_DYNAMIC_OBSTACLE:-}" "${SLAM_JOINT_RECON:-0}" "${SLAM_JOINT_SAME_CLOTHING:-0}"
+' _ "${SCRIPT_DIR}" "${OUTPUT_DIR}" "${SIM_WORKSPACE}" "${SLAM_MAX_RANGE:-4.0}" "${SLAM_RECON_PERSON_MODEL:-}" "${SLAM_RECON_TASK:-0}" "${SLAM_RECON_SCENARIO:-single}" "${SLAM_DYNAMIC_OBSTACLE:-}" "${SLAM_JOINT_RECON:-0}" "${SLAM_JOINT_SAME_CLOTHING:-0}" "${STATIC_SCENARIO}"
 if [[ "${3:-}" == "--prepare-only" ]]; then
     echo "Prepared: ${OUTPUT_DIR}"
     exit 0
@@ -113,6 +121,7 @@ if others:raise SystemExit("Selected ROS domain is in use; choose another SLAM_R
 PY
 ' _ "${TRIAL_DOMAIN}" "${SIM_WORKSPACE}"
 TRIAL_WORLD=warehouse.sdf
+if [[ -n "${STATIC_SCENARIO}" ]]; then TRIAL_WORLD="${OUTPUT_DIR}/static_world.sdf"; fi
 if [[ "${SLAM_RECON_TASK:-0}" == "1" ]]; then TRIAL_WORLD="${OUTPUT_DIR}/recon_warehouse.sdf"; fi
 if [[ -n "${SLAM_DYNAMIC_OBSTACLE:-}" ]]; then TRIAL_WORLD="${OUTPUT_DIR}/dynamic_warehouse.sdf"; fi
 setsid "${GPU_WRAPPER}" bash -c '
@@ -132,7 +141,7 @@ import os,signal,sys,time
 for value in sys.argv[1:]:
     if not value:continue
     pgid=int(value)
-    for sig,seconds in [(signal.SIGINT,10),(signal.SIGTERM,3)]:
+    for sig,seconds in [(signal.SIGINT,60),(signal.SIGTERM,5)]:
         try:os.killpg(pgid,sig)
         except ProcessLookupError:break
         end=time.monotonic()+seconds

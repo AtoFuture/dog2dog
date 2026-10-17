@@ -13,7 +13,7 @@ KEYS={
  'scaler':set('linear_scale linear_max linear_min nav_deadband angular_scale angular_max linear_accel linear_decel angular_accel angular_decel ramp_rate cmd_timeout'.split()),
  'navigation':{'robot_radius_m','inflation_radius_m','desired_linear_velocity_mps'},
  'mission':set('heartbeat_period_s recovery_stale_s recovery_stable_s recovery_timeout_s low_battery_threshold home_x home_y home_yaw'.split()),
- 'explorer':set('tick_period_s min_goal_distance_m task_completion_enabled exploration_budget_s coverage_stall_s coverage_min_gain_m2 candidate_wait_s no_frontier_confirm_s max_region_failures max_consecutive_failures'.split()),
+ 'explorer':set('max_bootstrap_scans require_path_clearance tick_period_s min_goal_distance_m task_completion_enabled exploration_budget_s coverage_stall_s coverage_min_gain_m2 candidate_wait_s no_frontier_confirm_s max_region_failures max_consecutive_failures'.split()),
  'decision':set('candidate_selector mission_instruction brain_base_url brain_model brain_timeout brain_max_candidates'.split()),
  'battery_model':{'initial_percentage','moving_drain_per_sec','idle_drain_per_sec','publish_rate_hz'},
 }
@@ -33,8 +33,8 @@ def validate_profile(value):
         if not isinstance(data,dict) or set(data)!=keys:raise ValueError('Unknown or missing '+section+' fields')
         for key,item in data.items():
             if section=='decision':continue
-            if section=='explorer' and key=='task_completion_enabled':
-                if item is not True:raise ValueError('Formal runtime requires task completion')
+            if section=='explorer' and key in ('task_completion_enabled','require_path_clearance'):
+                if item is not True:raise ValueError('Formal runtime requires '+key)
                 continue
             if section in ('topics','frames'):
                 if not isinstance(item,str) or not item.strip() or any(c.isspace() for c in item):raise ValueError('Invalid '+key)
@@ -55,6 +55,7 @@ def validate_profile(value):
     if not 0<value['battery_model']['initial_percentage']<=1:raise ValueError('Invalid simulated initial battery')
     if t['action']!='/robot1/navigate_to_pose':raise ValueError('This backend requires the robot1 Nav2 action')
     e=value['explorer']
+    if type(e['max_bootstrap_scans']) is not int or not 1<=e['max_bootstrap_scans']<=3:raise ValueError('Expected 1..3 bootstrap scans')
     if e['candidate_wait_s']<=30:raise ValueError('Candidate wait must exceed blacklist TTL')
     for key in ('max_region_failures','max_consecutive_failures'):
         if type(e[key]) is not int:raise ValueError('Expected integer '+key)
@@ -74,7 +75,7 @@ def profile_hash(profile):
     return hashlib.sha256(json.dumps(profile,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
 
-def ros_parameters(p):
+def ros_parameters(p, runtime_root=None):
     t,f,m=p['topics'],p['frames'],p['mission']
     common={'use_sim_time':p['use_sim_time']};d=p['decision']
     result={
@@ -90,6 +91,8 @@ def ros_parameters(p):
         mission_instruction=d['mission_instruction'],brain_timeout_s=d['brain_timeout'],brain_max_candidates=d['brain_max_candidates'],
         map_topic=t['map'],mission_state_topic=t['mission'],nav_action=t['action'],map_frame=f['map'],robot_frame=f['base'],**p['explorer'])},
     }
+    if runtime_root is not None:
+        result['vision_explorer']['ros__parameters']['scan_bt_path']=str(Path(runtime_root).resolve()/'scan_bt.xml')
     if d['candidate_selector']=='deepseek':
         result['mission_brain']={'ros__parameters':dict(common,mission_state_topic=t['mission'],
             context_topic='/mission/context',candidates_topic='/exploration/candidates',decision_topic='/brain/decision')}
@@ -110,6 +113,19 @@ def configure_navigation(root,p):
         params=config[name][name]['ros__parameters'];params['robot_radius']=n['robot_radius_m']
         params['inflation_layer']['inflation_radius']=n['inflation_radius_m']
     config['controller_server']['ros__parameters']['FollowPath']['desired_linear_vel']=n['desired_linear_velocity_mps']
+    controller=config['controller_server']['ros__parameters']
+    if 'scan_goal_checker' not in controller['goal_checker_plugins']:
+        controller['goal_checker_plugins'].append('scan_goal_checker')
+    controller['scan_goal_checker']=dict(plugin='nav2_controller::SimpleGoalChecker',stateful=True,
+                                         xy_goal_tolerance=.2,yaw_goal_tolerance=.15)
+    (root/'scan_bt.xml').write_text('''<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree"><Sequence name="BoundedInPlaceScan">
+    <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+    <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="scan_goal_checker"/>
+    <Wait wait_duration="0.5"/>
+  </Sequence></BehaviorTree>
+</root>
+''')
     path.write_text(yaml.safe_dump(config,sort_keys=False))
     path=root/'slam.yaml';slam=yaml.safe_load(path.read_text())['slam_toolbox']['ros__parameters']
     slam.update(scan_topic=t['scan'],base_frame=f['base'],odom_frame=f['odom'],map_frame=f['map'])

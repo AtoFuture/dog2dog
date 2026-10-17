@@ -59,6 +59,8 @@ mission:
   home_y: 0.0
   home_yaw: 0.0
 explorer:
+  max_bootstrap_scans: 3
+  require_path_clearance: true
   task_completion_enabled: true
   exploration_budget_s: 900.0
   coverage_stall_s: 180.0

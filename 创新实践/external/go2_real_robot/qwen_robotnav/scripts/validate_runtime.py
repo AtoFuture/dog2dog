@@ -21,12 +21,13 @@ from std_msgs.msg import String
 from tf2_msgs.msg import TFMessage
 from tf2_ros import Buffer,TransformListener
 from qwen_robotnav.runtime_profile import load_profile,profile_hash
+from qwen_robotnav.static_scenarios import load_scene,quaternion_rpy,compose_pose,inverse_pose
 
 
 class Observer(Node):
     def __init__(self,profile):
         super().__init__('runtime_validation_observer');self.profile=profile
-        self.poses=[];self.events=[];self.returns=[];self.states=[];self.status=[];self.command_samples=[];self.latest_map=None;self.first_area=None;self.exploration_results=[];self.operator_commands=[]
+        self.truth_pose=None;self.poses=[];self.events=[];self.returns=[];self.states=[];self.status=[];self.command_samples=[];self.latest_map=None;self.first_area=None;self.exploration_results=[];self.operator_commands=[]
         self.tf=Buffer();self.listener=TransformListener(self.tf,self)
         self.create_subscription(String,'/g3/exploration_result',lambda m:self.exploration_results.append(json.loads(m.data)),QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.command_pub=self.create_publisher(String,profile['topics']['command'],10)
@@ -45,9 +46,22 @@ class Observer(Node):
     def truth(self,msg):
         for t in msg.transforms:
             if t.child_frame_id=='robot1_my_bot':
-                p=t.transform.translation;self.poses.append((time.monotonic(),p.x,p.y,p.z))
+                p=t.transform.translation;now=time.monotonic();self.poses.append((now,p.x,p.y,p.z))
+                self.truth_pose=(now,p.x,p.y,quaternion_rpy(t.transform.rotation)[2])
+
+    def register_home(self):
+        tr=self.tf.lookup_transform(self.profile['frames']['map'],self.profile['frames']['base'],Time()).transform
+        if self.truth_pose is None or time.monotonic()-self.truth_pose[0]>.5:
+            raise RuntimeError('Fresh truth pose required for independent home reference')
+        map_body=(tr.translation.x,tr.translation.y,quaternion_rpy(tr.rotation)[2])
+        world_from_map=compose_pose(self.truth_pose[1:],inverse_pose(map_body))
+        mission=self.profile['mission']
+        return compose_pose(world_from_map,(mission['home_x'],mission['home_y'],mission['home_yaw']))
 
     def mapping(self,msg):
+        if (msg.info.width<=0 or msg.info.height<=0 or len(msg.data)!=msg.info.width*msg.info.height
+            or not math.isfinite(msg.info.resolution) or msg.info.resolution<=0):
+            return
         self.latest_map=msg
         if self.first_area is None:self.first_area=sum(v>=0 for v in msg.data)*msg.info.resolution**2
 
@@ -60,6 +74,8 @@ def main():
     p.add_argument('--mission-instruction')
     p.add_argument('--autonomous-completion',action='store_true',help='Observe runtime termination; never send RETURN')
     a=p.parse_args();profile=load_profile(a.profile);root=a.output_dir.resolve();topics=profile['topics']
+    scene=load_scene(root) if (root/'static_scene.json').exists() else None
+    if scene and not a.autonomous_completion:p.error('Static fixtures require autonomous completion')
     if a.expected_domain in (0,42,43) or os.environ.get('ROS_DOMAIN_ID')!=str(a.expected_domain) or not os.environ.get('IGN_PARTITION') or a.goals<1:p.error('Require isolated Gazebo domain and positive goals')
     rclpy.init(args=['--ros-args','-p','use_sim_time:=true','-r','/tf:='+topics['tf'],'-r','/tf_static:='+topics['tf_static']],signal_handler_options=SignalHandlerOptions.NO)
     def interrupted(sig,frame):raise KeyboardInterrupt
@@ -75,6 +91,7 @@ def main():
             executor.spin_once(timeout_sec=.05)
             if runtime is not None and runtime.poll() is not None:raise RuntimeError('Standalone runtime exited')
             if recorder is not None and recorder.poll() is not None:raise RuntimeError('Recorder exited early')
+            if node.states and node.states[-1]=='estop':raise RuntimeError('Runtime entered ESTOP before mission acceptance')
             if predicate():return
         raise RuntimeError('Runtime validation deadline')
     runtime_args=[]
@@ -84,7 +101,6 @@ def main():
         start(['/opt/ros/humble/lib/ros_gz_bridge/parameter_bridge','/world/world_demo/pose/info@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
             '--ros-args','-r','__node:=runtime_truth_observer','-r','/world/world_demo/pose/info:=/frontier_trial/gt_pose'],'gt_bridge.log')
         wait(lambda:node.poses and .18<node.poses[-1][3]<.35,150)
-        baseline=node.poses[-1]
         recorder=start(['ros2','bag','record','--include-hidden-topics','-o',str(root/'bag'),'/clock',
             *topics.values(),'/exploration/events','/g3/return_event','/g3/recovery_event','/frontier_trial/gt_pose',
             '/navigation/handoff_request','/navigation/handoff_ack','/g3/exploration_session','/exploration/completion','/g3/exploration_result','/brain/decision','/mission/context','/exploration/candidates',topics['action']+'/_action/status'],'bag.log')
@@ -105,6 +121,9 @@ def main():
         # Wait for G3 localization debounce before allowing exploration.
         end=time.monotonic()+4
         while time.monotonic()<end:executor.spin_once(timeout_sec=.05)
+        # Register the configured map home after localization is ready, using
+        # paired measured poses. Startup settling is not the navigation origin.
+        baseline=node.register_home()
         node.command('EXPLORE')
         wait(lambda:'exploring' in node.states,10)
         if a.autonomous_completion:
@@ -116,14 +135,17 @@ def main():
         wait(lambda:node.states[-1]=='standby',5)
         end=time.monotonic()+2
         while time.monotonic()<end:executor.spin_once(timeout_sec=.05)
-        error=math.dist(node.poses[-1][1:3],baseline[1:3])
-        report=dict(success=error<=.4,candidate_selector=profile['decision']['candidate_selector'],truth_home_error_m=error,profile_sha256=profile_hash(profile),
+        error=math.dist(node.poses[-1][1:3],baseline[:2])
+        report=dict(success=error<=.4,candidate_selector=profile['decision']['candidate_selector'],truth_home_error_m=error,truth_home_reference=baseline,home_reference_method='configured_map_home_at_exploration_start',profile_sha256=profile_hash(profile),
             completed_goals=sum(e['status']=='succeeded' and e.get('geodesic_dist_m',0)>=.75 for e in node.events),
             observer_publishes_velocity=False,actuator_publishers=[v.node_name for v in publishers],
             runtime_uses_ground_truth=False,guard_moving_outputs=max((s['moving_outputs'] for s in node.status),default=0),
             initial_known_area_m2=node.first_area,final_known_area_m2=sum(v>=0 for v in node.latest_map.data)*node.latest_map.info.resolution**2)
     except (Exception,KeyboardInterrupt) as exc:report=dict(success=False,error=str(exc))
     finally:
+        # Repeated outer cleanup signals must not interrupt recorder finalization.
+        signal.signal(signal.SIGINT,signal.SIG_IGN)
+        signal.signal(signal.SIGTERM,signal.SIG_IGN)
         node.command('ESTOP')
         end=time.monotonic()+1
         while time.monotonic()<end:executor.spin_once(timeout_sec=.05)
@@ -137,7 +159,7 @@ def main():
                 os.killpg(child.pid,signal.SIGTERM)
                 try:child.wait(timeout=5)
                 except subprocess.TimeoutExpired:os.killpg(child.pid,signal.SIGKILL);child.wait()
-        report.update(autonomous_completion=a.autonomous_completion,operator_commands=node.operator_commands,exploration_results=node.exploration_results,recorder_exit_code=recorder.returncode if recorder else None,runtime_exit_code=runtime.returncode if runtime else None,
+        report.update(static_scenario=scene['scenario'] if scene else None,autonomous_completion=a.autonomous_completion,operator_commands=node.operator_commands,exploration_results=node.exploration_results,recorder_exit_code=recorder.returncode if recorder else None,runtime_exit_code=runtime.returncode if runtime else None,
             recording_complete=(root/'bag/metadata.yaml').is_file(),return_events=node.returns,guard_status=node.status[-1] if node.status else None)
         if report['recorder_exit_code']!=0 or report['runtime_exit_code']!=0 or not report['recording_complete']:report['success']=False
         (root/'report.json').write_text(json.dumps(report,indent=2));print(json.dumps(report),flush=True)

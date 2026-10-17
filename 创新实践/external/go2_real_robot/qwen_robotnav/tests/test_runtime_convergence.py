@@ -78,6 +78,15 @@ def test_guard_process_sends_zero_and_exits_cleanly_before_ros_shutdown(tmp_path
     p=load_profile(ROOT/'config/sim_runtime.yaml')
     peer.create_subscription(Twist,p['topics']['actuator_command'],lambda m:outputs.append((m.linear.x,m.angular.z)),10)
     peer.create_subscription(String,p['topics']['guard_status'],lambda m:statuses.append(m.data),10)
+    from sensor_msgs.msg import LaserScan,Imu,BatteryState
+    from nav_msgs.msg import Odometry
+    publishers=[peer.create_publisher(kind,p['topics'][key],10) for kind,key in (
+        (Twist,'guarded_input'),(String,'mission'),(LaserScan,'scan'),(Odometry,'odometry'),(Imu,'imu'),(BatteryState,'battery'))]
+    messages=[Twist(),String(data='standby'),LaserScan(),Odometry(),Imu(),BatteryState()]
+    def traffic():
+        for publisher,message in zip(publishers,messages):publisher.publish(message)
+    # Stress native take_message at signal arrival; motion remains disabled.
+    peer.create_timer(.005,traffic)
     with (tmp_path/'guard.log').open('w') as log:
         child=subprocess.Popen([sys.executable,'-m','qwen_robotnav_ros.velocity_guard','--profile',str(ROOT/'config/sim_runtime.yaml'),
             '--ros-args','-p','use_sim_time:=true'],stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
@@ -136,3 +145,19 @@ def test_completion_is_enabled_in_both_task_owners_from_same_profile():
     assert params['g3_state_machine']['ros__parameters']['enable_exploration_completion'] is True
     assert params['vision_explorer']['ros__parameters']['max_region_failures']==2
     assert params['vision_explorer']['ros__parameters']['task_completion_enabled'] is True
+
+
+def test_formal_profile_enforces_whole_path_clearance():
+    from qwen_robotnav.runtime_profile import validate_profile
+    profile=load_profile(ROOT/'config/sim_runtime.yaml')
+    assert ros_parameters(profile)['vision_explorer']['ros__parameters']['require_path_clearance'] is True
+    profile['explorer']['require_path_clearance']=False
+    with pytest.raises(ValueError):validate_profile(profile)
+
+
+@pytest.mark.parametrize('value',[0,4,True,1.5])
+def test_formal_scan_bootstrap_is_strictly_bounded(value):
+    from qwen_robotnav.runtime_profile import validate_profile
+    profile=load_profile(ROOT/'config/sim_runtime.yaml')
+    profile['explorer']['max_bootstrap_scans']=value
+    with pytest.raises(ValueError):validate_profile(profile)

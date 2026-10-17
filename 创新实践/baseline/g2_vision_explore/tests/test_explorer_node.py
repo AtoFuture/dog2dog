@@ -221,3 +221,8 @@ def test_yaw_to_quaternion_preserves_frontier_heading(yaw, expected_z, expected_
     assert qz == pytest.approx(expected_z)
     assert qw == pytest.approx(expected_w)
     assert math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw) == pytest.approx(1.0)
+
+
+def test_zero_size_map_is_rejected_instead_of_becoming_a_grid():
+    msg=OccupancyGrid();msg.info.resolution=.05
+    with pytest.raises(ValueError,match='dimensions'):occupancy_to_grid(msg)

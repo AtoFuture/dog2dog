@@ -104,3 +104,35 @@ def test_shutdown_cannot_publish_new_completion_or_resume_from_late_heartbeat(no
     node._on_mission_state(String(data='exploring'))
     node._watch_navigation()
     assert node._completion_pending is None and not node._sm.should_explore
+
+
+def test_in_place_scan_uses_same_goal_owner_without_submitting_frontier_to_brain(node):
+    from pathlib import Path
+    from g2_core.explorer import ExplorerParams,GoalSelector
+    values=np.load(Path(__file__).parent/'fixtures/static_narrow_map.npz')
+    node._grid=GridMap(values['data'],float(values['resolution']),values['origin'])
+    node._selector=GoalSelector(ExplorerParams(require_path_clearance=True,max_bootstrap_scans=3,
+        min_goal_distance_m=.5,min_frontier_area_m2=.04))
+    sent=[];node._send_goal=lambda goal,now:sent.append(goal)
+    node._sm.phase=Phase.SENDING
+    node._request_brain(tuple(values['robot_xy']),0)
+    assert len(sent)==1 and sent[0].purpose=='scan'
+    assert node._brain_pending is None
+
+
+@pytest.mark.parametrize('stop_signal',['SIGINT','SIGTERM'])
+def test_explorer_subprocess_stops_without_interrupting_native_dds_take(tmp_path,stop_signal):
+    import signal,subprocess,sys
+    path=tmp_path/'explorer.log'
+    with path.open('w') as log:
+        child=subprocess.Popen([sys.executable,'-m','vision_explorer.explorer_node'],stdout=log,stderr=subprocess.STDOUT)
+        try:
+            deadline=time.monotonic()+15
+            while time.monotonic()<deadline and '任务状态订阅已启用' not in path.read_text() and child.poll() is None:time.sleep(.05)
+            assert '任务状态订阅已启用' in path.read_text()
+            time.sleep(.1)
+            child.send_signal(getattr(signal,stop_signal))
+            assert child.wait(timeout=5)==0
+            assert 'Traceback' not in path.read_text()
+        finally:
+            if child.poll() is None:child.kill();child.wait()

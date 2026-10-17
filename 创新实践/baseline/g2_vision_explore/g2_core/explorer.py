@@ -163,6 +163,12 @@ class ExplorerParams:
     该值应写进接口契约作为冻结参数。Go2 机身约 70x31 cm，0.45 是偏保守的起步值。
     """
 
+    max_bootstrap_scans: int = 0
+    """Bounded in-place scan goals when sparse initial rays leave no route; zero preserves historical behavior."""
+
+    require_path_clearance: bool = False
+    """Formal runtime checks the whole route against safety_radius_m; archived experiments retain their contract."""
+
     min_goal_distance_m: float = 0.0
     """最小测地目标距离；物理节点默认过滤原地即可成功的近点。"""
 
@@ -236,6 +242,8 @@ class GoalSelector:
         self._blacklist: list[_BlacklistEntry] = []
         self._visits: list[_Visit] = []
         self._region_failures: list[tuple[float, float, int]] = []
+        self._bootstrap_used = 0
+        self._recent_success: list[_BlacklistEntry] = []
 
     # ------------------------------------------------------------------
     # 状态维护
@@ -243,11 +251,14 @@ class GoalSelector:
     def _expire(self, now: float) -> None:
         self._blacklist = [e for e in self._blacklist if e.expires_at > now]
         self._visits = [v for v in self._visits if now - v.at < self.params.visit_history_s]
+        self._recent_success = [e for e in self._recent_success if e.expires_at > now]
 
     def reset_mission(self) -> None:
         self._blacklist.clear()
         self._visits.clear()
         self._region_failures.clear()
+        self._bootstrap_used = 0
+        self._recent_success.clear()
 
     def on_result(self, goal: Goal, success: bool, now: float) -> None:
         """回报一次导航结果。
@@ -258,8 +269,14 @@ class GoalSelector:
         转入 PASSIVE 而不是继续选下一个点 —— 那个判断属于状态机，
         不在本模块（见 docs/框架规划.md §4.3⑤ 与 §10.1）。
         """
+        if goal.purpose == 'scan':
+            self._bootstrap_used += 1
+            return
         if success:
             self._visits.append(_Visit(goal.x, goal.y, now))
+            if self.params.require_path_clearance:
+                self._recent_success.append(_BlacklistEntry(goal.x,goal.y,
+                    now+min(self.params.blacklist_ttl_s,self.params.visit_history_s)))
         else:
             if self.params.max_region_failures:
                 for i, (x, y, count) in enumerate(self._region_failures):
@@ -291,6 +308,10 @@ class GoalSelector:
         所以直接抛。
         """
         p = self.params
+        if type(p.max_bootstrap_scans) is not int or not 0<=p.max_bootstrap_scans<=3:
+            raise ValueError('max_bootstrap_scans must be 0..3')
+        if type(p.require_path_clearance) is not bool:
+            raise ValueError('require_path_clearance must be boolean')
         if not math.isfinite(p.min_goal_distance_m) or p.min_goal_distance_m < 0:
             raise ValueError("min_goal_distance_m must be finite and non-negative")
         if p.goal_pullback_m < p.safety_radius_m:
@@ -325,7 +346,8 @@ class GoalSelector:
         if self.params.max_region_failures:
             excluded += [(x, y) for x, y, count in self._region_failures
                          if count >= self.params.max_region_failures]
-        if not excluded or candidates.size == 0:
+        recent = self._recent_success if self.params.require_path_clearance else []
+        if (not excluded and not recent) or candidates.size == 0:
             return candidates
 
         wx, wy = grid.grid_to_world(candidates[:, 0].astype(float),
@@ -335,6 +357,9 @@ class GoalSelector:
         for x, y in excluded:
             blocked |= (wx - x) ** 2 + (wy - y) ** 2 < radius2
 
+        repeat_radius=max(.25,self.params.min_goal_distance_m)
+        for visit in recent:
+            blocked |= (wx-visit.x)**2+(wy-visit.y)**2 < repeat_radius**2
         return candidates[~blocked]
 
     def _local_frontier_centroid(
@@ -423,6 +448,39 @@ class GoalSelector:
     # ------------------------------------------------------------------
     # 主入口
     # ------------------------------------------------------------------
+    def _path_free(self, grid: GridMap, start, clearance):
+        safe = grid.traversable & (clearance >= self.params.safety_radius_m)
+        if not self.params.require_path_clearance:
+            return grid.traversable
+        if safe[start]:
+            return safe
+        # A stationary robot can have unknown cells inside its mapped footprint.
+        # Permit only a 0.30m egress through observed free cells, retaining the
+        # full safety radius to every observed obstacle. This cannot open a slit.
+        observed = GridMap(np.where(grid.occupied, 100, 0), grid.resolution, grid.origin)
+        obstacle_clearance = observed.clearance_m()
+        rr, cc = np.indices(grid.data.shape)
+        egress = (np.hypot(rr-start[0], cc-start[1])*grid.resolution <= .30)
+        egress &= grid.traversable & (clearance >= min(.26, self.params.safety_radius_m))
+        egress &= obstacle_clearance >= self.params.safety_radius_m
+        return safe | egress
+
+    def _scan_goal(self, grid, start, robot_xy):
+        if not self.params.require_path_clearance or self._bootstrap_used >= self.params.max_bootstrap_scans:
+            return None
+        if not self._scan_pose_safe(grid, start):
+            return None
+        # Map-frame headings differ by at least 60 degrees. Even if the first
+        # already matches the current heading, a subsequent one adds real views.
+        heading = (math.pi/6, -math.pi/6, math.pi/2)[self._bootstrap_used]
+        return Goal(robot_xy[0], robot_xy[1], heading, -1, 0., 0., 0., purpose='scan')
+
+    def _scan_pose_safe(self, grid, start):
+        if not grid.traversable[start] or grid.clearance_m()[start] < min(.26,self.params.safety_radius_m):
+            return False
+        observed=GridMap(np.where(grid.occupied,100,0),grid.resolution,grid.origin)
+        return bool(observed.clearance_m()[start] >= self.params.safety_radius_m)
+
     def select(
         self,
         grid: GridMap,
@@ -462,11 +520,15 @@ class GoalSelector:
                 return GoalSelection(SelectStatus.SMALL_FRONTIERS)
             return GoalSelection(SelectStatus.NO_FRONTIER)
 
-        dist = geodesic_distance(grid.traversable, start, p.max_geodesic_radius_cells)
-
-        # 可作目标点的格：可通行，且周围留得下机器人（与 Nav2 膨胀半径同源）
+        # Endpoint clearance alone allows paths through lidar-visible slits.
         clearance = grid.clearance_m()
         valid_goal = grid.traversable & (clearance >= p.safety_radius_m)
+        path_free = self._path_free(grid, start, clearance)
+        if p.require_path_clearance and p.min_goal_distance_m > 0:
+            rr,cc=np.indices(grid.data.shape)
+            wx,wy=grid.grid_to_world(rr,cc)
+            valid_goal &= np.hypot(wx-robot_xy[0],wy-robot_xy[1]) >= p.min_goal_distance_m
+        dist = geodesic_distance(path_free, start, p.max_geodesic_radius_cells)
 
         uf_map = self._unknown_fraction_map(grid)
 
@@ -488,7 +550,7 @@ class GoalSelector:
             grid, clusters, dist, valid_goal, uf_map, pullback_cells, kernel, now, max_candidates, separation_m
         )
         if not best and p.max_geodesic_radius_cells is not None:
-            dist_full = geodesic_distance(grid.traversable, start, None)
+            dist_full = geodesic_distance(path_free, start, None)
             best = self._best_in_clusters(
                 grid, clusters, dist_full, valid_goal, uf_map, pullback_cells, kernel, now, max_candidates, separation_m
             )
@@ -499,6 +561,9 @@ class GoalSelector:
                 dist = dist_full
 
         if not best:
+            scan = self._scan_goal(grid, start, robot_xy)
+            if scan is not None:
+                return GoalSelection(SelectStatus.GOAL, scan, (scan,))
             return GoalSelection(SelectStatus.NO_CANDIDATE)
         return GoalSelection(SelectStatus.GOAL, best[0], tuple(best))
 
@@ -578,12 +643,21 @@ class GoalSelector:
         row, col = (math.floor(v) for v in grid.world_to_grid(goal.x, goal.y))
         if start is None or not (0 <= row < grid.height and 0 <= col < grid.width):
             return False
+        if goal.purpose == 'scan':
+            return bool(math.hypot(goal.x-robot_xy[0],goal.y-robot_xy[1]) <= .1
+                        and self._scan_pose_safe(grid,start)
+                        and self._bootstrap_used < self.params.max_bootstrap_scans)
+        if (self.params.require_path_clearance and goal.purpose=='frontier'
+            and math.hypot(goal.x-robot_xy[0],goal.y-robot_xy[1]) < self.params.min_goal_distance_m):
+            return False
         if not grid.traversable[row, col] or grid.clearance_m()[row, col] < self.params.safety_radius_m:
             return False
         cells = np.array([[row, col]])
         if not len(self._filter_blacklisted(grid, cells)):
             return False
         traversable=grid.traversable
+        if self.params.require_path_clearance and goal.purpose == 'frontier':
+            traversable = self._path_free(grid, start, grid.clearance_m())
         if goal.purpose in ('observe_occlusion','observe_targets'):
             start=tuple(math.floor(v) for v in grid.world_to_grid(*robot_xy))
             if not grid.in_bounds(*start) or not grid.traversable[start]:return False

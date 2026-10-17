@@ -158,7 +158,7 @@ def main():
     configure_navigation(root, profile)
     snapshot = root / "runtime_profile.yaml"
     snapshot.write_text(yaml.safe_dump(profile, sort_keys=False))
-    runtime_parameters = ros_parameters(profile)
+    runtime_parameters = ros_parameters(profile, root)
     params = root / "runtime_ros_params.yaml"
     params.write_text(yaml.safe_dump(runtime_parameters, sort_keys=False))
 

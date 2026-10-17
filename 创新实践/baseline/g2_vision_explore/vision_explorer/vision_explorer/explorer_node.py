@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import json
+import signal
 from functools import partial
 import time
 import uuid
@@ -72,6 +73,9 @@ def occupancy_to_grid(msg: OccupancyGrid) -> GridMap:
     ValueError
         shape 与 ``info`` 对不上，或 resolution 非正（``GridMap`` 会校验）。
     """
+    if (msg.info.width <= 0 or msg.info.height <= 0
+        or not math.isfinite(msg.info.resolution) or msg.info.resolution <= 0):
+        raise ValueError('map dimensions and resolution must be positive and finite')
     data = np.asarray(msg.data, dtype=np.int8)
     expected = msg.info.height * msg.info.width
     if data.size != expected:
@@ -166,6 +170,8 @@ class VisionExplorer(Node):
 
         if (p['active_observation'] or p['track_observation']) and (not p['use_mission_brain'] or not Path(p['observation_bt_path']).is_file()):
             raise ValueError('Active observation requires mission brain and a generated observation BT file')
+        if p['max_bootstrap_scans'] > 0 and not Path(p['scan_bt_path']).is_file():
+            raise ValueError('Bootstrap scans require a generated scan BT with a yaw-aware goal checker')
         self._progress_limits = ProgressLimits(**{key: p[key] for key in ProgressLimits.__dataclass_fields__})
         self._progress = None
         self._completion_pending = None
@@ -174,7 +180,7 @@ class VisionExplorer(Node):
         self._selection_frame_id = None
         self._sm = ExplorerStateMachine()
         # 安全与增益参数沿用内核默认值，物理目标的最小距离由 ROS 参数指定。
-        self._selector = GoalSelector(ExplorerParams(min_goal_distance_m=p['min_goal_distance_m']))
+        self._selector = GoalSelector(ExplorerParams(min_goal_distance_m=p['min_goal_distance_m'], require_path_clearance=p['require_path_clearance'],max_bootstrap_scans=p['max_bootstrap_scans']))
 
         self._grid: GridMap | None = None
         self._grid_stamp: float = -math.inf
@@ -240,6 +246,9 @@ class VisionExplorer(Node):
             ("require_mission_state", False),
             ("map_timeout_s", 20.0),
             ("min_goal_distance_m", 0.5),
+            ("require_path_clearance", False),
+            ("max_bootstrap_scans", 0),
+            ("scan_bt_path", ""),
             ("use_mission_brain", False),
             ("brain_timeout_s", 15.0),
             ("brain_max_candidates", 6),
@@ -256,7 +265,7 @@ class VisionExplorer(Node):
         return {n: self.get_parameter(n).value for n in (
             "map_topic", "mission_state_topic", "nav_action", "tick_period_s",
             "max_nav_timeout_s", "robot_frame", "map_frame",
-            "min_frontier_area_m2", "require_mission_state", "map_timeout_s", "min_goal_distance_m",
+            "min_frontier_area_m2", "require_mission_state", "map_timeout_s", "min_goal_distance_m", "require_path_clearance", "max_bootstrap_scans", "scan_bt_path",
             "use_mission_brain", "brain_timeout_s", "brain_max_candidates", "mission_instruction",
             "active_observation", "track_observation", "observation_bt_path", "task_completion_enabled",
             *ProgressLimits.__dataclass_fields__)}
@@ -494,6 +503,11 @@ class VisionExplorer(Node):
             self._sm.on_select_failed(result.is_complete and getattr(self, '_progress', None) is None)
             self._track_select_failure()
             return
+        if result.goal.purpose == 'scan':
+            # An in-place measurement action has no frontier ranking decision.
+            self._sm.on_goal_sent()
+            self._send_goal(result.goal, now)
+            return
         request_id = uuid.uuid4().hex
         goals = {f'f{i}': goal for i, goal in enumerate(result.candidates)}
         budget = float(self._p()['brain_timeout_s'])
@@ -638,7 +652,9 @@ class VisionExplorer(Node):
                 self._progress.navigation_result(False)
             return
         msg = NavigateToPose.Goal()
-        if goal.purpose in ('observe_occlusion','observe_targets'):
+        if goal.purpose == 'scan':
+            msg.behavior_tree = self._p()['scan_bt_path']
+        elif goal.purpose in ('observe_occlusion','observe_targets'):
             path=self._p().get('observation_bt_path','')
             if not path:
                 self._sm.on_goal_result(False)
@@ -702,9 +718,9 @@ class VisionExplorer(Node):
         success = status == 'succeeded'
         if not attempt['cancel'] or attempt['reason'] == 'timeout':
             self._selector.on_result(attempt['goal'], success, self._now())
-            if getattr(self, '_progress', None) is not None:
+            if getattr(self, '_progress', None) is not None and (attempt['goal'].purpose != 'scan' or not success):
                 self._progress.navigation_result(success)
-            if success:
+            if success and attempt['goal'].purpose != 'scan':
                 self._selector.mark_visited(attempt['goal'].x,attempt['goal'].y,self._now())
         self._attempt = self._goal = self._goal_handle = None
         self._sm.on_goal_result(success)
@@ -806,8 +822,16 @@ class VisionExplorer(Node):
 def main(args=None) -> None:
     rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
     node = VisionExplorer()
+    stopping = False
+    def request_stop(signum, frame):
+        nonlocal stopping
+        stopping = True
+    # Do not raise an asynchronous Python exception inside a native DDS take.
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
     try:
-        rclpy.spin(node)
+        while rclpy.ok() and not stopping:
+            rclpy.spin_once(node, timeout_sec=.1)
     except KeyboardInterrupt:
         pass
     finally:

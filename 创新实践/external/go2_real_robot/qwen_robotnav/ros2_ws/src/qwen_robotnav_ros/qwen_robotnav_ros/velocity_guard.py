@@ -104,10 +104,14 @@ def main(args=None):
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--profile',required=True)
     parser.add_argument('--enable-motion',action='store_true');a,ros=parser.parse_known_args(args)
     profile=load_profile(a.profile);rclpy.init(args=ros,signal_handler_options=SignalHandlerOptions.NO)
-    def interrupted(sig,frame):raise KeyboardInterrupt
-    signal.signal(signal.SIGINT,interrupted);signal.signal(signal.SIGTERM,interrupted)
+    stopping=False
+    def request_stop(sig,frame):
+        nonlocal stopping
+        stopping=True
+    signal.signal(signal.SIGINT,request_stop);signal.signal(signal.SIGTERM,request_stop)
     node=VelocityGuard(profile,a.enable_motion)
-    try:rclpy.spin(node)
+    try:
+        while rclpy.ok() and not stopping:rclpy.spin_once(node,timeout_sec=.05)
     except KeyboardInterrupt:pass
     finally:
         node.policy.enabled=False

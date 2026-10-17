@@ -83,4 +83,9 @@ def test_generated_nav2_uses_profile_geometry_and_speed(tmp_path):
         layer=config[name][name]['ros__parameters']
         assert layer['robot_radius']==.45 and layer['inflation_layer']['inflation_radius']==.7
     assert config['controller_server']['ros__parameters']['FollowPath']['desired_linear_vel']==.15
+    controller=config['controller_server']['ros__parameters']
+    assert controller['general_goal_checker']['yaw_goal_tolerance']==6.28
+    assert controller['scan_goal_checker']['yaw_goal_tolerance']==.15
+    assert 'scan_goal_checker' in (tmp_path/'scan_bt.xml').read_text()
+    assert ros_parameters(p,tmp_path)['vision_explorer']['ros__parameters']['scan_bt_path']==str(tmp_path/'scan_bt.xml')
     assert yaml.safe_load((tmp_path/'slam.yaml').read_text())['slam_toolbox']['ros__parameters']['scan_topic']==p['topics']['scan']
