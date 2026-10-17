@@ -65,10 +65,18 @@
 
 ---
 
-## 当前状态 · 2026-09-27
+## 当前状态 · 2026-09-27（2026-10-17 复核注记）
 
 > 这一节是**以代码为准**重新核对的结论。下面「实验记录」是历史流水，
 > 其中 09-20 那条 costmap 的结论**已被推翻**（见 §未提交改动 第 1 条）。
+>
+> **2026-10-17 收尾复核**：下表第 1 行是 G3 报告的 action 状态，报告本身
+> 没有真值 ATE/覆盖率/返航指标；第 2 行找不到 `goal_check.json` 侧写；
+> 第 3 行的 bag 实际只有 **86.796 s**，低于 `gt_compare.py` 的 120 s 门槛。
+> **不能把本表当作 P1/P2 验收达标的证据。** 另：`config/go2_nav2.yaml:85`
+> 的 `bt_navigator.odom_topic` 实际是 `/g1/ground_truth`，不是下方第 101 行
+> 写的 `/robot1/odom`。详见 `docs/问题-G1-建图导航.md` 的
+> 「2026-10-17 收尾复核新增」与 `docs/收尾与演示.md`。
 
 ### 已验证通过
 
@@ -92,13 +100,16 @@
 
 ## ⚠️ 未提交改动（2026-09-25，有丢失风险）
 
+> **2026-10-15 更新**：以下修复已由 `dc156dd`/`f9dc359` 等提交入库
+> （顶层 README 核实）。本节保留用于追溯当时的改动内容与原因。
+
 以下 5 个文件**已改未提交**，`git checkout` 一下即丢失。它们修的是
 「在此之前所有实验结果都建立在其上的」基座，务必先提交再跑新实验。
 
 | # | 文件 | 改了什么 | 为什么关键 |
 |---|---|---|---|
 | 1 | `config/go2_nav2.yaml` | local/global costmap 的 scan topic：相对名 `velodyne` → **绝对名 `/robot1/velodyne`** | **避障一直是失效的。** 相对名在 costmap 节点里解析成 `/robot1/local_costmap/velodyne`（**无发布者**），实测 local_costmap 的 3600/3600 cell **全 free** |
-| 2 | `config/go2_nav2.yaml` | `bt_navigator.odom_topic`：`/odom` → `/robot1/odom` | 原名**Publisher count = 0**，狗的里程计发在 `/robot1/odom` |
+| 2 | `config/go2_nav2.yaml` | `bt_navigator.odom_topic`：`/odom` → `/robot1/odom` | 原名**Publisher count = 0**，狗的里程计发在 `/robot1/odom`。**2026-10-17 复核：当前实际值为 `/g1/ground_truth`，见问题清单 H7** |
 | 3 | `config/go2_nav2.yaml` | AMCL 加 `set_initial_pose: true` + 基站位姿 | 原配置整份没有该项，AMCL 必须靠外部发 `/robot1/initialpose` 才出 `map→odom`；不发就永远不出，规划直接失败 |
 | 4 | `config/go2_nav2.yaml` | 末尾 `slam_toolbox:` 段 | **键名两套说法冲突**，见下 |
 | 5 | `maps/live_warehouse_20260919.yaml` | `free_thresh` 0.25 → **0.196** | 0.25 会把 10.5% 未知区静默判成可通行；**P2 的 frontier 依赖未知栅格**，图里没有未知就没有 frontier |

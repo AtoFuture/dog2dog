@@ -43,6 +43,9 @@ bash tools/run_tests.sh
 需要先构建 `baseline/interfaces`，不在测试入口中安装依赖或启动仿真。
 
 2026-10-15 复核：容器系统 Python 下 **247 passed**，包含探索节点和检测消息测试。
+2026-10-17 复核：轨迹净空验证轮 G2 全量 **325 passed**（日志
+`.runtime/trajectory_g2_final_v3_tests.log`）；2026-10-16 自主闭环轮为 304。
+不同轮次、不同提交的计数不要相加或混用，引用时以当轮日志和提交为准。
 本地 `.venv` 缺 PyYAML、Ultralytics，宿主 ROS 缺 Nav2 消息和 cv_bridge，
 因此直接使用这些环境会在收集或依赖检查阶段失败。部分旧版 pytest 会提示
 不认识 `pythonpath` 配置项，入口已通过 `PYTHONPATH` 显式提供源码路径。

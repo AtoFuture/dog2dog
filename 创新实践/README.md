@@ -83,39 +83,33 @@ open docs/课题12-机器狗自主侦查计划.html   # 可视化版本
 
 ## 当前状态
 
-> **最后核对：2026-09-27，以代码与运行产物为准。**
-> 此前多份文档长期滞后于代码（返航、costmap、地图阈值三处结论都是反的），
-> 遇到文档与代码不一致时**以代码为准**，并顺手改文档。
-> 执行主线见 `docs/项目验证修复与智能大脑集成计划.md` 的 P0–P6。
+> **最后核对：2026-10-17。以代码、运行日志与报告 JSON 为准。**
+> 完整收尾结论、演示步骤与证据见 [`docs/收尾与演示.md`](docs/收尾与演示.md)。
+> 历史结论被推翻时保留原文并标注，不静默改绿。
 
-### 已经跑通的
+### 已经跑通、可以演示
 
 | 能力 | 证据 |
 |---|---|
-| 仿真导航 | 09-26 `terrain_longrun`：**11/11 目标点成功**，341 s，无 abort |
-| 低电量自动返航 | 09-26 两次联调，`return_success_rate = 1.0`（电量跨 0.20 阈值自动触发） |
-| G3 → G2 抢占时序 | 09-26 联调：先广播 `returning`，G2 让出导航权，返航 goal 随后成功 |
-| 单元测试 | G2 **247 passed** / G3 **129 passed**（2026-09-27 复核） |
+| 统一运行栈探索 → 返航 | `.runtime/trajectory_baseline_v5`：18/18 项通过，2 个有效目标、3 次真实 DeepSeek/0 回退、身体归位 0.305 m、7 个子进程 exit 0 |
+| 自主结束探索 | `.runtime/autonomous_completion_v1`：15/15 项通过，`time_budget` 自动结束，7 个完成目标/5 个有效目标，返航真值误差 0.2338 m |
+| G3 状态机 / 低电量返航 / 取消交接 | `/home/wy/g3_bags/auto_discharge_return_*`（`return_success_rate=1.0`）；`trajectory_suite_v4/unreachable_1` 的 EXPLORE→RETURN→ESTOP 与取消事件链 |
+| DeepSeek 候选排序 + 确定性回退 | 统一运行栈 `mission_brain` + G2 复核；上述两次验收均为 0 次回退 |
+| 浏览器仿真工作台 | 2026-10-17 实测：VNC 真实画面 1000×707、地图/位姿/电量/任务/guard 实时值、交互/仅查看、找机器狗、重连、移动端；`browser-run.log` 9/9，`camera-interaction-check.log` 交互位移 2.953 / 仅查看 0.000 |
 | 设备盘点 | `docs/设备清单.md`：Go2 **EDU**，含传感器规格与安装位 |
 
-运行证据在 `/home/wy/g3_bags/`（三个 bag + 各自的报告 JSON 与节点日志）、
-`/home/wy/g3_reports/`、`/home/wy/g1_bags/p1_20260923/`。
+运行证据在 `/home/wy/data1/.runtime/`、`/home/wy/g3_bags/`、`/home/wy/g3_reports/`、
+`/home/wy/g1_bags/p1_20260923/`。网页证据在 `.runtime/web_console_demo/console/`。
 
-### 没跑过的（真正的缺口）
+### 重要缺口（不能按「验收达标」交付）
 
 | 缺口 | 说明 |
 |---|---|
-| **检测链路进联调** | 三个 bag 里**没有任何检测话题**；`detector_node` 从未与 G1/G3 同跑。检出率/误检率指标全为 `unavailable` |
-| **连续 frontier 探索** | 两次联调各只发出 **1 个**探索点就被返航打断，P2 的「连续 5 个 frontier goal」从未被检验 |
-| **边跑边建图** | `--slam` 通路已搭好，但无任何验证证据；且 slam 参数键名在同一文件里有两套互相矛盾的说法 |
-| **Mission Brain 接入** | `/mission/context` 与 `/exploration/candidates` **无发布者**，`/brain/decision` **无订阅者**——Brain 节点是孤岛 |
-| 覆盖率 / ATE | 三次运行都没提供参考图与真值轨迹 |
-
-### ⚠️ 未提交的改动（有丢失风险）
-
-`baseline/g1_mapping_nav/` 下有 5 个文件已改**未提交**，含三处关键修复——
-尤其「costmap 避障一直是失效的」。`git checkout` 一下即丢失。
-详见 `baseline/g1_mapping_nav/README.md` 的「未提交改动」一节。
+| **G1 边跑边建图（P1 第 5 项）** | `tools/nav2_scaled.launch.py` 的 `scan_topic` 仍为 `/scan`，且 `--slam` 时 AMCL+map_server 仍启动，与独立 slam_toolbox 争 `/map`/`map→odom`；无 `slam_e2e` 运行产物 |
+| **静态场景矩阵** | `static_suite_v3` 与 `trajectory_suite_v4` 均为 **3/6**；窄通道归位/净空、不可达场景终止原因未稳定通过 |
+| **检测进正式运行栈** | 正式入口只启动 `vision_explorer`；检测/侦察/倒地仍在 `SLAM_LEGACY_VALIDATION=1` 的 legacy 入口 |
+| **真机** | 视频 QoS/payload/时间戳、CameraInfo、深度/点云、外参、Foxy/Humble 兼容均未验证 |
+| **指标口径** | 部分历史报告没有参考图或真值轨迹，ATE/覆盖率/检出率仍可能是 `unavailable`；不能把 action 成功当作真值到点 |
 
 ### 里程碑
 
@@ -125,7 +119,11 @@ open docs/课题12-机器狗自主侦查计划.html   # 可视化版本
 - [x] 设备盘点（Go2 EDU，`docs/设备清单.md`）
 - [x] 第 1 周：仿真传感器链路验证（`/scan`、`/odom`、`/tf` 打通）
 - [x] 可信运动闭环：真值判定的到点误差与静止零漂移
-- [ ] 接口契约冻结（`/mission_state` 还是 `/mission/state` 仍未拍板）
-- [ ] 边建图边探索（P1 第 5 项 + P2）
-- [ ] 目标检测进联调（P3）
-- [ ] Mission Brain 接入数据流（P4）
+- [x] 接口契约冻结：对外统一使用 `/mission_state`
+- [x] 统一运行栈 + Mission Brain 接入（DeepSeek 排序 + 确定性回退）
+- [x] 自主结束探索与有界恢复（`time_budget` 实跑）
+- [x] 浏览器仿真工作台（实时画面 + ROS 遥测 + 交互）
+- [ ] 边建图边探索（P1 第 5 项）
+- [ ] 静态场景矩阵全部通过
+- [ ] 目标检测进入正式运行栈
+- [ ] 真机分级上车
