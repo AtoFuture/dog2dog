@@ -96,6 +96,7 @@ open docs/课题12-机器狗自主侦查计划.html   # 可视化版本
 | G3 状态机 / 低电量返航 / 取消交接 | `/home/wy/g3_bags/auto_discharge_return_*`（`return_success_rate=1.0`）；`trajectory_suite_v4/unreachable_1` 的 EXPLORE→RETURN→ESTOP 与取消事件链 |
 | DeepSeek 候选排序 + 确定性回退 | 统一运行栈 `mission_brain` + G2 复核；上述两次验收均为 0 次回退 |
 | 浏览器仿真工作台 | 2026-10-17 实测：VNC 真实画面 1000×707、地图/位姿/电量/任务/guard 实时值、交互/仅查看、找机器狗、重连、移动端；`browser-run.log` 9/9，`camera-interaction-check.log` 交互位移 2.953 / 仅查看 0.000 |
+| G1 SLAM 边跑边建图（P1 第 5 项） | 2026-10-17 **单次 e2e 通过**：真值走 3.007 m，地图 3.7→41.4 m²，7 次更新中 5 次「狗在动且同时增长」；证据 `.runtime/g1_slam_e2e_20261017/` |
 | 设备盘点 | `docs/设备清单.md`：Go2 **EDU**，含传感器规格与安装位 |
 
 运行证据在 `/home/wy/data1/.runtime/`、`/home/wy/g3_bags/`、`/home/wy/g3_reports/`、
@@ -105,7 +106,7 @@ open docs/课题12-机器狗自主侦查计划.html   # 可视化版本
 
 | 缺口 | 说明 |
 |---|---|
-| **G1 边跑边建图（P1 第 5 项）** | `tools/nav2_scaled.launch.py` 的 `scan_topic` 仍为 `/scan`，且 `--slam` 时 AMCL+map_server 仍启动，与独立 slam_toolbox 争 `/map`/`map→odom`；无 `slam_e2e` 运行产物 |
+| **G1 边跑边建图（P1 第 5 项）** | 单次 e2e 已通过（2026-10-17），但**未重复、未覆盖不同场景/长距离**；且 `go2_nav2.yaml` 的 `bt_navigator.odom_topic=/g1/ground_truth` 仍是真值进环，需专项评审。SLAM 仿真必须用顶层 `gazebo_nav2.launch.py` 起，手工 `ign gazebo` 不加载 `gz_ros2_control` |
 | **静态场景矩阵** | `static_suite_v3` 与 `trajectory_suite_v4` 均为 **3/6**；窄通道归位/净空、不可达场景终止原因未稳定通过 |
 | **检测进正式运行栈** | 正式入口只启动 `vision_explorer`；检测/侦察/倒地仍在 `SLAM_LEGACY_VALIDATION=1` 的 legacy 入口 |
 | **真机** | 视频 QoS/payload/时间戳、CameraInfo、深度/点云、外参、Foxy/Humble 兼容均未验证 |
@@ -123,7 +124,7 @@ open docs/课题12-机器狗自主侦查计划.html   # 可视化版本
 - [x] 统一运行栈 + Mission Brain 接入（DeepSeek 排序 + 确定性回退）
 - [x] 自主结束探索与有界恢复（`time_budget` 实跑）
 - [x] 浏览器仿真工作台（实时画面 + ROS 遥测 + 交互）
-- [ ] 边建图边探索（P1 第 5 项）
+- [x] G1 边跑边建图单次 e2e（P1 第 5 项，2026-10-17；待重复/多场景）
 - [ ] 静态场景矩阵全部通过
 - [ ] 目标检测进入正式运行栈
 - [ ] 真机分级上车

@@ -60,21 +60,27 @@ GUI=1 GZ_HEADLESS=1 ROS_DOMAIN_ID=43 IGN_PARTITION=wy ./run_sim_iso.sh &
 
 ### 边跑边建图（P1 第 5 项）
 
-只把第 2 步换个开关，**第 3 步（set_initial_pose）不要跑**——那是给 AMCL 的：
+一条命令跑完（起 Nav2/SLAM → 真值闭环走一段 → 录 `/robot1/map` + 真值 →
+`map_growth.py` 判定）：
 
 ```bash
-./g1ros.sh bash <本目录>/start_nav2_isolated.sh --slam
-./g1ros.sh bash <本目录>/goal_test.sh 10.5 3.0 0.0 80 /tmp/p1/slam_1
-./g1ros.sh python3 <本目录>/map_growth.py /tmp/p1/slam_1      # 看地图有没有在长
+./g1ros.sh bash <本目录>/slam_e2e_check.sh 3 /tmp/g1_slam_e2e_1
 ```
+
+2026-10-17 实测通过：走 3.007 m，地图 3.7→41.4 m²，7 次更新中 5 次
+「狗在动且同时增长」。证据在 `.runtime/g1_slam_e2e_20261017/`。
+**仍需重复运行、不同场景与更长距离**。
+
+⚠️ 仿真必须用顶层 `gazebo_nav2.launch.py` 起（加载 `gz_ros2_control`）；
+手工 `ign gazebo` 会让控制器/commands 看着正常但模型根位姿不动，狗原地走。
 
 ⚠️ 用 `--slam` 而不是 `SLAM=1`：enroot **不继承宿主环境**，宿主机上的
 `SLAM=1` 进不了容器，脚本会静默跑成 AMCL（同样的坑 `G1_LOG_DIR` 也有）。
 
-`slam:=true` 由 `nav2_bringup` 自己换成 `slam_launch.py`（slam_toolbox 出
-`map→odom`），AMCL 那条路一个字节没动。slam 参数在 `config/go2_nav2.yaml`
-末尾的 `slam_toolbox:` 段里——放一起是被 bringup 逼的，它只接受一个
-`params_file` 并同时透传给 slam 和 Nav2。
+`slam:=true` 时 `nav2_scaled.launch.py` **只包含 `navigation_launch.py`**，
+不启动 AMCL/map_server；`slam_toolbox` 由 launch 单独起，并负责
+`/robot1/map`、`map→odom` 和 `/robot1/tf` 重映射。slam 参数在
+`tools/nav2_scaled.launch.py` 的 `SLAM_PARAMS`，不再走 `go2_nav2.yaml` 的两键 hack。
 
 ## 三、工具清单
 
@@ -91,7 +97,8 @@ GUI=1 GZ_HEADLESS=1 ROS_DOMAIN_ID=43 IGN_PARTITION=wy ./run_sim_iso.sh &
 | `set_initial_pose.sh` | 从真值设 AMCL 初始位姿 |
 | `goal_test.sh` | 发目标 + 录包，收尾时自动调 `goal_check.py` |
 | `goal_check.py` | 从包按真值判定到点误差、顺带查「有指令但不动」的冻结段；不通过则 rc=1 |
-| `map_growth.py` | 从包量地图有没有「边走边更新」（更新数/已知栅格增长/增长率非恒定），P1 第 5 项的判据 |
+| `map_growth.py` | 从包量地图有没有「边走边更新」（更新数/已知栅格增长/增长是否发生在真值运动时段），P1 第 5 项的判据 |
+| `slam_e2e_check.sh` | P1 第 5 项一条命令验收：前置闸门 → 起 SLAM/Nav2 → 真值闭环行走 → 录包 → `map_growth.py` 判定 |
 
 ## 四、必须知道的三个坑
 
@@ -208,11 +215,10 @@ ROS 惯例用 `free_thresh: 0.196` 就是为了让 205 卡在未知带里，我�
 
 ### 尚未做的
 
-**P1 第 5 项「导航期间保持 SLAM 运行，证明地图能边走边更新」**——
-上述两次验收用的都是 AMCL 加载**静态**地图，不是 SLAM 边跑边建图。
-`--slam` 通路已搭好（见第二节），但**没有跑过**，且 slam 参数键名在
-`config/go2_nav2.yaml` 里有**两套互相矛盾**的写法（见 `../README.md`），
-跑之前必须先定这一条。
+**P1 第 5 项「导航期间保持 SLAM 运行，证明地图能边走边更新」——
+2026-10-17 已单次跑通**（见第二节与 `.runtime/g1_slam_e2e_20261017/`）。
+历史记录中 09-23 的两次验收用的都是 AMCL + **静态**地图，不是 SLAM 边跑边建图；
+本次通过的是独立 SLAM 通路。**仍缺重复运行、不同场景与更长距离**。
 
 ⚠️ 上面 09-23 的数字用的是**旧的缩放器**（死区修复前）。09-24 的死区修复与
 `movement_time_allowance` 对齐，以及 09-25 的三处配置修复（costmap / odom /
