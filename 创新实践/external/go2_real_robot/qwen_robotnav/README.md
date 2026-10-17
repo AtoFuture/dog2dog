@@ -11,7 +11,9 @@
 
 静态窄通道、死胡同与不可达窄口的重复验收见 [静态场景回归](docs/static-navigation-validation.md)。正式链路会按机器人净空校验整条候选路径及延迟决策，历史人物实验保持冻结。
 
-浏览器查看现有 Gazebo 窗口、ROS 状态与地图，见 [只读仿真工作台](web_console/README.md)。该工作台复用现有仿真，不启动另一套 Gazebo 或导航运行栈。
+浏览器查看/操作现有 Gazebo 窗口、ROS 状态与地图，见 [仿真工作台](web_console/README.md)。
+一键启动 GUI + 运行栈 + 网页：`./scripts/run_gui_console_demo.sh`（加 `--explore` 会在就绪后自动开始探索）。
+工作台复用现有仿真，不启动另一套 Gazebo 或导航实现。
 
 ## 旧视觉航点组件
 
