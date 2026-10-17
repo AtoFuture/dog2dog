@@ -97,6 +97,7 @@ open docs/课题12-机器狗自主侦查计划.html   # 可视化版本
 | DeepSeek 候选排序 + 确定性回退 | 统一运行栈 `mission_brain` + G2 复核；上述两次验收均为 0 次回退 |
 | 浏览器仿真工作台 | 2026-10-17 实测：VNC 真实画面 1000×707、地图/位姿/电量/任务/guard 实时值、交互/仅查看、找机器狗、重连、移动端；`browser-run.log` 9/9，`camera-interaction-check.log` 交互位移 2.953 / 仅查看 0.000 |
 | G1 SLAM 边跑边建图（P1 第 5 项） | 2026-10-17 **连续 3 次 e2e 通过**（3/4/5 m）：真值前进 3.007/4.001/5.001 m，地图 3.7→41.4/44.8/47.9 m²；证据 `.runtime/g1_slam_e2e_20261017/` |
+| 全量测试 | 2026-10-17 重跑：G2 **325**（exit 0）/ G3 **251** / 导航 **234**，合计 **810**；日志 `.runtime/final_g2_tests.log`、`final_g3_tests.log`、`final_nav_tests.log` |
 | 设备盘点 | `docs/设备清单.md`：Go2 **EDU**，含传感器规格与安装位 |
 
 运行证据在 `/home/wy/data1/.runtime/`、`/home/wy/g3_bags/`、`/home/wy/g3_reports/`、
