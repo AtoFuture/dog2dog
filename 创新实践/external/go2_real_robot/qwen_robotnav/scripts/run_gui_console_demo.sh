@@ -7,7 +7,8 @@
 # mirrors that GUI window and reads the same ROS domain.
 #
 # Usage:
-#   ./scripts/run_gui_console_demo.sh [--explore]
+#   ./scripts/run_gui_console_demo.sh [--explore] [--restart]
+#   --restart stops a launcher instance that already owns the console port.
 # Environment:
 #   DEMO_DOMAIN=227 DEMO_PARTITION=gui_demo_227 DEMO_DISPLAY=:2
 #   DEMO_OUT=/home/wy/data1/.runtime/gui_console_demo
@@ -21,6 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAV_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PROJECT_ROOT="$(cd "${NAV_ROOT}/../../.." && pwd)"   # 创新实践
 OUT="${DEMO_OUT:-/home/wy/data1/.runtime/gui_console_demo}"
+PID_FILE="${OUT}/demo.pid"
 DOMAIN="${DEMO_DOMAIN:-227}"
 PARTITION="${DEMO_PARTITION:-gui_demo_${DOMAIN}}"
 DISPLAY_NUM="${DEMO_DISPLAY:-:2}"
@@ -34,7 +36,15 @@ CYCLONE="file://${SIM_WS}/src/docker/cyclonedds.xml"
 PROJECT_CONTAINER="/home/wy/project"
 NAV_CONTAINER="${PROJECT_CONTAINER}/external/go2_real_robot/qwen_robotnav"
 EXPLORE=0
-[[ "${1:-}" == "--explore" ]] && EXPLORE=1
+RESTART=0
+for arg in "$@"; do
+  case "${arg}" in
+    --explore) EXPLORE=1 ;;
+    --restart) RESTART=1 ;;
+    -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    *) echo "ERROR: unknown argument: ${arg}" >&2; exit 2 ;;
+  esac
+done
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -47,10 +57,40 @@ if LC_ALL=C grep -q '[^ -~]' <<<"${OUT}"; then fail "DEMO_OUT must be ASCII: ${O
 for tool in x11vnc xwininfo xdotool python3 pgrep ss; do command -v "${tool}" >/dev/null || fail "Missing ${tool}"; done
 [[ -f "${PROJECT_ROOT}/.env" ]] || fail "Missing ${PROJECT_ROOT}/.env (API key); see .env.example"
 if ss -ltn 2>/dev/null | grep -q ":${CONSOLE_PORT} "; then
-  fail "Port ${CONSOLE_PORT} is already in use; stop the existing console first"
+  if (( RESTART == 0 )); then
+    fail "Port ${CONSOLE_PORT} is already in use; stop the existing console first (or pass --restart)"
+  fi
+  if [[ -f "${PID_FILE}" ]]; then
+    OLD_PID="$(cat "${PID_FILE}" 2>/dev/null || true)"
+  else
+    OLD_PID=""
+  fi
+  if [[ -z "${OLD_PID}" ]] || ! kill -0 "${OLD_PID}" 2>/dev/null \
+     || ! tr '\0' ' ' <"/proc/${OLD_PID}/cmdline" 2>/dev/null | grep -q 'run_gui_console_demo.sh'; then
+    rm -f "${PID_FILE}"
+    fail "Port ${CONSOLE_PORT} is in use but ${PID_FILE} does not name a live launcher; stop it manually"
+  fi
+  echo "== stopping the existing demo (pid ${OLD_PID}) =="
+  kill -INT "${OLD_PID}" 2>/dev/null || true
+  # Wait for the old launcher itself: its cleanup stops the simulator, runtime,
+  # GUI and console before exiting. The console port can free earlier.
+  for _ in $(seq 1 40); do kill -0 "${OLD_PID}" 2>/dev/null || break; sleep 1; done
+  if kill -0 "${OLD_PID}" 2>/dev/null; then
+    fail "the existing demo launcher ${OLD_PID} did not exit"
+  fi
+  for _ in $(seq 1 10); do
+    ss -ltn 2>/dev/null | grep -q ":${CONSOLE_PORT} " || break
+    sleep 1
+  done
+  if ss -ltn 2>/dev/null | grep -q ":${CONSOLE_PORT} "; then
+    fail "the existing demo did not release port ${CONSOLE_PORT}"
+  fi
+  echo "   existing demo stopped"
+  sleep 2
 fi
 
 mkdir -p "${OUT}/logs"
+echo $$ >"${PID_FILE}"
 if [[ ! -f "${OUT}/gazebo_nav2.launch.py" || ! -d "${OUT}/progress_install" ]]; then
   echo "== preparing simulator/navigation config in ${OUT} =="
   ( cd "${NAV_ROOT}" && SLAM_ROS_DOMAIN_ID="${DOMAIN}" SLAM_IGN_PARTITION="${PARTITION}" \
@@ -107,6 +147,7 @@ cleanup() {
   # Targeted fallback for the console's private ports (children use new sessions).
   ss -ltn 2>/dev/null | grep -q ':8766 ' && pkill -f "websockify --heartbeat 15 127.0.0.1:8766" 2>/dev/null || true
   ss -ltn 2>/dev/null | grep -q ':5909 ' && pkill -f "x11vnc -display ${DISPLAY_NUM} .*rfbport 5909" 2>/dev/null || true
+  if [[ -f "${PID_FILE}" && "$(cat "${PID_FILE}" 2>/dev/null)" == "$$" ]]; then rm -f "${PID_FILE}"; fi
 }
 trap cleanup EXIT INT TERM
 
