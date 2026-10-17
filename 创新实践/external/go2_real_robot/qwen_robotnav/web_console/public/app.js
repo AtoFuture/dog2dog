@@ -12,7 +12,7 @@ function streamStatus(value, detail) {
   $('scene-live').hidden=!value;
   $('capture').disabled=!value;
   $('stream-state').textContent=value?'画面已连接':'画面未连接';
-  $('stream-dot').style.background=value?'var(--mint)':'#687782';
+  $('stream-dot').style.background=value?'var(--positive)':'var(--muted)';
   $('connection-badge').classList.toggle('connected',value);
   $('connection-badge').lastElementChild.textContent=value?'画面已连接':'画面未连接';
   if (detail) { $('scene-empty-title').textContent='等待仿真画面'; $('scene-empty-description').textContent=detail; }
@@ -76,7 +76,7 @@ function renderMap() {
   if(pose) {
     const [ox,oy,yaw]=map.origin,dx=pose.x-ox,dy=pose.y-oy;
     const px=(dx*Math.cos(yaw)+dy*Math.sin(yaw))/map.resolution,py=map.height-(-dx*Math.sin(yaw)+dy*Math.cos(yaw))/map.resolution;
-    ctx.save();ctx.translate(x+px*scale,y+py*scale);ctx.rotate(-(pose.yaw-yaw));ctx.fillStyle='#85ecc3';ctx.strokeStyle='#123f33';ctx.lineWidth=2;
+    ctx.save();ctx.translate(x+px*scale,y+py*scale);ctx.rotate(-(pose.yaw-yaw));const palette=getComputedStyle(document.documentElement);ctx.fillStyle=palette.getPropertyValue('--map-robot').trim();ctx.strokeStyle=palette.getPropertyValue('--map-outline').trim();ctx.lineWidth=2;
     ctx.beginPath();ctx.moveTo(11,0);ctx.lineTo(-7,7);ctx.lineTo(-4,0);ctx.lineTo(-7,-7);ctx.closePath();ctx.fill();ctx.stroke();ctx.restore();
   }
 }
