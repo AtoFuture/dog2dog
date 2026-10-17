@@ -163,6 +163,9 @@ class ExplorerParams:
     该值应写进接口契约作为冻结参数。Go2 机身约 70x31 cm，0.45 是偏保守的起步值。
     """
 
+    goal_obstacle_clearance_m: float = 0.0
+    """Formal endpoint standoff for the execution envelope; zero preserves historical behavior."""
+
     max_bootstrap_scans: int = 0
     """Bounded in-place scan goals when sparse initial rays leave no route; zero preserves historical behavior."""
 
@@ -293,6 +296,15 @@ class GoalSelector:
         """外部直接标记一个已访问位置（例如机器人实际走到的地方）。"""
         self._visits.append(_Visit(x, y, now))
 
+    def observe_position(self, x: float, y: float, now: float) -> None:
+        """Formal novelty records real travel, including points between goals."""
+        if not self.params.require_path_clearance or not all(math.isfinite(v) for v in (x,y,now)):
+            return
+        self._expire(now)
+        if (not self._visits or math.hypot(x-self._visits[-1].x,y-self._visits[-1].y)>=.25
+            or now-self._visits[-1].at>=5.):
+            self.mark_visited(x,y,now)
+
     # ------------------------------------------------------------------
     # 参数校验
     # ------------------------------------------------------------------
@@ -308,6 +320,8 @@ class GoalSelector:
         所以直接抛。
         """
         p = self.params
+        if not math.isfinite(p.goal_obstacle_clearance_m) or p.goal_obstacle_clearance_m<0:
+            raise ValueError('goal_obstacle_clearance_m must be finite and nonnegative')
         if type(p.max_bootstrap_scans) is not int or not 0<=p.max_bootstrap_scans<=3:
             raise ValueError('max_bootstrap_scans must be 0..3')
         if type(p.require_path_clearance) is not bool:
@@ -443,7 +457,7 @@ class GoalSelector:
                 d / p.visit_penalty_radius_m, 0.0, 1.0
             )
             penalty = np.minimum(penalty, np.where(d < p.visit_penalty_radius_m, graded, 1.0))
-        return penalty
+        return penalty**2 if p.require_path_clearance else penalty
 
     # ------------------------------------------------------------------
     # 主入口
@@ -524,6 +538,9 @@ class GoalSelector:
         clearance = grid.clearance_m()
         valid_goal = grid.traversable & (clearance >= p.safety_radius_m)
         path_free = self._path_free(grid, start, clearance)
+        if p.require_path_clearance and p.goal_obstacle_clearance_m>0:
+            observed=GridMap(np.where(grid.occupied,100,0),grid.resolution,grid.origin)
+            valid_goal &= observed.clearance_m()>=p.goal_obstacle_clearance_m
         if p.require_path_clearance and p.min_goal_distance_m > 0:
             rr,cc=np.indices(grid.data.shape)
             wx,wy=grid.grid_to_world(rr,cc)
@@ -532,7 +549,8 @@ class GoalSelector:
 
         uf_map = self._unknown_fraction_map(grid)
 
-        pullback_cells = max(0, int(round(p.goal_pullback_m / grid.resolution)))
+        pullback_m=max(p.goal_pullback_m,p.goal_obstacle_clearance_m if p.require_path_clearance else 0.)
+        pullback_cells = max(0, int(math.ceil(pullback_m / grid.resolution) if p.require_path_clearance else round(pullback_m / grid.resolution)))
         kernel = np.ones((2 * pullback_cells + 1, 2 * pullback_cells + 1), np.uint8)
 
         # ⚠️ 测地半径是**性能参数**，不该变成静默的终止条件。
@@ -603,10 +621,11 @@ class GoalSelector:
             # 增益 = 未知格占比 × 距离衰减 × 访问惩罚
             rows, cols = candidates[:, 0], candidates[:, 1]
             d_m = dist[rows, cols] * grid.resolution
+            visit_penalties=self._visit_penalty(grid,candidates)
             gains = (
                 uf_map[rows, cols]
                 * np.exp(-p.lambda_decay * d_m)
-                * self._visit_penalty(grid, candidates)
+                * visit_penalties
             )
 
             # A single closed-ring frontier must still offer distinct directions.
@@ -622,7 +641,7 @@ class GoalSelector:
                     x=wx, y=wy, yaw=math.atan2(cy-wy, cx-wx),
                     cluster_label=cluster.label, gain=gain,
                     geodesic_dist_m=float(dist[row, col])*grid.resolution,
-                    unknown_fraction=float(uf_map[row, col]),
+                    unknown_fraction=float(uf_map[row, col])*(float(visit_penalties[k]) if p.require_path_clearance else 1.),
                 ))
                 distance = np.hypot(rows-row, cols-col)*grid.resolution
                 gains[distance < separation_m] = -1.0
@@ -652,6 +671,9 @@ class GoalSelector:
             return False
         if not grid.traversable[row, col] or grid.clearance_m()[row, col] < self.params.safety_radius_m:
             return False
+        if self.params.require_path_clearance and goal.purpose=='frontier' and self.params.goal_obstacle_clearance_m>0:
+            observed=GridMap(np.where(grid.occupied,100,0),grid.resolution,grid.origin)
+            if observed.clearance_m()[row,col]<self.params.goal_obstacle_clearance_m:return False
         cells = np.array([[row, col]])
         if not len(self._filter_blacklisted(grid, cells)):
             return False

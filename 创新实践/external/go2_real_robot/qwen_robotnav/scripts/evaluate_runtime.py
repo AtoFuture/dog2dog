@@ -8,6 +8,7 @@ import yaml
 from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
 from qwen_robotnav.static_scenarios import load_scene,evaluate_scene,scan_wall_hits,quaternion_rpy,compose_pose,inverse_pose
+from qwen_robotnav.map_contract import planning_map_preserves
 from qwen_robotnav.runtime_profile import load_profile,profile_hash,ros_parameters,expected_runtime_roles,runtime_exit_ok
 
 
@@ -32,13 +33,13 @@ def evaluate(root):
     profile=load_profile(root/'runtime_profile.yaml');t=profile['topics']
     scene=load_scene(root) if (root/'static_scene.json').exists() else None
     if report.get('static_scenario') and not scene:raise ValueError('Missing static fixture metadata')
-    transforms={};alignment=None
+    transforms={};alignment=None;source_maps={};planning_maps=[]
     body=[];frontier_events=[];areas=[];sensor=None;pose=None;hit_frames=[0]*len(scene['boxes']) if scene else []
     manifest=json.loads((root/'runtime_manifest.json').read_text());exit_info=json.loads((root/'runtime_exit.json').read_text())
     successes=set();accepted=set();returned=[];goals=set();commands=[];status=[];poses=[];states=[]
     names={t['actuator_command'],t['guard_status'],t['mission'],'/exploration/events','/g3/return_event',t['action']+'/_action/status','/frontier_trial/gt_pose'}
     completions=[];exploration_results=[];operator_commands=[];return_triggers=[]
-    names.update({t['command'],'/exploration/completion','/g3/exploration_result',t['map']})
+    names.update({t['command'],t['planning_map'],'/exploration/completion','/g3/exploration_result',t['map']})
     names.add(t['tf'])
     if scene:names.update({t['scan'],t['tf_static']})
     brain_selected=0;brain_fallback=0
@@ -68,7 +69,10 @@ def evaluate(root):
                         pose=(wall,translation.x,translation.y,heading)
             elif name.endswith('/_action/status'):
                 successes.update(bytes(v.goal_info.goal_id.uuid).hex() for v in msg.status_list if v.status==4)
-            elif name==t['map']:areas.append((wall,sum(v>=0 for v in msg.data)*msg.info.resolution**2))
+            elif name==t['map']:
+                areas.append((wall,sum(v>=0 for v in msg.data)*msg.info.resolution**2))
+                source_maps[(msg.header.stamp.sec,msg.header.stamp.nanosec)]=msg
+            elif name==t['planning_map']:planning_maps.append(msg)
             elif name==t['tf']:
                 for tr in msg.transforms:
                     transforms[(tr.header.frame_id.lstrip('/'),tr.child_frame_id.lstrip('/'))]=(wall,
@@ -108,6 +112,14 @@ def evaluate(root):
        actual_guarded_motion=bool(motion) and bool(poses) and max(math.dist(p[1:],poses[0][1:]) for p in poses)>=.5,
        command_limits=bool(commands) and allowed,completed_frontiers=len(goals)>=2,
        real_return_action=returned_ok,home_reference_registered=home_reference is not None,body_returned_home=home_error<=.4)
+    padding=max(1.,profile['navigation']['robot_radius_m']+profile['navigation']['inflation_radius_m'])
+    checks['planning_map_preserves_observations']=bool(planning_maps) and all(
+        (source:=source_maps.get((msg.header.stamp.sec,msg.header.stamp.nanosec))) is not None
+        and planning_map_preserves(source,msg,padding) for msg in planning_maps)
+    nav_config=yaml.safe_load((root/'nav2.yaml').read_text())
+    checks['planning_map_wiring']=nav_config['global_costmap']['global_costmap']['ros__parameters']['static_layer'].get('map_topic')==t['planning_map']
+    nav_publishers=report.get('nav_command_publishers',[])
+    checks['backend_only_velocity_ramp']='controller_server' in nav_publishers and set(nav_publishers)<={'controller_server','behavior_server'}
     static_result=None
     if scene:
         mission_start=min((wall for wall,state in states if state=='exploring'),default=math.inf)
@@ -140,7 +152,7 @@ def evaluate(root):
     quiet=[c for c in commands if ends and c[0]>=ends[0]+.2]
     checks['final_standby_zero']=bool(quiet) and all(abs(c[1])+abs(c[2])<1e-8 for c in quiet)
     result=dict(success=all(checks.values()),checks=checks,home_error_m=home_error if math.isfinite(home_error) else None,completed_frontiers=len(goals),home_reference=home_reference,home_reference_method='configured_map_home_at_exploration_start',
-                actuator_command_samples=len(commands),moving_command_samples=len(motion),profile_sha256=profile_hash(profile),
+                planning_map_samples=len(planning_maps),actuator_command_samples=len(commands),moving_command_samples=len(motion),profile_sha256=profile_hash(profile),
                 candidate_selector=profile['decision']['candidate_selector'],deepseek_selections=brain_selected,brain_fallback_selections=brain_fallback,
                 static_scene=static_result,known_area_growth_m2=areas[-1][1]-areas[0][1] if areas else None,
                 exploration_results=exploration_results,operator_commands=operator_commands,return_triggers=return_triggers,

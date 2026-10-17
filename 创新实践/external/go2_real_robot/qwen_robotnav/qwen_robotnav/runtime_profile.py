@@ -1,4 +1,5 @@
 """One validated configuration for the Gazebo navigation runtime."""
+import ast
 import hashlib
 import json
 import math
@@ -7,9 +8,9 @@ from urllib.parse import urlparse
 import yaml
 
 KEYS={
- 'topics':set('nav_command guarded_input actuator_command scan odometry imu battery mission command guard_status map action tf tf_static'.split()),
+ 'topics':set('nav_command guarded_input actuator_command scan odometry imu battery mission command guard_status map planning_map action tf tf_static'.split()),
  'frames':{'map','odom','base'},
- 'guard':set('rate_hz command_timeout_s sensor_timeout_s battery_timeout_s mission_timeout_s stamp_future_tolerance_s linear_max angular_max front_half_angle_rad front_clearance_m max_tilt_rad'.split()),
+ 'guard':set('clearance_margin_m prediction_horizon_s prediction_speed_mps rate_hz command_timeout_s sensor_timeout_s battery_timeout_s mission_timeout_s stamp_future_tolerance_s linear_max angular_max front_half_angle_rad front_clearance_m max_tilt_rad'.split()),
  'scaler':set('linear_scale linear_max linear_min nav_deadband angular_scale angular_max linear_accel linear_decel angular_accel angular_decel ramp_rate cmd_timeout'.split()),
  'navigation':{'robot_radius_m','inflation_radius_m','desired_linear_velocity_mps'},
  'mission':set('heartbeat_period_s recovery_stale_s recovery_stable_s recovery_timeout_s low_battery_threshold home_x home_y home_yaw'.split()),
@@ -48,9 +49,13 @@ def validate_profile(value):
     if not 1<=g['rate_hz']<=100 or g['linear_max']>.03 or g['angular_max']>.8:raise ValueError('Unvalidated simulator guard limits')
     if not 0<g['front_half_angle_rad']<=math.pi/2 or not 0<g['max_tilt_rad']<math.pi/2:raise ValueError('Invalid guard angle')
     if g['front_clearance_m']<.24 or g['sensor_timeout_s']>1 or g['command_timeout_s']>.5:raise ValueError('Weaker than measured simulator guard')
+    if g['clearance_margin_m']<.05 or g['prediction_horizon_s']<.5 or g['prediction_speed_mps']<.4:
+        raise ValueError('Weaker than measured footprint prediction envelope')
     if g['mission_timeout_s']<=2*m['heartbeat_period_s']:raise ValueError('Heartbeat margin is too small')
     if m['recovery_timeout_s']<=m['recovery_stable_s'] or not 0<m['low_battery_threshold']<1:raise ValueError('Invalid mission budgets')
     if s['linear_min']>s['linear_max'] or s['linear_max']>g['linear_max']:raise ValueError('Scaler exceeds guard limits')
+    if not .30<=n['desired_linear_velocity_mps']<=.34 or not s['linear_min']<=n['desired_linear_velocity_mps']*s['linear_scale']<=s['linear_max']:
+        raise ValueError('Uncalibrated simulator gait velocity range or scale')
     if n['inflation_radius_m']<n['robot_radius_m'] or n['robot_radius_m']<.4:raise ValueError('Invalid navigation clearance')
     if not 0<value['battery_model']['initial_percentage']<=1:raise ValueError('Invalid simulated initial battery')
     if t['action']!='/robot1/navigate_to_pose':raise ValueError('This backend requires the robot1 Nav2 action')
@@ -89,7 +94,7 @@ def ros_parameters(p, runtime_root=None):
         low_battery_threshold=m['low_battery_threshold'],home_frame=f['map'],home_x=m['home_x'],home_y=m['home_y'],home_yaw=m['home_yaw'])},
       'vision_explorer':{'ros__parameters':dict(common,require_mission_state=True,use_mission_brain=d['candidate_selector']=='deepseek',
         mission_instruction=d['mission_instruction'],brain_timeout_s=d['brain_timeout'],brain_max_candidates=d['brain_max_candidates'],
-        map_topic=t['map'],mission_state_topic=t['mission'],nav_action=t['action'],map_frame=f['map'],robot_frame=f['base'],**p['explorer'])},
+        goal_obstacle_clearance_m=max(p['navigation']['inflation_radius_m'],p['navigation']['robot_radius_m']+p['guard']['clearance_margin_m']+p['guard']['prediction_speed_mps']*p['guard']['prediction_horizon_s']),map_topic=t['map'],planning_map_topic=t['planning_map'],planning_map_padding_m=max(1.,p['navigation']['robot_radius_m']+p['navigation']['inflation_radius_m']),mission_state_topic=t['mission'],nav_action=t['action'],map_frame=f['map'],robot_frame=f['base'],**p['explorer'])},
     }
     if runtime_root is not None:
         result['vision_explorer']['ros__parameters']['scan_bt_path']=str(Path(runtime_root).resolve()/'scan_bt.xml')
@@ -97,6 +102,37 @@ def ros_parameters(p, runtime_root=None):
         result['mission_brain']={'ros__parameters':dict(common,mission_state_topic=t['mission'],
             context_topic='/mission/context',candidates_topic='/exploration/candidates',decision_topic='/brain/decision')}
     return result
+
+
+def direct_navigation_commands(source, topic):
+    """Formal Nav2 sends physical velocity requests to the one backend ramp."""
+    class Rewrite(ast.NodeTransformer):
+        def __init__(self):self.removed=0
+        def visit_Call(self,node):
+            package=next((k.value for k in node.keywords if k.arg=='package'),None)
+            if isinstance(package,ast.Constant) and package.value=='nav2_velocity_smoother':
+                self.removed+=1;return None
+            return self.generic_visit(node)
+        def visit_List(self,node):
+            node.elts=[v for v in node.elts if not (isinstance(v,ast.Constant) and v.value=='velocity_smoother')]
+            return self.generic_visit(node)
+        def visit_Tuple(self,node):
+            if (len(node.elts)==2 and all(isinstance(v,ast.Constant) for v in node.elts)
+                and node.elts[0].value=='cmd_vel' and node.elts[1].value=='cmd_vel_nav'):
+                node.elts[1]=ast.Constant(value=topic)
+            return self.generic_visit(node)
+    rewrite=Rewrite();tree=rewrite.visit(ast.parse(source));ast.fix_missing_locations(tree)
+    constants=[n.value for n in ast.walk(tree) if isinstance(n,ast.Constant) and isinstance(n.value,str)]
+    if rewrite.removed not in (0,2) or any(v in constants for v in ('nav2_velocity_smoother','velocity_smoother','cmd_vel_nav')):
+        raise ValueError('Unexpected Nav2 velocity smoothing launch layout')
+    if not any(isinstance(n,ast.Tuple) and len(n.elts)==2 and all(isinstance(v,ast.Constant) for v in n.elts)
+               and [v.value for v in n.elts]==['cmd_vel',topic] for n in ast.walk(tree)):
+        raise ValueError('Missing direct Nav2 command remapping')
+    header=[]
+    for line in source.splitlines():
+        if not line.strip() or line.lstrip().startswith('#'):header.append(line)
+        else:break
+    return '\n'.join(header)+'\n'+ast.unparse(tree)+'\n'
 
 
 def configure_navigation(root,p):
@@ -112,8 +148,22 @@ def configure_navigation(root,p):
     for name in ('local_costmap','global_costmap'):
         params=config[name][name]['ros__parameters'];params['robot_radius']=n['robot_radius_m']
         params['inflation_layer']['inflation_radius']=n['inflation_radius_m']
+    config['global_costmap']['global_costmap']['ros__parameters']['static_layer']['map_topic']=t['planning_map']
     config['controller_server']['ros__parameters']['FollowPath']['desired_linear_vel']=n['desired_linear_velocity_mps']
     controller=config['controller_server']['ros__parameters']
+    # Fixed-gait backend cannot execute an arbitrarily slow final approach.
+    # Preserve the original tolerance; independent truth-home acceptance remains .4m.
+    controller['general_goal_checker']['xy_goal_tolerance']=.25
+    follow=controller['FollowPath']
+    follow.update(lookahead_dist=.35,min_lookahead_dist=.25,max_lookahead_dist=.5,
+                  rotate_to_heading_min_angle=math.pi/2,rotate_to_heading_angular_vel=.4,max_angular_accel=3.2,
+                  regulated_linear_scaling_min_speed=n['desired_linear_velocity_mps'],
+                  min_approach_linear_velocity=n['desired_linear_velocity_mps'])
+    config.pop('velocity_smoother',None)
+    planner=config['planner_server']['ros__parameters']['GridBased']
+    planner.update(tolerance=.05,allow_unknown=False)
+    behavior=config['behavior_server']['ros__parameters']
+    behavior.update(max_rotational_vel=.4,min_rotational_vel=.15,rotational_acc_lim=.6)
     if 'scan_goal_checker' not in controller['goal_checker_plugins']:
         controller['goal_checker_plugins'].append('scan_goal_checker')
     controller['scan_goal_checker']=dict(plugin='nav2_controller::SimpleGoalChecker',stateful=True,
@@ -133,6 +183,7 @@ def configure_navigation(root,p):
     for name in ('navigation.launch.py','slam_navigation.launch.py'):
         path=root/name;s=path.read_text()
         for old,key in [('/robot1/tf_static','tf_static'),('/robot1/tf','tf'),('/robot1/map','map'),('/deepseek/nav_cmd','nav_command')]:s=s.replace(repr(old),repr(t[key]))
+        if name=='navigation.launch.py':s=direct_navigation_commands(s,t['nav_command'])
         path.write_text(s)
 
 

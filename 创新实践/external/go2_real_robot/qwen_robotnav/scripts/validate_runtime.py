@@ -118,6 +118,10 @@ def main():
         profile=effective
         publishers=node.get_publishers_info_by_topic(topics['actuator_command'])
         if len(publishers)!=1 or publishers[0].node_name!='velocity_guard':raise RuntimeError('Actuator publisher is not the standalone guard')
+        wait(lambda:any(v.node_name=='controller_server' for v in node.get_publishers_info_by_topic(topics['nav_command'])),60)
+        nav_publishers=[v.node_name for v in node.get_publishers_info_by_topic(topics['nav_command'])]
+        if 'controller_server' not in nav_publishers or not set(nav_publishers)<={'controller_server','behavior_server'}:
+            raise RuntimeError('Unexpected upstream velocity publisher or duplicate smoothing stage')
         # Wait for G3 localization debounce before allowing exploration.
         end=time.monotonic()+4
         while time.monotonic()<end:executor.spin_once(timeout_sec=.05)
@@ -138,7 +142,7 @@ def main():
         error=math.dist(node.poses[-1][1:3],baseline[:2])
         report=dict(success=error<=.4,candidate_selector=profile['decision']['candidate_selector'],truth_home_error_m=error,truth_home_reference=baseline,home_reference_method='configured_map_home_at_exploration_start',profile_sha256=profile_hash(profile),
             completed_goals=sum(e['status']=='succeeded' and e.get('geodesic_dist_m',0)>=.75 for e in node.events),
-            observer_publishes_velocity=False,actuator_publishers=[v.node_name for v in publishers],
+            observer_publishes_velocity=False,nav_command_publishers=nav_publishers,actuator_publishers=[v.node_name for v in publishers],
             runtime_uses_ground_truth=False,guard_moving_outputs=max((s['moving_outputs'] for s in node.status),default=0),
             initial_known_area_m2=node.first_area,final_known_area_m2=sum(v>=0 for v in node.latest_map.data)*node.latest_map.info.resolution**2)
     except (Exception,KeyboardInterrupt) as exc:report=dict(success=False,error=str(exc))

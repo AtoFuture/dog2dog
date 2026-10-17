@@ -14,7 +14,7 @@ def rooms(gap_cells):
 
 
 def selector():
-    params=ExplorerParams(min_frontier_area_m2=.01)
+    params=ExplorerParams(min_frontier_area_m2=.01,goal_obstacle_clearance_m=.65)
     params.require_path_clearance=True
     return GoalSelector(params)
 
@@ -107,3 +107,57 @@ def test_success_cooldown_expires_and_does_not_become_a_permanent_blacklist():
     assert s.is_goal_valid(grid,(0.,0.),goal,31)
     s.on_result(goal,True,32);s.reset_mission()
     assert s.is_goal_valid(grid,(0.,0.),goal,33)
+
+
+def test_measured_corridor_offers_novel_forward_goal_over_traversed_path():
+    from pathlib import Path
+    from g2_core.explorer import Goal
+    v=np.load(Path(__file__).parent/'fixtures/static_corridor_progress_map.npz')
+    grid=GridMap(v['data'],float(v['resolution']),v['origin'])
+    s=selector();s.params.min_goal_distance_m=.5
+    for xy in v['travel_xy']:s.observe_position(*xy,0)
+    s.on_result(Goal(*v['last_goal'],0,1,1,1,1),True,0)
+    result=s.select(grid,tuple(v['robot_xy']),1,max_candidates=6)
+    assert result.goal is not None and result.goal.x>4.
+    forward=[g for g in result.candidates if g.x>4.]
+    behind=[g for g in result.candidates if g.x<1.6]
+    assert forward
+    if behind:
+        assert max(g.unknown_fraction/g.geodesic_dist_m for g in forward)>max(g.unknown_fraction/g.geodesic_dist_m for g in behind)
+
+
+def test_recent_visit_discount_is_preserved_in_model_information_gain():
+    from g2_core.explorer import Goal
+    grid=GridMap(np.zeros((100,100),dtype=np.int8),.1,(-5.,-5.))
+    grid.data[:,80:]=-1
+    s=selector();s.params.min_goal_distance_m=.5
+    before=s.select(grid,(0.,0.),0,max_candidates=16)
+    s.on_result(Goal(.9,0.,0,1,1,1,1),True,0)
+    after=s.select(grid,(0.,0.),1,max_candidates=16)
+    old={(g.x,g.y):g.unknown_fraction for g in before.candidates}
+    shared=[g for g in after.candidates if (g.x,g.y) in old and .5<np.hypot(g.x-.9,g.y)<2.]
+    assert shared
+    assert all(g.unknown_fraction<old[(g.x,g.y)] for g in shared)
+
+
+def test_actual_travel_history_is_bounded_and_disabled_for_frozen_mode():
+    s=selector();s.observe_position(0.,0.,0.);s.observe_position(.1,0.,1.)
+    assert len(s._visits)==1
+    s.observe_position(.3,0.,2.)
+    assert len(s._visits)==2
+    s.observe_position(.3,0.,65.)
+    assert len(s._visits)==1
+    s.reset_mission();assert not s._visits
+    legacy=GoalSelector(ExplorerParams())
+    legacy.observe_position(1.,0.,1.);assert not legacy._visits
+
+
+def test_execution_endpoint_standoff_is_revalidated_without_weakening_path_clearance():
+    from g2_core.explorer import Goal
+    grid=GridMap(np.zeros((100,100),dtype=np.int8),.1,(-5.,-5.))
+    grid.data[:,70]=100
+    s=selector();s.params.min_goal_distance_m=.5
+    near=Goal(1.5,0.,0,1,1,1.5,.5)
+    far=Goal(1.2,0.,0,1,1,1.2,.5)
+    assert not s.is_goal_valid(grid,(0.,0.),near,0)
+    assert s.is_goal_valid(grid,(0.,0.),far,0)

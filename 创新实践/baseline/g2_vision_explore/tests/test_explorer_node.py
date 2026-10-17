@@ -226,3 +226,52 @@ def test_yaw_to_quaternion_preserves_frontier_heading(yaw, expected_z, expected_
 def test_zero_size_map_is_rejected_instead_of_becoming_a_grid():
     msg=OccupancyGrid();msg.info.resolution=.05
     with pytest.raises(ValueError,match='dimensions'):occupancy_to_grid(msg)
+
+
+@pytest.mark.parametrize('heading',[0.,np.pi/2])
+def test_planning_border_preserves_source_cells_and_world_coordinates(heading):
+    import copy
+    from vision_explorer.explorer_node import padded_planning_map
+    msg=OccupancyGrid();msg.header.frame_id='map';msg.header.stamp.sec=5
+    msg.info.width=3;msg.info.height=2;msg.info.resolution=.1
+    msg.info.origin.position.x=3.;msg.info.origin.position.y=4.
+    msg.info.origin.orientation.z=np.sin(heading/2);msg.info.origin.orientation.w=np.cos(heading/2)
+    msg.data=[0,100,-1,0,0,100];original=copy.deepcopy(msg)
+    out=padded_planning_map(msg,.1)
+    assert msg==original and out.header==msg.header
+    data=np.asarray(out.data).reshape(out.info.height,out.info.width)
+    assert out.info.width==5 and out.info.height==4
+    assert data[1:3,1:4].tolist()==[[0,100,-1],[0,0,100]]
+    assert np.all(data[0]==-1) and np.all(data[-1]==-1)
+    assert np.all(data[:,0]==-1) and np.all(data[:,-1]==-1)
+    assert out.info.origin.position.x==pytest.approx(3.-.1*(np.cos(heading)-np.sin(heading)))
+    assert out.info.origin.position.y==pytest.approx(4.-.1*(np.sin(heading)+np.cos(heading)))
+
+
+def test_planning_map_is_published_in_standby_without_changing_raw_grid():
+    import time
+    import rclpy
+    from rclpy.node import Node
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.qos import QoSProfile,DurabilityPolicy
+    from vision_explorer.explorer_node import VisionExplorer
+    qos=QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL)
+    rclpy.init(args=['--ros-args','-p','planning_map_topic:=/padding_test/planned',
+        '-p','planning_map_padding_m:=0.1','-p','map_topic:=/padding_test/raw','-p','require_mission_state:=true'])
+    node=VisionExplorer();peer=Node('padding_test_peer');executor=SingleThreadedExecutor()
+    executor.add_node(node);executor.add_node(peer);received=[]
+    peer.create_subscription(OccupancyGrid,'/padding_test/planned',received.append,qos)
+    pub=peer.create_publisher(OccupancyGrid,'/padding_test/raw',qos)
+    msg=OccupancyGrid();msg.header.frame_id='map';msg.header.stamp=peer.get_clock().now().to_msg()
+    msg.info.width=3;msg.info.height=2;msg.info.resolution=.1;msg.info.origin.orientation.w=1.
+    msg.data=[0,100,-1,0,0,100]
+    try:
+        pub.publish(msg);end=time.monotonic()+5
+        while not received and time.monotonic()<end:executor.spin_once(timeout_sec=.02)
+        assert received and node._mission_state=='standby'
+        assert received[-1].info.width==5 and received[-1].info.height==4
+        assert node._grid.data.tolist()==[[0,100,-1],[0,0,100]]
+        assert received[-1].header==msg.header
+    finally:
+        executor.remove_node(node);executor.remove_node(peer)
+        node.destroy_node();peer.destroy_node();executor.shutdown();rclpy.shutdown()

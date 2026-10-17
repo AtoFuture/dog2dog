@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import json
+import copy
 import signal
 from functools import partial
 import time
@@ -151,6 +152,28 @@ def select_and_report(
     return None
 
 
+def padded_planning_map(msg: OccupancyGrid, padding_m: float) -> OccupancyGrid:
+    """Preserve every observed cell; add only unknown cells outside map bounds."""
+    grid=occupancy_to_grid(msg)
+    if not math.isfinite(padding_m) or padding_m<=0:
+        raise ValueError('planning map padding must be finite and positive')
+    cells=math.ceil(padding_m/grid.resolution)
+    data=np.full((grid.height+2*cells,grid.width+2*cells),-1,dtype=np.int8)
+    data[cells:cells+grid.height,cells:cells+grid.width]=grid.data
+    result=OccupancyGrid();result.header=copy.deepcopy(msg.header);result.info=copy.deepcopy(msg.info)
+    result.info.width=data.shape[1];result.info.height=data.shape[0]
+    q=msg.info.origin.orientation
+    if (not all(math.isfinite(v) for v in (q.x,q.y,q.z,q.w,msg.info.origin.position.x,msg.info.origin.position.y,msg.info.origin.position.z))
+        or abs(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w-1.)>.01):
+        raise ValueError('planning map requires a valid finite origin')
+    yaw=math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))
+    offset=cells*grid.resolution
+    result.info.origin.position.x-=offset*(math.cos(yaw)-math.sin(yaw))
+    result.info.origin.position.y-=offset*(math.sin(yaw)+math.cos(yaw))
+    result.data=data.ravel().tolist()
+    return result
+
+
 class VisionExplorer(Node):
     """frontier 探索节点。"""
 
@@ -180,7 +203,7 @@ class VisionExplorer(Node):
         self._selection_frame_id = None
         self._sm = ExplorerStateMachine()
         # 安全与增益参数沿用内核默认值，物理目标的最小距离由 ROS 参数指定。
-        self._selector = GoalSelector(ExplorerParams(min_goal_distance_m=p['min_goal_distance_m'], require_path_clearance=p['require_path_clearance'],max_bootstrap_scans=p['max_bootstrap_scans']))
+        self._selector = GoalSelector(ExplorerParams(min_goal_distance_m=p['min_goal_distance_m'], require_path_clearance=p['require_path_clearance'],max_bootstrap_scans=p['max_bootstrap_scans'],goal_obstacle_clearance_m=p['goal_obstacle_clearance_m']))
 
         self._grid: GridMap | None = None
         self._grid_stamp: float = -math.inf
@@ -205,6 +228,10 @@ class VisionExplorer(Node):
         self._nav = ActionClient(self, NavigateToPose, p["nav_action"])
         self._goal_handle = None
 
+        if p['planning_map_topic']==p['map_topic']:
+            raise ValueError('Planning map output must differ from raw map input')
+        self._planning_map_pub=(self.create_publisher(OccupancyGrid,p['planning_map_topic'],_MAP_QOS)
+                                if p['planning_map_topic'] else None)
         self.create_subscription(OccupancyGrid, p["map_topic"], self._on_map,
                                  _MAP_QOS)
         self.create_subscription(String, p["mission_state_topic"],
@@ -247,6 +274,9 @@ class VisionExplorer(Node):
             ("map_timeout_s", 20.0),
             ("min_goal_distance_m", 0.5),
             ("require_path_clearance", False),
+            ("goal_obstacle_clearance_m", 0.0),
+            ("planning_map_topic", ""),
+            ("planning_map_padding_m", 1.0),
             ("max_bootstrap_scans", 0),
             ("scan_bt_path", ""),
             ("use_mission_brain", False),
@@ -265,7 +295,7 @@ class VisionExplorer(Node):
         return {n: self.get_parameter(n).value for n in (
             "map_topic", "mission_state_topic", "nav_action", "tick_period_s",
             "max_nav_timeout_s", "robot_frame", "map_frame",
-            "min_frontier_area_m2", "require_mission_state", "map_timeout_s", "min_goal_distance_m", "require_path_clearance", "max_bootstrap_scans", "scan_bt_path",
+            "min_frontier_area_m2", "require_mission_state", "map_timeout_s", "min_goal_distance_m", "require_path_clearance", "max_bootstrap_scans", "scan_bt_path", "planning_map_topic", "planning_map_padding_m", "goal_obstacle_clearance_m",
             "use_mission_brain", "brain_timeout_s", "brain_max_candidates", "mission_instruction",
             "active_observation", "track_observation", "observation_bt_path", "task_completion_enabled",
             *ProgressLimits.__dataclass_fields__)}
@@ -302,10 +332,14 @@ class VisionExplorer(Node):
             self.get_logger().warning('地图坐标系与 map_frame 不一致，丢弃')
             return
         try:
-            self._grid = occupancy_to_grid(msg)
+            grid = occupancy_to_grid(msg)
+            planned=(padded_planning_map(msg,float(self._p()['planning_map_padding_m']))
+                     if getattr(self,'_planning_map_pub',None) is not None else None)
         except Exception as exc:                       # noqa: BLE001
             self.get_logger().error(f"地图解析失败，丢弃这一帧：{exc}")
             return
+        self._grid=grid
+        if planned is not None:self._planning_map_pub.publish(planned)
         self._grid_stamp = time.monotonic()
         self._map_frame_id = (msg.header.stamp.sec, msg.header.stamp.nanosec)
         if self._progress is not None:
@@ -406,6 +440,10 @@ class VisionExplorer(Node):
             return
         now = self._now()
         self._watch_navigation()
+        if self._p().get('require_path_clearance',False) and self._mission_state==MISSION_EXPLORING:
+            xy=self._robot_xy()
+            if xy is not None and self._map_pose_healthy(xy):
+                self._selector.observe_position(*xy,now)
         if self._stopped or self._attempt is not None or self._handoff_token is not None or self._brain_pending is not None:
             return
         if self._p().get('task_completion_enabled', False) and (self._progress is None or self._completion_pending is not None):

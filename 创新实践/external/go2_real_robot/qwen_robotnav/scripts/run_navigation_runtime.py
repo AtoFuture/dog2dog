@@ -209,6 +209,7 @@ def main():
                 "--ros-args",
                 "-p",
                 "use_sim_time:=true",
+                *remaps,
             ],
         ),
         ("battery", ["python3", "-m", "g3_integration_eval.sim_battery_node", *ros]),

@@ -1,5 +1,6 @@
 """Real explorer node: termination stops new goals while cancellation retains ownership."""
 import json
+import gc
 import time
 from types import SimpleNamespace
 import numpy as np
@@ -13,9 +14,18 @@ from g2_core.state_machine import Phase
 from vision_explorer.explorer_node import VisionExplorer
 
 
-@pytest.fixture
-def node():
+@pytest.fixture(scope='module',autouse=True)
+def ros_context():
+    # Keep native DDS entities on one live context while these fixture nodes
+    # are collected; repeated context shutdown/reinit can race cyclic GC.
     rclpy.init(args=['--ros-args','-p','task_completion_enabled:=true','-p','require_mission_state:=true'])
+    yield
+    gc.collect()
+    rclpy.shutdown()
+
+
+@pytest.fixture
+def node(ros_context):
     n = VisionExplorer()
     n._on_mission_state(String(data='exploring'))
     n._on_exploration_session(String(data=json.dumps(dict(session_id='a'*32, state='exploring'))))
@@ -25,8 +35,9 @@ def node():
     n.events=[]
     n._event=lambda status,*a,**kw:n.events.append((status,kw))
     yield n
+    n._event=lambda *args,**kwargs:None
     n.destroy_node()
-    rclpy.shutdown()
+    gc.collect()
 
 
 def test_time_budget_cancels_existing_goal_without_early_release(node):
@@ -136,3 +147,20 @@ def test_explorer_subprocess_stops_without_interrupting_native_dds_take(tmp_path
             assert 'Traceback' not in path.read_text()
         finally:
             if child.poll() is None:child.kill();child.wait()
+
+
+def test_formal_tick_records_travel_while_navigation_action_is_active(monkeypatch):
+    from types import SimpleNamespace
+    from g2_core.explorer import ExplorerParams,GoalSelector
+    import vision_explorer.explorer_node as module
+    selector=GoalSelector(ExplorerParams(require_path_clearance=True))
+    node=SimpleNamespace(_now=lambda:1.,_watch_navigation=lambda:None,
+        _p=lambda:{'require_path_clearance':True},_mission_state=module.MISSION_EXPLORING,
+        _robot_xy=lambda:(.5,0.),_map_pose_healthy=lambda xy:True,_selector=selector,
+        _stopped=False,_attempt=object(),_handoff_token=None,_brain_pending=None)
+    monkeypatch.setattr(module.rclpy,'ok',lambda:True)
+    module.VisionExplorer._tick(node)
+    assert [(v.x,v.y) for v in selector._visits]==[(.5,0.)]
+    node._mission_state='returning';node._robot_xy=lambda:(1.,0.)
+    module.VisionExplorer._tick(node)
+    assert len(selector._visits)==1
