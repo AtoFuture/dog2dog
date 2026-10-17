@@ -96,7 +96,7 @@ open docs/课题12-机器狗自主侦查计划.html   # 可视化版本
 | G3 状态机 / 低电量返航 / 取消交接 | `/home/wy/g3_bags/auto_discharge_return_*`（`return_success_rate=1.0`）；`trajectory_suite_v4/unreachable_1` 的 EXPLORE→RETURN→ESTOP 与取消事件链 |
 | DeepSeek 候选排序 + 确定性回退 | 统一运行栈 `mission_brain` + G2 复核；上述两次验收均为 0 次回退 |
 | 浏览器仿真工作台 | 2026-10-17 实测：VNC 真实画面 1000×707、地图/位姿/电量/任务/guard 实时值、交互/仅查看、找机器狗、重连、移动端；`browser-run.log` 9/9，`camera-interaction-check.log` 交互位移 2.953 / 仅查看 0.000 |
-| G1 SLAM 边跑边建图（P1 第 5 项） | 2026-10-17 **单次 e2e 通过**：真值走 3.007 m，地图 3.7→41.4 m²，7 次更新中 5 次「狗在动且同时增长」；证据 `.runtime/g1_slam_e2e_20261017/` |
+| G1 SLAM 边跑边建图（P1 第 5 项） | 2026-10-17 **连续 3 次 e2e 通过**（3/4/5 m）：真值前进 3.007/4.001/5.001 m，地图 3.7→41.4/44.8/47.9 m²；证据 `.runtime/g1_slam_e2e_20261017/` |
 | 设备盘点 | `docs/设备清单.md`：Go2 **EDU**，含传感器规格与安装位 |
 
 运行证据在 `/home/wy/data1/.runtime/`、`/home/wy/g3_bags/`、`/home/wy/g3_reports/`、
@@ -124,7 +124,7 @@ open docs/课题12-机器狗自主侦查计划.html   # 可视化版本
 - [x] 统一运行栈 + Mission Brain 接入（DeepSeek 排序 + 确定性回退）
 - [x] 自主结束探索与有界恢复（`time_budget` 实跑）
 - [x] 浏览器仿真工作台（实时画面 + ROS 遥测 + 交互）
-- [x] G1 边跑边建图单次 e2e（P1 第 5 项，2026-10-17；待重复/多场景）
+- [x] G1 边跑边建图连续 3 次 e2e（P1 第 5 项，2026-10-17，3/4/5 m；待转向/多场景）
 - [ ] 静态场景矩阵全部通过
 - [ ] 目标检测进入正式运行栈
 - [ ] 真机分级上车
