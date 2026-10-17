@@ -19,18 +19,18 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round
 .muted { color: var(--muted); }
 .tiny-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
 
-/* Warm paper, a quiet rail, and a single terracotta interaction accent. */
+/* White surfaces, black text, and monochrome borders. */
 .rail {
   position: fixed; inset: 0 auto 0 0; width: 76px; z-index: 5;
   border-right: 1px solid var(--border); background: var(--surface);
   display: flex; align-items: center; flex-direction: column; gap: 14px;
 }
-.brand { width: 38px; height: 38px; margin: 22px 0 30px; background: var(--accent); border-radius: 10px; display: grid; place-items: center; color: var(--panel); }
+.brand { width: 38px; height: 38px; margin: 22px 0 30px; background: var(--panel); border: 1px solid var(--text); border-radius: 10px; display: grid; place-items: center; color: var(--text); }
 .brand svg { width: 29px; stroke-width: 1.7; }
 .rail-item { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 50px; padding: 10px 0; border: 0; border-radius: 8px; color: var(--muted); background: transparent; font-size: 11px; }
 .rail-item svg { width: 21px; height: 21px; }
 .rail-item:hover { color: var(--text); background: var(--surface-inset); }
-.rail-item.active { color: var(--accent); background: var(--accent-soft); }
+.rail-item.active { color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--text); font-weight: 600; }
 .rail-bottom { margin-top: auto; margin-bottom: 20px; }
 .app { margin-left: 76px; }
 .topbar { height: 76px; padding: 0 34px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); background: var(--surface); }
@@ -85,14 +85,14 @@ h2 { font-size: 12px; letter-spacing: .2px; font-weight: 550; margin: 0; white-s
 
 .telemetry { display: flex; flex-direction: column; gap: 16px; }
 .tag { border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: var(--muted); font-size: 10px; white-space: nowrap; background: var(--surface); }
-.tag.live { border-color: #c5cbb7; color: var(--positive); background: var(--positive-soft); }
-.tag.warning { border-color: #dfc89f; color: var(--warning); background: var(--warning-soft); }
+.tag.live { border-color: var(--border); color: var(--positive); background: var(--positive-soft); }
+.tag.warning { border-color: var(--text); color: var(--warning); background: var(--warning-soft); }
 .robot-panel .panel-heading { border-bottom: 0; height: 46px; }
 .robot-identity { padding: 4px 18px 17px; display: flex; align-items: center; gap: 12px; }
 .robot-mark { width: 48px; height: 43px; border-radius: 9px; background: var(--accent-soft); display: grid; place-items: center; color: var(--accent); }
 .robot-mark svg { width: 43px; height: 36px; stroke-width: 1.7; }
 .robot-identity h3 { margin: 0 0 2px; font-size: 14px; font-weight: 550; }
-.robot-id { margin-left: auto; font: 23px Georgia, serif; color: #9a8d7e; }
+.robot-id { margin-left: auto; font: 23px Georgia, serif; color: var(--text); }
 .status-line { display: flex; justify-content: space-between; padding: 4px 18px; font-size: 11px; color: var(--muted); }
 .mission-status { color: var(--text); }
 .metrics { display: grid; grid-template-columns: 1fr 1fr; margin: 15px 18px; border: 1px solid var(--border-soft); border-radius: 7px; background: var(--surface); }
@@ -125,12 +125,12 @@ h2 { font-size: 12px; letter-spacing: .2px; font-weight: 550; margin: 0; white-s
 .count { font: 10px Consolas, monospace; padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); }
 .filters { display: flex; gap: 2px; background: var(--surface-inset); padding: 3px; border-radius: 6px; }
 .filters button { background: transparent; border: 0; color: var(--muted); font-size: 10px; padding: 3px 12px; border-radius: 4px; }
-.filters button.selected { background: var(--panel); color: var(--accent); box-shadow: 0 1px 3px rgb(71 54 32 / 8%); }
+.filters button.selected { background: var(--panel); color: var(--accent); box-shadow: inset 0 0 0 1px var(--text); font-weight: 600; }
 .event-list { height: 144px; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 .events-empty { height: 100%; display: flex; align-items: center; justify-content: center; gap: 18px; padding: 20px; }
 .events-empty strong { font-size: 12px; font-weight: 500; color: var(--text); }
 .events-empty p { font-size: 11px; color: var(--muted); margin: 6px 0 0; }
-.event-empty-icon { font-size: 32px; line-height: 1; color: #a69481; }
+.event-empty-icon { font-size: 32px; line-height: 1; color: var(--text); }
 .event-row { display: grid; grid-template-columns: 62px 95px 1fr 65px; gap: 14px; border-bottom: 1px solid var(--border-soft); padding: 12px 18px; font-size: 11px; color: var(--text); }
 .event-index { font: 10px Consolas, monospace; color: var(--muted); }
 .event-status { color: var(--accent); }
@@ -140,8 +140,8 @@ h2 { font-size: 12px; letter-spacing: .2px; font-weight: 550; margin: 0; white-s
 .page-footer .tiny-dot { width: 4px; height: 4px; margin-right: 5px; background: var(--positive); }
 .version { font-family: Consolas, monospace; margin-left: 8px; }
 
-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 13px; padding: 26px; width: 440px; max-width: calc(100vw - 30px); box-shadow: 0 24px 90px rgb(65 44 25 / 16%); }
-dialog::backdrop { background: rgb(68 54 38 / 22%); backdrop-filter: blur(3px); }
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 13px; padding: 26px; width: 440px; max-width: calc(100vw - 30px); box-shadow: 0 24px 90px rgb(0 0 0 / 16%); }
+dialog::backdrop { background: rgb(0 0 0 / 22%); backdrop-filter: blur(3px); }
 .dialog-heading { display: flex; justify-content: space-between; align-items: center; }
 .dialog-heading h2 { font: 21px "Noto Serif CJK SC", "Songti SC", STSong, Georgia, serif; }
 .dialog-heading button { background: transparent; border: 0; color: var(--muted); font-size: 25px; }
@@ -153,7 +153,7 @@ dd { margin: 0; word-break: break-word; color: var(--text); }
 .reference-links { display: flex; flex-wrap: wrap; gap: 13px; font-size: 11px; margin-top: 24px; color: var(--accent); }
 .reference-links > span { color: var(--muted); margin-right: 10px; }
 .reference-links a:hover { text-decoration: underline; }
-.toast { position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--accent-border); border-radius: 8px; padding: 12px 21px; color: var(--accent); box-shadow: 0 8px 35px rgb(71 54 32 / 12%); z-index: 20; font-size: 12px; }
+.toast { position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--accent-border); border-radius: 8px; padding: 12px 21px; color: var(--accent); box-shadow: 0 8px 35px rgb(0 0 0 / 12%); z-index: 20; font-size: 12px; }
 
 @media (min-width: 1600px) {
   .workspace-grid { grid-template-columns: minmax(0, 1fr) 330px; }
