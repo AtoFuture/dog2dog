@@ -30,3 +30,6 @@
 .codeartsdoer/
 /codearts-start.sh
 .qwen/settings.json
+
+# Claude Code local settings (may contain credentials)
+.claude/settings.local.json
