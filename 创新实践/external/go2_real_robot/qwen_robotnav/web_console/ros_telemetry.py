@@ -42,7 +42,7 @@ def main():
             durable = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
             self.create_subscription(String, topics['mission'], lambda m: self.save('mission', m.data), durable)
             self.create_subscription(String, topics['guard_status'], lambda m: self.structured('guard', m.data), 10)
-            self.create_subscription(BatteryState, topics['battery'], lambda m: self.save('battery', m.percentage if m.present and math.isfinite(m.percentage) else None), 10)
+            self.create_subscription(BatteryState, topics['battery'], lambda m: self.save('battery', m.percentage if m.present and math.isfinite(m.percentage) else None), qos_profile_sensor_data)
             self.create_subscription(Odometry, topics['odometry'], lambda m: self.save('odometry', {'linear': m.twist.twist.linear.x, 'angular': m.twist.twist.angular.z}), qos_profile_sensor_data)
             self.create_subscription(OccupancyGrid, topics['map'], self.mapping, durable)
             self.create_subscription(String, '/exploration/events', lambda m: self.structured('event', m.data), 20)

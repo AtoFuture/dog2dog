@@ -1,4 +1,4 @@
-"""Local, single-window Gazebo relay with read-only ROS telemetry."""
+"""Local, interactive single-window Gazebo relay with read-only ROS telemetry."""
 import argparse
 import json
 import os
@@ -34,6 +34,11 @@ def same_origin(headers):
     return bool(origin and parsed.scheme in ('http', 'https') and parsed.netloc == headers.get('Host'))
 
 
+def ros_command(wrapper, environment, argv):
+    """Run the observer inside the wrapper container with optional explicit env."""
+    return [str(wrapper), 'env', *environment, *argv] if environment else [str(wrapper), *argv]
+
+
 def find_window(display, explicit=None):
     env = dict(os.environ, DISPLAY=display, XAUTHORITY=os.environ.get('XAUTHORITY', str(Path.home() / '.Xauthority')))
     command = ['xwininfo', '-id', explicit] if explicit else ['xwininfo', '-root', '-tree']
@@ -65,13 +70,35 @@ def fit_window(window, env):
         time.sleep(.2)
 
 
+def focus_robot(ros_wrapper, partition, world, model):
+    # Enroot does not forward host variables; set the partition inside the container.
+    environment = ['IGN_PARTITION=' + partition, 'GZ_PARTITION=' + partition]
+    def request(service, response, payload):
+        result = subprocess.run(ros_command(ros_wrapper, environment, [
+                                 'ign', 'service', '-s', service,
+                                 '--reqtype', 'ignition.msgs.Empty' if not payload else 'ignition.msgs.StringMsg',
+                                 '--reptype', response, '--timeout', '5000', '-r', payload]),
+                                capture_output=True, text=True, timeout=9, check=True)
+        if 'timed out' in (result.stderr or '').lower() or not result.stdout.strip():
+            raise OSError('Gazebo service did not answer')
+        return result.stdout
+    graph = request(f'/world/{world}/scene/graph', 'ignition.msgs.StringMsg', '')
+    if not re.search(r'(?<![\w])' + re.escape(model) + r' \(', graph):
+        return 409, {'error': '当前场景中没有找到机器狗，请先加载 Go2。'}
+    reply = request('/gui/move_to', 'ignition.msgs.Boolean', 'data: ' + json.dumps(model))
+    if not re.search(r'data:\s*true', reply):
+        return 502, {'error': 'Gazebo 未确认相机定位，请检查 GUI 连接。'}
+    return 200, {'ok': True, 'model': model}
+
+
 class State:
-    def __init__(self, domain, display):
+    def __init__(self, domain, display, gui_interactive=True):
         self.lock = threading.Lock()
         self.data = {}
         self.received = None
         self.window = {'available': False, 'message': '正在连接 Gazebo 窗口', 'display': display}
         self.domain = domain
+        self.gui_interactive = gui_interactive
         self.ros_process = None
         self.window_children = []
 
@@ -83,7 +110,8 @@ class State:
                 window.update(available=False, message='窗口转发进程已退出，请检查日志并重新启动控制台')
             return {'window': window, 'domain': self.domain, 'telemetry': self.data,
                     'bridge_age_s': age, 'bridge_alive': self.ros_process is not None and self.ros_process.poll() is None,
-                    'read_only': True}
+                    'read_only': not self.gui_interactive, 'gui_interactive': self.gui_interactive,
+                    'telemetry_read_only': True}
 
     def consume(self, child):
         for line in child.stdout:
@@ -136,7 +164,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.close_connection = True
-        self.reply(405, b'{"error":"read-only console"}')
+        if urlsplit(self.path).path != '/api/view/robot':
+            return self.reply(405, b'{"error":"unsupported operation"}')
+        try:
+            host = urlsplit('//' + self.headers.get('Host', '')).hostname
+        except ValueError:
+            host = None
+        if host not in ('127.0.0.1', 'localhost', '::1') or not same_origin(self.headers):
+            return self.reply(403, b'{"error":"same-origin loopback connection required"}')
+        if not self.server.state.gui_interactive:
+            return self.reply(403, b'{"error":"GUI input disabled"}')
+        if not self.server.state.snapshot()['window']['available']:
+            return self.reply(503, b'{"error":"window relay unavailable"}')
+        if self.headers.get('Transfer-Encoding') or self.headers.get('Content-Length', '0') != '0':
+            return self.reply(400, b'{"error":"no request body accepted"}')
+        try:
+            code, payload = self.server.focus_robot()
+        except (OSError, subprocess.SubprocessError):
+            code, payload = 502, {'error': '相机定位失败，请检查 Gazebo 分区与服务连接。'}
+        self.reply(code, json.dumps(payload).encode())
 
     def tunnel(self):
         # Keep one public HTTP origin; the private WebSocket proxy owns RFB framing.
@@ -170,19 +216,30 @@ def main():
     parser.add_argument('--display', default=':2')
     parser.add_argument('--window-id')
     parser.add_argument('--domain', type=int, default=225)
+    parser.add_argument('--partition', default=os.environ.get('IGN_PARTITION', 'go2obj'))
+    parser.add_argument('--world', default='world_demo', help='Gazebo world name used by /world/<world>/scene/graph')
+    parser.add_argument('--robot-model', default='robot1_my_bot')
     parser.add_argument('--profile', type=Path, default=ROOT.parent / 'config/sim_runtime.yaml')
     parser.add_argument('--ros-wrapper', type=Path, default=Path('/home/wy/.enroot/ros'))
+    parser.add_argument('--ros-env', action='append', default=[], metavar='KEY=VALUE',
+                        help='Environment variable for the ROS observer; repeat for each value')
     parser.add_argument('--no-ros', action='store_true')
     parser.add_argument('--no-window', action='store_true')
+    parser.add_argument('--view-only', action='store_true', help='Disable mouse and keyboard input to Gazebo')
     parser.add_argument('--log-dir', type=Path, default=Path('/tmp/go2-web-console-' + str(os.getuid())))
     args = parser.parse_args()
+    for item in args.ros_env:
+        key, separator, _ = item.partition('=')
+        if not separator or not key.isidentifier():
+            parser.error('--ros-env requires KEY=VALUE with an identifier key')
     if not 0 <= args.domain <= 232 or any(not 1024 <= p <= 65535 for p in (args.port, args.ws_port, args.vnc_port)) or len({args.port, args.ws_port, args.vnc_port}) != 3:
         parser.error('Require a valid ROS domain and three distinct unprivileged ports')
     # Bind before spawning children, so a second launch cannot duplicate relays.
     server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
     server.daemon_threads = True
-    server.state = state = State(args.domain, args.display)
+    server.state = state = State(args.domain, args.display, not args.view_only and not args.no_window)
     server.ws_port = args.ws_port
+    server.focus_robot = lambda: focus_robot(args.ros_wrapper, args.partition, args.world, args.robot_model)
     server.stopping = threading.Event()
     children, streams = [], []
     args.log_dir.mkdir(parents=True, exist_ok=True)
@@ -204,25 +261,29 @@ def main():
                     with socket.socket() as probe:
                         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                         probe.bind(('127.0.0.1', port))
-                # Never export the root desktop or input events; only the Gazebo drawable.
+                # Export only the Gazebo drawable; allow GUI input, never clipboard transfer.
                 vnc = start(['x11vnc', '-display', args.display, '-auth', env['XAUTHORITY'], '-id', window,
                              '-localhost', '-rfbport', str(args.vnc_port), '-forever', '-shared', '-nopw',
-                             '-noshm', '-noxdamage', '-noscr', '-viewonly', '-quiet'], 'window', env)
+                             '-noshm', '-noxdamage', '-noscr', '-nosel', '-input',
+                             '' if args.view_only else 'KMB', *(['-viewonly'] if args.view_only else []),
+                             '-quiet'], 'window', env)
                 ws = start([sys.executable, '-m', 'websockify', '--heartbeat', '15',
                             '127.0.0.1:' + str(args.ws_port), '127.0.0.1:' + str(args.vnc_port)], 'websocket')
                 state.window_children = [vnc, ws]
                 time.sleep(.5)
                 state.window = {'available': vnc.poll() is None and ws.poll() is None,
-                                'message': '当前 Gazebo 窗口 · 只读镜像', 'id': window, 'display': args.display}
+                                'message': '当前 Gazebo 窗口 · ' + ('可交互' if server.state.gui_interactive else '只读镜像'),
+                                'id': window, 'display': args.display}
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 state.window = {'available': False, 'message': str(exc), 'display': args.display}
         else:
             state.window['message'] = '未启用窗口转发'
         if not args.no_ros:
-            state.ros_process = start([str(args.ros_wrapper), 'python3', str(ROOT / 'ros_telemetry.py'),
-                                       '--domain', str(args.domain), '--profile', str(args.profile.resolve())], 'ros', pipe=True)
+            state.ros_process = start(ros_command(args.ros_wrapper, args.ros_env, [
+                'python3', str(ROOT / 'ros_telemetry.py'),
+                '--domain', str(args.domain), '--profile', str(args.profile.resolve())]), 'ros', pipe=True)
             threading.Thread(target=state.consume, args=(state.ros_process,), daemon=True).start()
-        print(f'Go2 console: http://127.0.0.1:{args.port} · ROS domain {args.domain} · read only', flush=True)
+        print(f'Go2 console: http://127.0.0.1:{args.port} · ROS domain {args.domain} · GUI {"view only" if args.view_only else "interactive"} · ROS read only', flush=True)
         def stop(*_):
             raise KeyboardInterrupt
         signal.signal(signal.SIGTERM, stop)

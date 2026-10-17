@@ -1,13 +1,25 @@
 import RFB from '/vendor/novnc/core/rfb.js';
 
 const $ = id => document.getElementById(id);
+let interactionRequested = true;
 let rfb, connected = false, state, filter = 'all', retry, toastTimer, lastMapPng, mapImage;
 const missions = {standby:'待机', exploring:'探索中', returning:'返航中', paused:'已暂停', estop:'急停'};
 const statuses = {sending:'下发目标', accepted:'目标已接收', succeeded:'执行成功', failed:'执行失败', canceled:'目标已取消', brain_requested:'请求决策', brain_selected:'决策完成', exploration_ended:'探索结束', search_unavailable:'暂无可用候选'};
 const guardReasons = {allowed:'运动许可', footprint_clearance:'机身净空保护', predicted_footprint_collision:'预测净空保护', nav_command_unavailable:'导航请求过期', front_obstacle:'前方障碍', excessive_tilt:'倾角保护', 'mission:standby':'待机归零', 'mission:estop':'急停归零'};
 function toast(message) { $('toast').textContent=message; $('toast').hidden=false; clearTimeout(toastTimer); toastTimer=setTimeout(()=>$('toast').hidden=true,3500); }
+function syncInteraction() {
+  const allowed=Boolean(state?.gui_interactive), active=connected&&allowed&&interactionRequested;
+  if(rfb)rfb.viewOnly=!active;
+  const button=$('interaction');button.disabled=!connected||!allowed;
+  $('focus-robot').disabled=!connected||!allowed||focusing;
+  button.setAttribute('aria-pressed',String(active));
+  button.querySelector('span').textContent=active?'交互已开启':'仅查看';
+  button.title=allowed?'切换 Gazebo 鼠标与键盘交互':'服务端已禁用交互';
+  $('interaction-hint').textContent=!connected?'等待连接':active?'拖动平移 · 滚轮缩放 · 中键旋转':'仅查看 · 交互已关闭';
+}
 function streamStatus(value, detail) {
   connected=value;
+  syncInteraction();
   $('scene-empty').hidden=value;
   $('scene-live').hidden=!value;
   $('capture').disabled=!value;
@@ -59,8 +71,8 @@ function render() {
   $('dialog-domain').textContent=state.domain;
   $('dialog-display').textContent=`${state.window.display} / ${state.window.id||'未找到窗口'}`;
   $('dialog-ros').textContent=hasData?'正在接收数据':state.bridge_alive?'观察节点已连接，等待话题数据':'观察节点未连接';
-  $('dialog-window').textContent=connected?'已连接 · 只读':state.window.message;
-  renderMap(); renderEvents();
+  $('dialog-window').textContent=connected?(state.gui_interactive?'已连接 · 可交互':'已连接 · 只读'):state.window.message;
+  syncInteraction();renderMap(); renderEvents();
 }
 function renderMap() {
   const map=fresh('map',20), pose=fresh('pose'), canvas=$('map-canvas'), ctx=canvas.getContext('2d');
@@ -104,13 +116,24 @@ async function poll() {
     if(firstPoll){firstPoll=false;connect();}
     if(!state.window.available&&connected){rfb?.disconnect();streamStatus(false,state.window.message);}
   } catch(error) {
-    state=undefined; ['linear-value','clearance-value','battery-value'].forEach(id=>$(id).textContent='—');
+    state=undefined;syncInteraction(); ['linear-value','clearance-value','battery-value'].forEach(id=>$(id).textContent='—');
     $('battery-bar').style.width='0%';$('map-details').textContent='MAP —';$('dialog-ros').textContent='状态连接已断开';
     $('mission-state').textContent='状态连接已断开';setTag('ros-badge','连接中断',false,true);setTag('guard-badge','数据已过期',false,true);
     $('guard-reason').textContent='状态连接已断开';$('pose-age').textContent='已过期';$('nav-age').textContent='已过期';
     $('map-canvas').getContext('2d').clearRect(0,0,640,320);$('map-empty').hidden=false;setTag('map-badge','连接中断',false,true);
   } finally {setTimeout(poll,1500);}
 }
+let focusing=false;
+$('focus-robot').addEventListener('click',async()=>{
+  if(focusing)return;focusing=true;$('focus-robot').disabled=true;
+  try {
+    const response=await fetch('/api/view/robot',{method:'POST',signal:AbortSignal.timeout(20000)});
+    const result=await response.json();if(!response.ok)throw new Error(result.error||'相机定位失败');
+    toast('镜头已移向机器狗。');
+  }catch(error){toast(error.message||'相机定位失败，请重试。');}
+  finally{focusing=false;syncInteraction();}
+});
+$('interaction').addEventListener('click',()=>{interactionRequested=!interactionRequested;syncInteraction();});
 $('reconnect').addEventListener('click',connect);
 $('fullscreen').addEventListener('click',async()=>{try{if(document.fullscreenElement)await document.exitFullscreen();else await $('viewport').requestFullscreen();}catch{toast('当前浏览器不支持全屏。');}});
 $('capture').addEventListener('click',()=>{if(!connected||!rfb)return;try{const data=rfb.getImageData(),canvas=document.createElement('canvas');canvas.width=data.width;canvas.height=data.height;canvas.getContext('2d').putImageData(data,0,0);canvas.toBlob(blob=>{if(!blob)return;const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`go2-gazebo-${Date.now()}.png`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('当前画面已保存。');});}catch{toast('暂时无法获取画面，请重连后再试。');}});

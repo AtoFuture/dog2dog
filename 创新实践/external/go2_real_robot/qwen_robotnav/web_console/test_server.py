@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from http.server import ThreadingHTTPServer
 import server
 
@@ -15,6 +15,7 @@ class ConsoleTests(unittest.TestCase):
         cls.http = ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
         cls.http.state = server.State(225, ':2')
         cls.http.state.window['available'] = True
+        cls.http.focus_robot = lambda: (200, {'ok': True})
         cls.http.stopping = threading.Event()
         cls.thread = threading.Thread(target=cls.http.serve_forever, daemon=True)
         cls.thread.start()
@@ -55,10 +56,102 @@ class ConsoleTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(data['telemetry'], {})
         self.assertIsNone(data['bridge_age_s'])
+        self.assertFalse(data['read_only'])
+        self.assertTrue(data['gui_interactive'])
+        self.assertTrue(data['telemetry_read_only'])
+
+    def test_view_only_mode_advertises_disabled_gui_input(self):
+        data = server.State(225, ':2', gui_interactive=False).snapshot()
         self.assertTrue(data['read_only'])
+        self.assertFalse(data['gui_interactive'])
+        self.assertTrue(data['telemetry_read_only'])
 
     def test_commands_are_not_an_api(self):
         self.assertEqual(self.request('/api/command', 'POST')[0], 405)
+
+    def test_ros_command_wraps_environment_inside_container(self):
+        self.assertEqual(server.ros_command('/wrapper', [], ['python3', 'x.py']),
+                         ['/wrapper', 'python3', 'x.py'])
+        self.assertEqual(server.ros_command('/wrapper', ['A=1', 'B=2'], ['python3', 'x.py']),
+                         ['/wrapper', 'env', 'A=1', 'B=2', 'python3', 'x.py'])
+
+    def test_view_robot_requires_same_origin(self):
+        self.assertEqual(self.request('/api/view/robot', 'POST')[0], 403)
+        self.assertEqual(self.request('/api/view/robot', 'POST', headers={'Origin': 'https://example.com'})[0], 403)
+
+    def test_view_robot_delegates_with_same_origin(self):
+        self.http.focus_robot = lambda: (200, {'ok': True, 'model': 'robot1_my_bot'})
+        status, _, body = self.request('/api/view/robot', 'POST',
+                                       headers={'Origin': f'http://127.0.0.1:{self.http.server_port}'})
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)['ok'])
+
+    def test_view_robot_disabled_in_view_only_mode(self):
+        self.http.state.gui_interactive = False
+        try:
+            status, _, _ = self.request('/api/view/robot', 'POST',
+                                        headers={'Origin': f'http://127.0.0.1:{self.http.server_port}'})
+            self.assertEqual(status, 403)
+        finally:
+            self.http.state.gui_interactive = True
+
+    def test_view_robot_requires_available_window(self):
+        self.http.state.window['available'] = False
+        try:
+            status, _, _ = self.request('/api/view/robot', 'POST',
+                                        headers={'Origin': f'http://127.0.0.1:{self.http.server_port}'})
+            self.assertEqual(status, 503)
+        finally:
+            self.http.state.window['available'] = True
+
+    def test_view_robot_rejects_request_body(self):
+        conn = http.client.HTTPConnection('127.0.0.1', self.http.server_port, timeout=2)
+        try:
+            conn.request('POST', '/api/view/robot', body=b'{}',
+                         headers={'Origin': f'http://127.0.0.1:{self.http.server_port}',
+                                  'Content-Type': 'application/json'})
+            self.assertEqual(conn.getresponse().status, 400)
+        finally:
+            conn.close()
+
+    def test_focus_robot_reports_missing_model(self):
+        with patch.object(server.subprocess, 'run',
+                          return_value=Mock(stdout='digraph { 1 [label="world_demo (1)"]; }', stderr='')) as run:
+            code, payload = server.focus_robot('/usr/bin/env', 'go2obj', 'world_demo', 'robot1_my_bot')
+        self.assertEqual(code, 409)
+        self.assertIn('没有找到机器狗', payload['error'])
+        command = run.call_args.args[0]
+        self.assertEqual(command[1:3], ['env', 'IGN_PARTITION=go2obj'])
+        self.assertEqual(command[command.index('-s') + 1], '/world/world_demo/scene/graph')
+
+    def test_focus_robot_moves_camera_for_existing_model(self):
+        def reply(command, **kwargs):
+            service = command[command.index('-s') + 1]
+            if service == '/world/world_demo/scene/graph':
+                return Mock(stdout='1 [label="world_demo (1)"];\n7 [label="robot1_my_bot (7)"];', stderr='')
+            if service == '/gui/move_to':
+                return Mock(stdout='data: true', stderr='')
+            raise AssertionError(service)
+        with patch.object(server.subprocess, 'run', side_effect=reply):
+            code, payload = server.focus_robot('/usr/bin/env', 'go2obj', 'world_demo', 'robot1_my_bot')
+        self.assertEqual(code, 200)
+        self.assertEqual(payload, {'ok': True, 'model': 'robot1_my_bot'})
+
+    def test_focus_robot_rejects_unconfirmed_camera_move(self):
+        def reply(command, **kwargs):
+            if command[command.index('-s') + 1] == '/world/world_demo/scene/graph':
+                return Mock(stdout='7 [label="robot1_my_bot (7)"];', stderr='')
+            return Mock(stdout='data: false', stderr='')
+        with patch.object(server.subprocess, 'run', side_effect=reply):
+            code, payload = server.focus_robot('/usr/bin/env', 'go2obj', 'world_demo', 'robot1_my_bot')
+        self.assertEqual(code, 502)
+        self.assertIn('未确认', payload['error'])
+
+    def test_focus_robot_reports_service_timeout(self):
+        with patch.object(server.subprocess, 'run',
+                          return_value=Mock(stdout='', stderr='Service call timed out')):
+            with self.assertRaises(OSError):
+                server.focus_robot('/usr/bin/env', 'go2obj', 'world_demo', 'robot1_my_bot')
 
     def test_foreign_websocket_origin_is_rejected(self):
         self.assertEqual(self.request('/vnc', headers={'Origin': 'https://example.com', 'Upgrade': 'websocket'})[0], 403)
