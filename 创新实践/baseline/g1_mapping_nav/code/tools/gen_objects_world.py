@@ -131,6 +131,8 @@ parts = ["\n    <!-- ==== 行人：<actor> 长走廊矩形环 ==== -->\n"]
 parts.append(actor_person("person_1", [(10.8, 0.4), (10.8, 7.4)]))
 parts.append(actor_person("person_2", [(18.75, 0.4), (18.75, 7.4)]))
 parts.append(actor_person("person_3", [(8.0, 0.25), (20.5, 0.25)]))
+parts.append(actor_person("person_4", [(14.65, -0.4), (14.65, 3.8)]))
+parts.append(actor_person("person_5", [(8.0, -5.1), (20.0, -5.1)]))
 parts.append("\n    <!-- ==== 车辆：带轮整车 + 官方 AckermannSteering + TrajDrive(cmd_vel) ==== -->\n")
 parts.append(vehicle("suv_1", 3.6, -5.4, 1.5708, [(3.6, -5.4), (3.6, 7.0)], 0.6))
 parts.append(vehicle("suv_2", 5.4, -5.4, 1.5708, [(5.4, -5.4), (5.4, 4.0)], 0.6))

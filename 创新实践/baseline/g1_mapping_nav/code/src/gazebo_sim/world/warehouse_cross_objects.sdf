@@ -748,6 +748,34 @@
       </script>
     </actor>
 
+    <actor name="person_4">
+      <pose>14.65 -0.4 0 0 0 0</pose>
+      <skin><filename>model://person_standing/meshes/standing.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x></animation>
+      <script>
+        <loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk" tension="1.0">
+          <waypoint><time>0.0</time><pose>0.0 0.0 0 0 0 0</pose></waypoint>
+          <waypoint><time>14.0</time><pose>0.0 4.2 0 0 0 0</pose></waypoint>
+          <waypoint><time>28.0</time><pose>0 0 0 0 0 0</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+
+    <actor name="person_5">
+      <pose>8.0 -5.1 0 0 0 0</pose>
+      <skin><filename>model://person_standing/meshes/standing.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x></animation>
+      <script>
+        <loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk" tension="1.0">
+          <waypoint><time>0.0</time><pose>0.0 0.0 0 0 0 0</pose></waypoint>
+          <waypoint><time>40.0</time><pose>12.0 0.0 0 0 0 0</pose></waypoint>
+          <waypoint><time>80.0</time><pose>0 0 0 0 0 0</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+
     <!-- ==== 车辆：带轮整车 + 官方 AckermannSteering + TrajDrive(cmd_vel) ==== -->
 
     <model name='suv_1'>
