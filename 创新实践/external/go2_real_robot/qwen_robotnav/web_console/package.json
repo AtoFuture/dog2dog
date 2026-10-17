@@ -1,0 +1,15 @@
+{
+  "name": "go2-simulation-console",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser view of the existing Gazebo window and read-only ROS telemetry",
+  "dependencies": {
+    "@novnc/novnc": "1.7.0"
+  },
+  "scripts": {
+    "start": "python3 server.py",
+    "test": "python3 -m unittest -v test_server",
+    "check": "node --check public/app.js"
+  }
+}
