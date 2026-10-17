@@ -52,6 +52,9 @@ cleanup() {
         kill "${pid}" 2>/dev/null
         wait "${pid}" 2>/dev/null
     done
+    # ros2 run / parameter_bridge 的子进程可能比 wrapper 活得久，按名字兜底。
+    pkill -f "[g]t_bridge" 2>/dev/null
+    pkill -f "[g]t_relay.py" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -64,8 +67,20 @@ query_state() {
         | sed -E "s/.*state='([a-z]+)'.*/\1/"
 }
 STATE="$(query_state)"
-if [ "${STATE}" != "active" ]; then
-    echo "   当前 ${STATE:-查不到} → 先 configure 再 switch"
+CMD_PUBS="$(timeout 15 ros2 topic info "${CMD_TOPIC}" 2>/dev/null \
+    | grep -oE "Publisher count: [0-9]+" | grep -oE "[0-9]+")"
+if [ -z "${STATE}" ]; then
+    # 当前标准仿真没有 libgz_ros2_control-system.so，运动链走自定义
+    # quadruped_controller；controller_manager 服务不存在，但 commands 话题有 1 个发布者。
+    if [ "${CMD_PUBS:-0}" = "1" ]; then
+        echo "   controller_manager 不可用；commands 发布者=1 → 自定义 quadruped 控制器通路"
+    else
+        echo "ERROR: controller_manager 不可用，且 ${CMD_TOPIC} 发布者=${CMD_PUBS:-0}" >&2
+        echo "       命令进不去，狗不会动。停。" >&2
+        exit 2
+    fi
+elif [ "${STATE}" != "active" ]; then
+    echo "   当前 ${STATE} → 先 configure 再 switch"
     # unconfigured 的控制器直接 switch 会返回 ok=True 但状态不变（实测）
     if [ "${STATE}" != "inactive" ]; then
         timeout 30 ros2 service call "${CTRL_MGR}/configure_controller" \
@@ -78,11 +93,11 @@ if [ "${STATE}" != "active" ]; then
         >"${LOG_DIR}/walk_activate.log" 2>&1
     STATE="$(query_state)"
 fi
-if [ "${STATE}" != "active" ]; then
-    echo "ERROR: joint_group_controller = ${STATE:-查不到}，命令进不去，狗不会动。停。" >&2
+if [ -n "${STATE}" ] && [ "${STATE}" != "active" ]; then
+    echo "ERROR: joint_group_controller = ${STATE}，命令进不去，狗不会动。停。" >&2
     exit 2
 fi
-echo "   joint_group_controller: active"
+echo "   joint_group_controller: active（或自定义控制器通路）"
 
 echo "== 2/5 前置自检：commands 发布者数 =="
 PUBS="$(timeout 15 ros2 topic info "${CMD_TOPIC}" 2>/dev/null \

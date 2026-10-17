@@ -29,7 +29,7 @@ from tf2_ros import TransformBroadcaster
 from geometry_msgs.msg import TransformStamped
 from sensor_msgs.msg import LaserScan
 
-GT_INPUT_TOPIC = "/g1/gt_pose"
+GT_INPUT_TOPIC = "/world/world_demo/pose/info"
 GT_OUTPUT_TOPIC = "/g1/ground_truth"
 
 

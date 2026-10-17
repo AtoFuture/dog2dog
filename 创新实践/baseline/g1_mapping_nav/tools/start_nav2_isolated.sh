@@ -64,7 +64,25 @@ query_controller_state() {
 STATE="$(query_controller_state)"
 echo "   当前状态：${STATE:-查不到}"
 
-if [ "${STATE}" != "active" ]; then
+# 当前标准仿真（qwen_robotnav 生成的 Gazebo scene）没有加载
+# libgz_ros2_control-system.so，`/robot1/controller_manager` 服务不存在；
+# 运动链走自定义 quadruped_controller，命令直接发到
+# /robot1/joint_group_controller/commands。此时用 commands 发布者数做等价自检。
+SKIP_CONTROLLER_MANAGER=0
+if [ -z "${STATE}" ]; then
+    CMD_PUBS="$(timeout 15 ros2 topic info /robot1/joint_group_controller/commands 2>/dev/null \
+        | grep -oE "Publisher count: [0-9]+" | grep -oE "[0-9]+")"
+    if [ "${CMD_PUBS:-0}" = "1" ]; then
+        echo "   controller_manager 不可用；commands 发布者=1 → 自定义 quadruped 控制器通路"
+        SKIP_CONTROLLER_MANAGER=1
+    else
+        echo "ERROR: controller_manager 查不到，且 commands 发布者=${CMD_PUBS:-0}" >&2
+        echo "       狗不会动。检查仿真是否完整启动。" >&2
+        exit 1
+    fi
+fi
+
+if [ "${SKIP_CONTROLLER_MANAGER}" = "0" ] && [ "${STATE}" != "active" ]; then
     # 先 configure 再 activate —— 两步缺一不可。2026-09-24 在新起的仿真上实测：
     # `unconfigured` 的控制器调 switch_controller 会返回 ok=True 但**状态不变**，
     # 于是自检照样失败、停在 1/3（第一次跑就是这么被挡住的）。
@@ -92,17 +110,21 @@ if [ "${STATE}" != "active" ]; then
     fi
 fi
 
-echo "   确认 joint_state_broadcaster 已激活（N5: spawner 间歇失败致 odom 不发）"
-JSB_STATE="$(timeout 20 ros2 service call "${CTRL_MGR}/list_controllers" \
-    controller_manager_msgs/srv/ListControllers 2>/dev/null \
-    | grep -oE "name='joint_state_broadcaster', state='[a-z]+'" \
-    | sed -E "s/.*state='([a-z]+)'.*/\1/")"
-if [ "${JSB_STATE}" != "active" ]; then
-    echo "   joint_state_broadcaster 状态：${JSB_STATE:-查不到} → 激活"
-    timeout 30 ros2 service call "${CTRL_MGR}/switch_controller" \
-        controller_manager_msgs/srv/SwitchController \
-        "{activate_controllers: [joint_state_broadcaster], strictness: 1}" \
-        >"${LOG_DIR}/activate_jsb.log" 2>&1
+if [ "${SKIP_CONTROLLER_MANAGER}" = "0" ]; then
+    echo "   确认 joint_state_broadcaster 已激活（N5: spawner 间歇失败致 odom 不发）"
+    JSB_STATE="$(timeout 20 ros2 service call "${CTRL_MGR}/list_controllers" \
+        controller_manager_msgs/srv/ListControllers 2>/dev/null \
+        | grep -oE "name='joint_state_broadcaster', state='[a-z]+'" \
+        | sed -E "s/.*state='([a-z]+)'.*/\1/")"
+    if [ "${JSB_STATE}" != "active" ]; then
+        echo "   joint_state_broadcaster 状态：${JSB_STATE:-查不到} → 激活"
+        timeout 30 ros2 service call "${CTRL_MGR}/switch_controller" \
+            controller_manager_msgs/srv/SwitchController \
+            "{activate_controllers: [joint_state_broadcaster], strictness: 1}" \
+            >"${LOG_DIR}/activate_jsb.log" 2>&1
+    fi
+else
+    echo "   跳过 joint_state_broadcaster（controller_manager 不可用）"
 fi
 
 echo "== 2/3 起速度缩放器 =="

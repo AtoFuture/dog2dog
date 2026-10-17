@@ -3,11 +3,13 @@
 ## slam 开关
 
 `slam:=true` 时：
-- 传 slam:=False 给 nav2_bringup（避免 slam_launch.py 的参数文件键冲突
-  导致 /robot1//robot1/ 解析错误）
+- 只包含 `navigation_launch.py`（controller/planner/bt/smoother/velocity_smoother），
+  **不启动 AMCL + map_server**；否则它们会和 slam_toolbox 争 `/map` 与 `map→odom`
 - 单独启动 slam_toolbox 节点，用 Node action 显式设置 namespace 和参数
 - 单独启动 map_saver + lifecycle_manager_slam
 - map→odom TF 由 slam_toolbox 发布
+
+`slam:=false` 时保持原来的 `bringup_launch.py`（AMCL + 静态地图）。
 
 用法：
     ros2 launch <本文件> map:=/path/to/map.yaml
@@ -24,10 +26,10 @@ from launch.actions import (
     IncludeLaunchDescription,
     OpaqueFunction,
 )
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node, SetRemap
+from launch_ros.actions import Node, PushRosNamespace, SetRemap
 
 DEFAULT_PARAMS = (
     "/home/wy/data1/创新实践/baseline/g1_mapping_nav/config/go2_nav2.yaml"
@@ -50,25 +52,30 @@ SLAM_PARAMS = {
     "odom_frame": "odom",
     "map_frame": "map",
     "base_frame": "base_link",
-    "scan_topic": "/scan",
+    # 仿真桥发布的是 /robot1/velodyne；绝不能写 /scan（没有发布者）。
+    # 这些值对齐 .runtime/web_console_demo/slam.yaml 的已验证运行栈配置：
+    # 单线雷达 ±15° 会打到地面，限幅 4 m 并抬高 min_laser_range 可避开地面环。
+    "scan_topic": "/robot1/velodyne",
     "use_map_saver": True,
     "mode": "mapping",
     "debug_logging": False,
     "throttle_scans": 1,
     "transform_publish_period": 0.02,
+    # 与 map_growth.py 的 MOVE_MIN_M=0.5 配套：5 s 更新一次时，
+    # 0.13 m/s 的慢走每个间隔约 0.65 m，才可能满足「增长发生在运动时段」。
     "map_update_interval": 5.0,
     "resolution": 0.05,
-    "min_laser_range": 0.0,
-    "max_laser_range": 20.0,
-    "minimum_time_interval": 0.5,
-    "transform_timeout": 2.0,
+    "min_laser_range": 0.3,
+    "max_laser_range": 4.0,
+    "minimum_time_interval": 0.2,
+    "transform_timeout": 0.2,
     "tf_buffer_duration": 30.0,
     "stack_size_to_use": 40000000,
     "enable_interactive_mode": False,
     "use_scan_matching": True,
     "use_scan_barycenter": True,
-    "minimum_travel_distance": 0.0,
-    "minimum_travel_heading": 0.0,
+    "minimum_travel_distance": 0.1,
+    "minimum_travel_heading": 0.1,
     "scan_buffer_size": 10,
     "scan_buffer_maximum_scan_distance": 10.0,
     "link_match_minimum_response_fine": 0.1,
@@ -120,14 +127,10 @@ def generate_launch_description():
     ld.add_action(params_arg)
     ld.add_action(sim_time_arg)
 
-    bringup = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(
-                get_package_share_directory("nav2_bringup"),
-                "launch",
-                "bringup_launch.py",
-            )
-        ),
+    nav2_dir = os.path.join(get_package_share_directory("nav2_bringup"), "launch")
+    amcl_bringup = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(nav2_dir, "bringup_launch.py")),
+        condition=UnlessCondition(LaunchConfiguration("slam")),
         launch_arguments={
             "map": LaunchConfiguration("map"),
             "slam": "False",
@@ -138,12 +141,34 @@ def generate_launch_description():
         }.items(),
     )
 
+    # SLAM 模式只起导航节点；slam_toolbox 由下面的 Node 单独承担。
+    # 不能再用 bringup_launch.py slam:=False，否则 AMCL + map_server 会一起启动，
+    # 与 slam_toolbox 争 /map 和 map→odom（2026-10-17 实测的结构性问题）。
+    navigation_only = GroupAction(
+        condition=IfCondition(LaunchConfiguration("slam")),
+        actions=[
+            PushRosNamespace(ROBOT_NAMESPACE),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(os.path.join(nav2_dir, "navigation_launch.py")),
+                launch_arguments={
+                    "namespace": ROBOT_NAMESPACE,
+                    "use_sim_time": LaunchConfiguration("use_sim_time"),
+                    "params_file": LaunchConfiguration("params_file"),
+                    "autostart": "true",
+                    "use_composition": "False",
+                    "use_respawn": "False",
+                }.items(),
+            ),
+        ],
+    )
+
     ld.add_action(
         GroupAction(
             actions=[
                 SetRemap(src="cmd_vel_smoothed", dst=NAV_OUTPUT_TOPIC),
                 SetRemap(src="cmd_vel", dst="cmd_vel_limited"),
-                bringup,
+                amcl_bringup,
+                navigation_only,
             ]
         )
     )
@@ -154,6 +179,16 @@ def generate_launch_description():
         name="slam_toolbox",
         namespace=ROBOT_NAMESPACE,
         parameters=[SLAM_PARAMS],
+        # 仿真的 TF 发在 /robot1/tf（gazebo launch 把 /tf 重映射进了命名空间）；
+        # tf2_ros 默认订绝对话题 /tf，不重映射就看不到 odom→base_link。
+        # slam_toolbox 的地图发布器用绝对话题 /map；项目统一约定是 /robot1/map，
+        # 不重映射的话 Nav2 static_layer、网页和 e2e 都以为「没有地图」。
+        remappings=[
+            ("/tf", "/robot1/tf"),
+            ("/tf_static", "/robot1/tf_static"),
+            ("/map", "/robot1/map"),
+            ("/map_metadata", "/robot1/map_metadata"),
+        ],
         output="screen",
         condition=IfCondition(LaunchConfiguration("slam")),
     )

@@ -6,7 +6,10 @@
 # 说清楚原因，不让你跑完一轮才发现结论没意义。
 #
 # 前置（脚本会自己查，不替你起仿真 —— 起仿真要 GPU，很重）：
-#   · 隔离仿真在跑（Domain 43 / IGN_PARTITION=wy，run_sim_iso.sh 起的）
+#   · 隔离仿真在跑，且必须加载了 gz_ros2_control（用顶层 gazebo_nav2.launch.py
+#     起；手工 ign gazebo 会漏系统插件，控制器/commands 看着正常但狗原地走）
+#   · 推荐任意隔离 Domain + IGN_PARTITION；下面是旧共享通路示例：
+#       cd ~/go2_sim_ws && GUI=1 GZ_HEADLESS=1 ROS_DOMAIN_ID=43 IGN_PARTITION=wy ./run_sim_iso.sh
 #
 # 用法（外层用 g1ros.sh 进容器）：
 #   ./g1ros.sh bash tools/slam_e2e_check.sh [走多远m] [输出目录]
@@ -17,29 +20,60 @@ set -uo pipefail
 DISTANCE="${1:-3.0}"
 OUT="${2:-/tmp/g1_slam_e2e_$(date +%H%M%S)}"
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_DIR="$(dirname "${OUT}")"
+LOG_DIR="${OUT}_logs"
 mkdir -p "${LOG_DIR}"
+
+NAV_PID=""
+cleanup() {
+    [ -n "${NAV_PID}" ] && kill "${NAV_PID}" 2>/dev/null
+    # ros2 launch 的子节点可能在被父进程丢弃后继续运行；按可执行文件名兜底清理。
+    # 本脚本只应在隔离域使用，这些名字不会命中共享仿真里的节点。
+    for pattern in "[n]av2_scaled.launch.py" "[s]ync_slam_toolbox_node" \
+        "[n]av2_controller/controller_server" "[n]av2_planner/planner_server" \
+        "[n]av2_bt_navigator/bt_navigator" "[n]av2_behaviors/behavior_server" \
+        "[n]av2_smoother/smoother_server" "[n]av2_waypoint_follower/waypoint_follower" \
+        "[n]av2_lifecycle_manager/lifecycle_manager" "[n]av2_map_server/map_saver_server" \
+        "[c]md_vel_scaler.py" "[g]t_bridge" "[g]t_relay.py"; do
+        pkill -f "${pattern}" 2>/dev/null
+    done
+}
+trap cleanup EXIT
 
 fail() { echo "ERROR: $*" >&2; exit 2; }
 
 echo "== 1/5 闸门：仿真在不在 =="
-if ! timeout 10 ros2 topic list 2>/dev/null | grep -qx "/robot1/odom"; then
+TOPICS="$(timeout 10 ros2 topic list 2>/dev/null || true)"
+if ! grep -qE '^/robot1/(odometry/filtered|odom)$' <<<"${TOPICS}"; then
     cat >&2 <<'MSG'
-ERROR: 看不到 /robot1/odom —— 隔离仿真没在跑（或不在 Domain 43）。
+ERROR: 看不到 /robot1/odometry/filtered（或旧版 /robot1/odom）—— 隔离仿真没在跑。
 
-先起仿真（约 1 分钟）：
-    cd ~/go2_sim_ws && GUI=1 GZ_HEADLESS=1 ROS_DOMAIN_ID=43 IGN_PARTITION=wy ./run_sim_iso.sh
+先起仿真（两种已知可用的方式）：
+  1) 共享仿真（旧通路，注意 Domain 43 / IGN_PARTITION=wy）：
+       cd ~/go2_sim_ws && GUI=1 GZ_HEADLESS=1 ROS_DOMAIN_ID=43 IGN_PARTITION=wy ./run_sim_iso.sh
+  2) qwen_robotnav 生成的隔离仿真（水平单线雷达，推荐用于 SLAM）：
+       python3 scripts/prepare_simulator_launch.py --single-odom-tf \
+         --sim-workspace ~/go2_sim_ws/ROS2-Gazebo-GO2 --output-dir /tmp/g1_slam_sim
+       然后在 ros-gui 容器里设 GZ_HEADLESS=1 起 /tmp/g1_slam_sim/gazebo_nav2.launch.py
 
-⚠️ 必须用 run_sim_iso.sh（它设 IGN_PARTITION=wy 且默认 G1_SINGLE_ODOM_TF=1）。
-   用 run_sim.sh 会落到共享 Domain 42，和别人的仿真撞在一起。
+⚠️ 两种方式都必须设 G1_SINGLE_ODOM_TF=1（或等价配置），让 EKF 独占 odom→base_link。
 ⚠️ 仿真跑超过一天会「原地蹬腿」（预检全绿但狗走不动），测前请新起一份。
 MSG
     exit 2
 fi
-echo "   /robot1/odom 在 ✓"
+echo "   /robot1/odometry/filtered 在 ✓"
+if ! grep -qx "/robot1/velodyne" <<<"${TOPICS}"; then
+    fail "看不到 /robot1/velodyne —— SLAM 没有可用的扫描话题（不要再期望 /scan）。"
+fi
+VELO_PUBS="$(timeout 15 ros2 topic info /robot1/velodyne 2>/dev/null \
+    | grep -oE "Publisher count: [0-9]+" | grep -oE "[0-9]+")"
+[ "${VELO_PUBS:-0}" -ge 1 ] || fail "/robot1/velodyne 没有发布者，SLAM 无法建图。"
+echo "   /robot1/velodyne 在流 ✓"
 
 echo "== 2/5 起 Nav2（slam 模式）=="
-# start_nav2_isolated.sh 会自己确认控制器激活；这里放后台，后面单独查
+# start_nav2_isolated.sh 会自己确认控制器激活；这里放后台，后面单独查。
+# G1_LOG_DIR 必须显式导出：它决定 start_nav2_isolated.sh / cmd_vel_scaler 的日志位置，
+# 之前不导出时 e2e 在 /tmp 找日志、脚本却写到 /tmp/g1_p1，永远等不到。
+export G1_LOG_DIR="${LOG_DIR}"
 bash "${TOOLS_DIR}/start_nav2_isolated.sh" --slam >"${LOG_DIR}/slam_e2e_nav2.log" 2>&1 &
 NAV_PID=$!
 echo "   pid=${NAV_PID}，等 slam_toolbox 起来"
@@ -50,25 +84,31 @@ done
 sleep 12
 
 echo "== 3/5 闸门：slam_toolbox 参数有没有生效 =="
-# 这是被反复踩的坑：config/go2_nav2.yaml 里 slam 段必须「空壳裸键 + 全限定键」
-# 两键共存，否则参数被静默丢弃（节点跑代码默认值），图一条也建不出来。
+# 当前参数不再从 config/go2_nav2.yaml 读，而是 nav2_scaled.launch.py 里的 SLAM_PARAMS。
+# 这里核对运行中的真实参数，防止 launch 被改回 scan_topic=/scan 或扫到错误话题。
 BF="$(timeout 20 ros2 param get /robot1/slam_toolbox base_frame --no-daemon 2>/dev/null | tail -1)"
 ST="$(timeout 20 ros2 param get /robot1/slam_toolbox scan_topic --no-daemon 2>/dev/null | tail -1)"
 echo "   base_frame = ${BF}"
 echo "   scan_topic = ${ST}"
 case "${BF}" in
     *base_link*) ;;
-    *) fail "base_frame 不是 base_link（是「${BF}」）—— slam 参数没生效。
-       改 config/go2_nav2.yaml：slam 段要**两个键**，
-         slam_toolbox: {ros__parameters: {}}          ← 空壳，只为过 HasNodeParams 门禁
-         /robot1/slam_toolbox: {ros__parameters: ...} ← 真参数写这里（rcl 只认全限定名）
-       实测：只有裸键 → 参数全丢；两键 → 生效。验证只要 1 分钟，不用起仿真。" ;;
+    *) fail "base_frame 不是 base_link（是「${BF}」）—— SLAM 参数没生效。
+       检查 tools/nav2_scaled.launch.py 的 SLAM_PARAMS：base_frame 必须是 base_link。" ;;
 esac
 case "${ST}" in
     *velodyne*) ;;
-    *) fail "scan_topic 不是 velodyne（是「${ST}」）—— 同上，slam 参数没生效。" ;;
+    *) fail "scan_topic 不是 velodyne（是「${ST}」）—— SLAM 参数没生效。
+       检查 tools/nav2_scaled.launch.py 的 SLAM_PARAMS：scan_topic 必须是 /robot1/velodyne，
+       不能是 /scan（仿真没有 /scan 发布者）。" ;;
 esac
-echo "   参数生效 ✓"
+# 结构性回归：SLAM 模式绝不能同时启动 AMCL/map_server。
+# 它们和 slam_toolbox 会同时发 /map 与 map→odom，地图会跳、SLAM 结果不可信。
+NODES="$(timeout 15 ros2 node list --no-daemon 2>/dev/null || ros2 node list 2>/dev/null || true)"
+if grep -qE '^/robot1/(amcl|map_server)$' <<<"${NODES}"; then
+    fail "SLAM 模式仍启动了 AMCL/map_server。nav2_scaled.launch.py 必须在 slam:=true 时
+       只包含 navigation_launch.py，不能包含 bringup_launch.py 的 localization 部分。"
+fi
+echo "   参数生效，且没有 AMCL/map_server 抢 /map ✓"
 
 echo "== 4/5 闸门：/robot1/map 有发布者 =="
 MAPUBS="$(timeout 15 ros2 topic info /robot1/map --no-daemon 2>/dev/null | grep -oE "Publisher count: [0-9]+" | grep -oE "[0-9]+")"
@@ -76,14 +116,24 @@ MAPUBS="$(timeout 15 ros2 topic info /robot1/map --no-daemon 2>/dev/null | grep 
 echo "   Publisher count = ${MAPUBS} ✓"
 
 echo "== 5/5 驱动 + 判定 =="
+# 本验收用 walk_driver 直接发 /robot1/cmd_vel；cmd_vel_scaler 会按 N3 的安全行为
+# 以 50 Hz 持续发零，和 walk_driver 抢同一个话题，狗会走不动。先停掉它。
+# Nav2 的 velocity_smoother 输出仍去 cmd_vel_scaled_out，没人消费也无副作用。
+pkill -f "[c]md_vel_scaler.py" 2>/dev/null
+sleep 1
 echo "   让狗走 ${DISTANCE} m（真值闭环），同时录 /robot1/map"
 bash "${TOOLS_DIR}/walk_test.sh" "${DISTANCE}" 0.02 "${OUT}" 200
 WALK_RC=$?
 
 echo
 echo "== 地图增长判定（P1 第 5 项的正身）=="
-python3 "${TOOLS_DIR}/map_growth.py" "${OUT}" --json "${LOG_DIR}/map_growth.json"
-MAP_RC=$?
+if [ ! -f "${OUT}/metadata.yaml" ]; then
+    echo "   证据包不存在：walk_test 在前置/驱动阶段失败，没有录到 /robot1/map。"
+    MAP_RC=2
+else
+    python3 "${TOOLS_DIR}/map_growth.py" "${OUT}" --json "${LOG_DIR}/map_growth.json"
+    MAP_RC=$?
+fi
 
 kill "${NAV_PID}" 2>/dev/null
 pkill -f "[n]av2_scaled.launch.py" 2>/dev/null
