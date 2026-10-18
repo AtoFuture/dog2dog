@@ -65,10 +65,12 @@ amcl_G5 那个包里 694 条指令有 **163 条**被裁，goal_G5 里 802 条有
 """
 
 import math
+import signal
 
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from rclpy.signals import SignalHandlerOptions
 
 
 class CmdVelScaler(Node):
@@ -185,10 +187,19 @@ class CmdVelScaler(Node):
 
 
 def main():
-    rclpy.init()
+    # Defer shutdown until the DDS take/callback has returned to Python.
+    # rclpy's asynchronous context shutdown can invalidate an in-flight take.
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+    stopping = False
+    def request_stop(_signal, _frame):
+        nonlocal stopping
+        stopping = True
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
     node = CmdVelScaler()
     try:
-        rclpy.spin(node)
+        while rclpy.ok() and not stopping:
+            rclpy.spin_once(node, timeout_sec=.05)
     except KeyboardInterrupt:
         pass
     finally:

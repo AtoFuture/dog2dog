@@ -33,6 +33,7 @@ import numpy as np
 from .frontier import FrontierCluster, detect_frontiers, has_frontier_cells
 from .geodesic import geodesic_distance
 from .grid import GridMap
+from .visibility import visible_unknown_area
 
 
 @dataclass
@@ -247,6 +248,10 @@ class GoalSelector:
         self._region_failures: list[tuple[float, float, int]] = []
         self._bootstrap_used = 0
         self._recent_success: list[_BlacklistEntry] = []
+        # Actual map-frame travel, distinct from requested/succeeded goals and
+        # their short cooldown. Only endpoints are filtered; old routes remain
+        # traversable to reach a new branch. Spatial dedup bounds stationary data.
+        self._mission_route: dict[tuple[int, int], tuple[float, float]] = {}
 
     # ------------------------------------------------------------------
     # 状态维护
@@ -262,6 +267,7 @@ class GoalSelector:
         self._region_failures.clear()
         self._bootstrap_used = 0
         self._recent_success.clear()
+        self._mission_route.clear()
 
     def on_result(self, goal: Goal, success: bool, now: float) -> None:
         """回报一次导航结果。
@@ -301,6 +307,12 @@ class GoalSelector:
         if not self.params.require_path_clearance or not all(math.isfinite(v) for v in (x,y,now)):
             return
         self._expire(now)
+        key = (math.floor(x / .25), math.floor(y / .25))
+        if key not in self._mission_route:
+            self._mission_route[key] = (x, y)
+            # Bound memory even if a mission is left running indefinitely.
+            if len(self._mission_route) > 10000:
+                del self._mission_route[next(iter(self._mission_route))]
         if (not self._visits or math.hypot(x-self._visits[-1].x,y-self._visits[-1].y)>=.25
             or now-self._visits[-1].at>=5.):
             self.mark_visited(x,y,now)
@@ -361,7 +373,8 @@ class GoalSelector:
             excluded += [(x, y) for x, y, count in self._region_failures
                          if count >= self.params.max_region_failures]
         recent = self._recent_success if self.params.require_path_clearance else []
-        if (not excluded and not recent) or candidates.size == 0:
+        route = self._mission_route.values() if self.params.require_path_clearance else ()
+        if (not excluded and not recent and not self._mission_route) or candidates.size == 0:
             return candidates
 
         wx, wy = grid.grid_to_world(candidates[:, 0].astype(float),
@@ -374,6 +387,8 @@ class GoalSelector:
         repeat_radius=max(.25,self.params.min_goal_distance_m)
         for visit in recent:
             blocked |= (wx-visit.x)**2+(wy-visit.y)**2 < repeat_radius**2
+        for x, y in route:
+            blocked |= (wx-x)**2+(wy-y)**2 < repeat_radius**2
         return candidates[~blocked]
 
     def _local_frontier_centroid(
@@ -621,9 +636,14 @@ class GoalSelector:
             # 增益 = 未知格占比 × 距离衰减 × 访问惩罚
             rows, cols = candidates[:, 0], candidates[:, 1]
             d_m = dist[rows, cols] * grid.resolution
+            information = uf_map[rows, cols]
+            if p.require_path_clearance:
+                visible_area = visible_unknown_area(grid, candidates, p.gain_window_radius_m)
+                information = np.minimum(1., visible_area / (math.pi * p.gain_window_radius_m**2))
+                information = np.where(visible_area >= p.min_frontier_area_m2, information, 0.)
             visit_penalties=self._visit_penalty(grid,candidates)
             gains = (
-                uf_map[rows, cols]
+                information
                 * np.exp(-p.lambda_decay * d_m)
                 * visit_penalties
             )
@@ -641,7 +661,7 @@ class GoalSelector:
                     x=wx, y=wy, yaw=math.atan2(cy-wy, cx-wx),
                     cluster_label=cluster.label, gain=gain,
                     geodesic_dist_m=float(dist[row, col])*grid.resolution,
-                    unknown_fraction=float(uf_map[row, col])*(float(visit_penalties[k]) if p.require_path_clearance else 1.),
+                    unknown_fraction=float(information[k])*(float(visit_penalties[k]) if p.require_path_clearance else 1.),
                 ))
                 distance = np.hypot(rows-row, cols-col)*grid.resolution
                 gains[distance < separation_m] = -1.0
