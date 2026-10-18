@@ -1,4 +1,4 @@
-"""Local, interactive single-window Gazebo relay with read-only ROS telemetry."""
+"""Local, interactive single-window Gazebo relay with optional G3 task control."""
 import argparse
 import json
 import os
@@ -13,6 +13,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
+
+from task_control import TaskControl, COMMANDS
 
 ROOT = Path(__file__).resolve().parent
 MIME = {'.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml'}
@@ -92,8 +94,10 @@ def focus_robot(ros_wrapper, partition, world, model):
 
 
 class State:
-    def __init__(self, domain, display, gui_interactive=True):
+    def __init__(self, domain, display, gui_interactive=True, enable_tasks=False):
         self.lock = threading.Lock()
+        self.tasks = TaskControl(enable_tasks)
+        self.write_lock = threading.Lock()
         self.data = {}
         self.received = None
         self.window = {'available': False, 'message': '正在连接 Gazebo 窗口', 'display': display}
@@ -108,10 +112,21 @@ class State:
             window = dict(self.window)
             if self.window_children and any(c.poll() is not None for c in self.window_children):
                 window.update(available=False, message='窗口转发进程已退出，请检查日志并重新启动控制台')
-            return {'window': window, 'domain': self.domain, 'telemetry': self.data,
+            result = {'window': window, 'domain': self.domain, 'telemetry': self.data,
                     'bridge_age_s': age, 'bridge_alive': self.ros_process is not None and self.ros_process.poll() is None,
-                    'read_only': not self.gui_interactive, 'gui_interactive': self.gui_interactive,
-                    'telemetry_read_only': True}
+                    'read_only': not (self.gui_interactive or self.tasks.enabled), 'gui_interactive': self.gui_interactive,
+                    'telemetry_read_only': not self.tasks.enabled}
+        result['task_control'] = self.tasks.snapshot(result)
+        return result
+
+    def send_task(self, command):
+        def send(request):
+            with self.write_lock:
+                if self.ros_process is None or self.ros_process.poll() is not None:
+                    raise OSError('Observer disconnected')
+                self.ros_process.stdin.write(json.dumps(request) + '\n')
+                self.ros_process.stdin.flush()
+        return self.tasks.submit(command, self.snapshot(), send)
 
     def consume(self, child):
         for line in child.stdout:
@@ -122,6 +137,7 @@ class State:
                 with self.lock:
                     self.data = data
                     self.received = time.monotonic()
+                self.tasks.observe(data.get('command_receipts', []))
             except (ValueError, TypeError):
                 continue
 
@@ -164,7 +180,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.close_connection = True
-        if urlsplit(self.path).path != '/api/view/robot':
+        path = urlsplit(self.path).path
+        task = path.removeprefix('/api/mission/') if path.startswith('/api/mission/') else None
+        if path != '/api/view/robot' and task not in COMMANDS:
             return self.reply(405, b'{"error":"unsupported operation"}')
         try:
             host = urlsplit('//' + self.headers.get('Host', '')).hostname
@@ -172,6 +190,11 @@ class Handler(BaseHTTPRequestHandler):
             host = None
         if host not in ('127.0.0.1', 'localhost', '::1') or not same_origin(self.headers):
             return self.reply(403, b'{"error":"same-origin loopback connection required"}')
+        if task is not None:
+            if self.headers.get('Transfer-Encoding') or self.headers.get('Content-Length', '0') != '0':
+                return self.reply(400, b'{"error":"no request body accepted"}')
+            code, payload = self.server.state.send_task(task)
+            return self.reply(code, json.dumps(payload).encode())
         if not self.server.state.gui_interactive:
             return self.reply(403, b'{"error":"GUI input disabled"}')
         if not self.server.state.snapshot()['window']['available']:
@@ -223,6 +246,7 @@ def main():
     parser.add_argument('--ros-wrapper', type=Path, default=Path('/home/wy/.enroot/ros'))
     parser.add_argument('--ros-env', action='append', default=[], metavar='KEY=VALUE',
                         help='Environment variable for the ROS observer; repeat for each value')
+    parser.add_argument('--enable-tasks', action='store_true', help='Enable G3 mission commands in isolated simulation')
     parser.add_argument('--no-ros', action='store_true')
     parser.add_argument('--no-window', action='store_true')
     parser.add_argument('--view-only', action='store_true', help='Disable mouse and keyboard input to Gazebo')
@@ -234,10 +258,15 @@ def main():
             parser.error('--ros-env requires KEY=VALUE with an identifier key')
     if not 0 <= args.domain <= 232 or any(not 1024 <= p <= 65535 for p in (args.port, args.ws_port, args.vnc_port)) or len({args.port, args.ws_port, args.vnc_port}) != 3:
         parser.error('Require a valid ROS domain and three distinct unprivileged ports')
+    if args.enable_tasks:
+        sys.path.insert(0, str(ROOT.parent))
+        from qwen_robotnav.runtime_profile import load_profile
+        if args.no_ros or args.domain in (0, 42, 43) or load_profile(args.profile)['backend'] != 'gazebo_go2':
+            parser.error('Task control requires an isolated Gazebo ROS profile')
     # Bind before spawning children, so a second launch cannot duplicate relays.
     server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
     server.daemon_threads = True
-    server.state = state = State(args.domain, args.display, not args.view_only and not args.no_window)
+    server.state = state = State(args.domain, args.display, not args.view_only and not args.no_window, args.enable_tasks)
     server.ws_port = args.ws_port
     server.focus_robot = lambda: focus_robot(args.ros_wrapper, args.partition, args.world, args.robot_model)
     server.stopping = threading.Event()
@@ -248,7 +277,7 @@ def main():
         log = (args.log_dir / (name + '.log')).open('w')
         streams.append(log)
         child = subprocess.Popen(command, env=env, stdout=subprocess.PIPE if pipe else log,
-                                 stderr=log, text=True, start_new_session=True)
+                                 stderr=log, stdin=subprocess.PIPE if pipe and args.enable_tasks else None, text=True, start_new_session=True)
         children.append(child)
         return child
 
@@ -281,7 +310,8 @@ def main():
         if not args.no_ros:
             state.ros_process = start(ros_command(args.ros_wrapper, args.ros_env, [
                 'python3', str(ROOT / 'ros_telemetry.py'),
-                '--domain', str(args.domain), '--profile', str(args.profile.resolve())]), 'ros', pipe=True)
+                '--domain', str(args.domain), '--profile', str(args.profile.resolve()),
+                *(['--enable-commands'] if args.enable_tasks else [])]), 'ros', pipe=True)
             threading.Thread(target=state.consume, args=(state.ros_process,), daemon=True).start()
         print(f'Go2 console: http://127.0.0.1:{args.port} · ROS domain {args.domain} · GUI {"view only" if args.view_only else "interactive"} · ROS read only', flush=True)
         def stop(*_):

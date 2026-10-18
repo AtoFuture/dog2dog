@@ -40,6 +40,9 @@ elif name=='python3':
  if args and args[0].endswith('/web_console/server.py'): stay()
  os.execv(sys.executable,[sys.executable,*args])
 elif name=='xwininfo': print('0x123 "Gazebo":')
+elif name=='ss' and mode=='occupied-many':
+ print('LISTEN 0 10 127.0.0.1:18765 0.0.0.0:*')
+ for _ in range(10000): print('LISTEN 0 10 127.0.0.1:20000 0.0.0.0:*')
 elif name=='curl': print('{"window":{"available": true}}')
 elif name=='sleep': time.sleep(.01)
 elif name=='timeout': os.execvp(args[1],args[1:])
@@ -122,6 +125,12 @@ class ScriptTests(unittest.TestCase):
             self.assertEqual(console['args'][console['args'].index(flag)+1],value)
         self.stop(child)
         self.assertFalse((self.out/'demo.pid').exists())
+
+    def test_busy_port_is_detected_with_large_socket_listing(self):
+        child,log=self.launch('occupied-many')
+        self.assertNotEqual(child.wait(timeout=5),0)
+        self.assertIn('already in use',log.read_text())
+        self.assertFalse(any(r['name']=='gui-wrapper' for r in self.records()))
 
     def test_standby_timeout_never_reports_ready_or_starts_console(self):
         child,log=self.launch('not-ready')

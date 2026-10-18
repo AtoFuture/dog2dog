@@ -2,7 +2,7 @@
 
 将**当前已有的 Gazebo 窗口**转发到浏览器，旁边显示真实 ROS 运行状态、占据栅格地图、机器人位置、安全监护和探索事件。页面采用白底黑字的黑白界面，使用中性细边框区分面板，选中项通过黑色描边和字重表示，沿用分栏工作台。支持手机布局、画面重连、PNG 截图、全屏和事件筛选。
 
-浏览器默认可以操作现有 Gazebo 窗口：拖动平移、滚轮缩放、中键旋转和键盘输入都会传入原窗口；工具栏可随时切换为「仅查看」。服务端也可以用 `--view-only` 强制关闭 GUI 输入。**ROS 侧始终只读**：观察节点只订阅话题，不发布运动或任务指令，也不启动另一套导航实现。
+浏览器默认可以操作现有 Gazebo 窗口：拖动平移、滚轮缩放、中键旋转和键盘输入都会传入原窗口；工具栏可随时切换为「仅查看」。服务端也可以用 `--view-only` 强制关闭 GUI 输入。ROS 默认只订阅；显式启用 `--enable-tasks` 后，任务按钮通过现有 G3 命令话题执行，不发布速度指令，也不启动另一套导航实现。一键演示入口会启用任务控制。
 
 服务不会启动 Gazebo、Nav2 或另一套导航实现；没有连接到相应 ROS 域时显示等待状态，不填充示例数据。
 
@@ -20,7 +20,7 @@ python3 server.py --display :2 --domain 225 --partition go2obj \
 
 访问 **http://127.0.0.1:8765**。`Ctrl+C` 停止本控制台及其自有转发/观察进程，保留原 Gazebo 与导航进程。
 
-默认读取 `../config/sim_runtime.yaml`，通过 `/home/wy/.enroot/ros` 启动一个只读 ROS 观察节点。指定实际运行栈的域和有效 profile：
+默认读取 `../config/sim_runtime.yaml`，通过 `/home/wy/.enroot/ros` 启动一个 ROS 观察节点（默认只读）。指定实际运行栈的域和有效 profile：
 
 ```bash
 python3 server.py --domain 226 --profile /absolute/path/runtime_profile.yaml
@@ -39,6 +39,7 @@ ROS 已在本机环境加载时，可以传 `--ros-wrapper /usr/bin/env`。仅�
 | `--world` | `world_demo` | `/world/<world>/scene/graph` 里的世界名 |
 | `--robot-model` | `robot1_my_bot` | 「找机器狗」要定位的 Gazebo model 名 |
 | `--view-only` | 关 | 禁用浏览器到 Gazebo 的鼠标/键盘输入 |
+| `--enable-tasks` | 关 | 在隔离 Gazebo 域启用现有 G3 任务控制，与 GUI 交互独立 |
 | `--ros-env` | 无 | 给容器内 ROS 观察节点追加环境变量，可重复 |
 
 `--world` 与 `--robot-model` 必须和当前 SDF/生成启动副本一致，否则「找机器狗」会返回 409。
@@ -56,6 +57,27 @@ python3 server.py --display :2 --domain 227 --partition webdemo227 \
 
 观察节点在 `~/.enroot/ros` 容器内运行，`--ros-env` 通过容器内的 `env` 传入。若运行栈使用默认 FastDDS，则不需要这两个参数。
 
+## 网页任务控制
+
+已运行统一导航栈时，在同一隔离域启动：
+
+```bash
+python3 server.py --domain 227 --partition gui_demo_227 --enable-tasks \
+  --ros-env RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
+  --ros-env CYCLONEDDS_URI=file:///home/wy/go2_sim_ws/ROS2-Gazebo-GO2/src/docker/cyclonedds.xml
+```
+
+按钮包括探索、暂停、继续、返航、待机、急停和解除急停。按钮按实时任务状态启用；G3 仍负责健康检查、导航释放和电量条件，网页不绕过这些判断。
+
+- HTTP `202` 只表示请求已写入 ROS 桥；页面先显示“已发送，等待 G3 回执”。
+- 请求带唯一 `request_id`，G3 在配置的命令话题后加 `/result` 发布接受/拒绝回执。页面仅匹配相同 ID 和命令，拒绝原因保留展示。
+- “G3 已接受”表示状态机接受操作，导航执行成功/失败另见任务事件。返航事件也会显示在事件区。
+- 12 秒没有回执时显示“未确认”，不会自动重发。任务状态过期后禁用普通操作；ROS 桥存活时仍允许急停，且不受其他请求等待回执的限制。
+- `--enable-tasks` 仅支持隔离 Gazebo profile；不支持域 `0/42/43` 或 `--no-ros`。未开启时不创建命令发布者。
+- `--view-only` 只控制 Gazebo 鼠标/键盘；要关闭任务控制，请省略 `--enable-tasks`。
+
+命令接口为 `POST /api/mission/<COMMAND>`，只接受固定命令名、同源回环请求和空请求体；命令队列与操作记录均有上限。原有纯文本 G3 命令保持兼容。
+
 ## 远程访问
 
 服务仅监听回环地址。电脑与仿真服务器不在同一台机器时，在自己的电脑建立一个 SSH 隧道：
@@ -72,8 +94,8 @@ ssh -N -L 8765:127.0.0.1:8765 wy@服务器地址
 - 默认端口为网页 `8765`、私有 WebSocket `8766`、私有 VNC `5909`，均只监听回环；CLI 可以指定三个不同端口。网页端口先绑定，防止重复启动相同控制台。
 - 画面是原 Gazebo GUI 的镜像，场景、镜头位置、暂停状态与原窗口一致。地图来自 ROS 原始 `OccupancyGrid`，不使用验收真值；位置来自真实 map→base TF，不用里程计坐标冒充地图坐标。
 - 任务、监护、速度与 TF 的数据过期后不显示为在线值。地图超过 20 秒未更新时不显示为实时地图。窗口转发进程退出、HTTP 中断和 ROS 没有数据分别显示对应状态。
-- 不自动发送 EXPLORE/RETURN，也不接入 `/cmd_vel`。任务操作继续使用现有运行栈；浏览器只操作 Gazebo GUI 本身（视角、暂停、模型选择等）。
-- 详细日志默认在 `/tmp/go2-web-console-<uid>/`，可用 `--log-dir` 指定。仅服务静态前端与只读状态接口，源码、profile 和环境文件不通过 HTTP 提供。
+- 不自动开始探索，也不发布 `/cmd_vel`。启用任务控制后，网页按钮只发布现有 G3 命令，运动仍由统一运行栈执行。
+- 详细日志默认在 `/tmp/go2-web-console-<uid>/`，可用 `--log-dir` 指定。仅服务前端、状态和固定的相机/任务操作接口，源码、profile 和环境文件不通过 HTTP 提供。
 
 ### ROS 遥测的前置条件
 
@@ -104,7 +126,7 @@ ssh -N -L 8765:127.0.0.1:8765 wy@服务器地址
 ## 验证
 
 ```bash
-python3 -m unittest -v test_server
+python3 -m unittest -v test_server test_task_control
 node --check public/app.js
 ```
 

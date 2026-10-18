@@ -67,7 +67,7 @@ done
 [[ -x "${ROS_WRAPPER}" && -x "${GUI_WRAPPER}" ]] || fail "Missing ROS wrappers"
 for tool in x11vnc xwininfo xdotool python3 setsid ss curl timeout; do command -v "${tool}" >/dev/null || fail "Missing ${tool}"; done
 [[ -f "${PROJECT_ROOT}/.env" ]] || fail "Missing ${PROJECT_ROOT}/.env (API key); see .env.example"
-if ss -ltn 2>/dev/null | grep -q ":${CONSOLE_PORT} "; then
+if ss -ltn 2>/dev/null | grep -F ":${CONSOLE_PORT} " >/dev/null; then
   if (( RESTART == 0 )); then
     fail "Port ${CONSOLE_PORT} is already in use; stop the existing console first (or pass --restart)"
   fi
@@ -90,10 +90,10 @@ if ss -ltn 2>/dev/null | grep -q ":${CONSOLE_PORT} "; then
     fail "the existing demo launcher ${OLD_PID} did not exit"
   fi
   for _ in $(seq 1 10); do
-    ss -ltn 2>/dev/null | grep -q ":${CONSOLE_PORT} " || break
+    ss -ltn 2>/dev/null | grep -F ":${CONSOLE_PORT} " >/dev/null || break
     sleep 1
   done
-  if ss -ltn 2>/dev/null | grep -q ":${CONSOLE_PORT} "; then
+  if ss -ltn 2>/dev/null | grep -F ":${CONSOLE_PORT} " >/dev/null; then
     fail "the existing demo did not release port ${CONSOLE_PORT}"
   fi
   echo "   existing demo stopped"
@@ -124,13 +124,13 @@ if [[ ! -f "${OUT}/gazebo_nav2.launch.py" || ! -d "${OUT}/progress_install" ]]; 
 fi
 
 # EGL vendor config for headless ogre2 (same workaround as run_slam_frontier.sh)
-mkdir -p ${OUT}/egl
-if [[ ! -f ${OUT}/egl/10_nvidia.json ]]; then
+mkdir -p "${OUT}/egl"
+if [[ ! -f "${OUT}/egl/10_nvidia.json" ]]; then
   if [[ -f /usr/share/glvnd/egl_vendor.d/10_nvidia.json ]]; then
-    cp /usr/share/glvnd/egl_vendor.d/10_nvidia.json ${OUT}/egl/
+    cp /usr/share/glvnd/egl_vendor.d/10_nvidia.json "${OUT}/egl/"
   else
     printf '%s\n' '{' '    "file_format_version" : "1.0.0",' '    "ICD" : {' \
-      '        "library_path" : "libEGL_nvidia.so.0"' '    }' '}' > ${OUT}/egl/10_nvidia.json
+      '        "library_path" : "libEGL_nvidia.so.0"' '    }' '}' > "${OUT}/egl/10_nvidia.json"
   fi
 fi
 
@@ -172,12 +172,12 @@ exec ign gazebo -g -v3 --render-engine ogre2
 GUI_PID=$!; PIDS+=("${GUI_PID}")
 for _ in $(seq 1 40); do
   DISPLAY="${DISPLAY_NUM}" XAUTHORITY="${XAUTHORITY:-${HOME}/.Xauthority}" \
-    xwininfo -root -tree 2>/dev/null | grep -q '"Gazebo":' && break
+    xwininfo -root -tree 2>/dev/null | grep -F '"Gazebo":' >/dev/null && break
   kill -0 "${GUI_PID}" 2>/dev/null || { tail -20 "${OUT}/logs/gui.log" >&2; fail "GUI client exited"; }
   sleep 1
 done
 DISPLAY="${DISPLAY_NUM}" XAUTHORITY="${XAUTHORITY:-${HOME}/.Xauthority}" \
-  xwininfo -root -tree 2>/dev/null | grep -q '"Gazebo":' || fail "Gazebo window not found on ${DISPLAY_NUM}"
+  xwininfo -root -tree 2>/dev/null | grep -F '"Gazebo":' >/dev/null || fail "Gazebo window not found on ${DISPLAY_NUM}"
 echo "   GUI window ready"
 
 # ---- 3. unified runtime ----------------------------------------------------
@@ -197,7 +197,7 @@ RUNTIME_PID=$!; PIDS+=("${RUNTIME_PID}")
 runtime_state_is() {
   timeout 10 "${ROS_WRAPPER}" bash -c "${ros_env}
     timeout 5 ros2 topic echo /mission_state --once 2>/dev/null" \
-    | grep -qx "data: $1"
+    | grep -Fx "data: $1" >/dev/null
 }
 wait_runtime_state() {
   local expected="$1" deadline=$((SECONDS + READY_TIMEOUT))
@@ -215,7 +215,7 @@ echo "   runtime standby"
 echo "== starting web console =="
 setsid python3 "${NAV_ROOT}/web_console/server.py" --display "${DISPLAY_NUM}" \
   --port "${CONSOLE_PORT}" --ws-port "${WS_PORT}" --vnc-port "${VNC_PORT}" \
-  --ros-wrapper "${ROS_WRAPPER}" --domain "${DOMAIN}" --partition "${PARTITION}" --world world_demo --robot-model "${MODEL}" \
+  --enable-tasks --ros-wrapper "${ROS_WRAPPER}" --domain "${DOMAIN}" --partition "${PARTITION}" --world world_demo --robot-model "${MODEL}" \
   --ros-env RMW_IMPLEMENTATION=rmw_cyclonedds_cpp --ros-env CYCLONEDDS_URI="${CYCLONE}" \
   --log-dir "${OUT}/logs/console" >"${OUT}/logs/console.log" 2>&1 < /dev/null &
 CONSOLE_PID=$!; PIDS+=("${CONSOLE_PID}")

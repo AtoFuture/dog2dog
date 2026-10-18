@@ -107,6 +107,48 @@ class TelemetryTransport(unittest.TestCase):
             if rclpy.ok():
                 rclpy.shutdown()
 
+    def test_enabled_bridge_publishes_only_g3_envelope_and_returns_receipt(self):
+        import rclpy
+        from std_msgs.msg import String
+        root = Path(__file__).resolve().parent
+        rclpy.init()
+        node = rclpy.create_node('console_command_transport_fixture')
+        received = []
+        receipt = node.create_publisher(String, '/g3/command/result', 20)
+        def command(message):
+            request = json.loads(message.data)
+            received.append(request)
+            receipt.publish(String(data=json.dumps(dict(request, accepted=True, state='estop', reason=''))))
+        node.create_subscription(String, '/g3/command', command, 10)
+        child = subprocess.Popen([sys.executable, '-u', str(root/'ros_telemetry.py'), '--domain', '232',
+            '--profile', str(root.parent/'config/sim_runtime.yaml'), '--enable-commands'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        messages = queue.Queue()
+        reader = threading.Thread(target=lambda: [messages.put(line) for line in child.stdout], daemon=True)
+        reader.start()
+        request = dict(command='ESTOP', request_id='a'*32)
+        try:
+            deadline = time.monotonic()+15
+            while time.monotonic()<deadline and not node.get_publishers_info_by_topic('/g3/command'):
+                rclpy.spin_once(node, timeout_sec=.1)
+            child.stdin.write(json.dumps(request)+'\n'); child.stdin.flush()
+            result = None
+            while time.monotonic()<deadline and result is None:
+                rclpy.spin_once(node, timeout_sec=.1)
+                while not messages.empty():
+                    data=json.loads(messages.get_nowait())
+                    if data.get('command_receipts'): result=data
+            self.assertEqual(received,[request])
+            self.assertIsNotNone(result)
+            self.assertEqual(result['command_receipts'][-1]['request_id'],request['request_id'])
+            self.assertEqual(node.get_publishers_info_by_topic('/robot1/cmd_vel'),[])
+        finally:
+            child.send_signal(signal.SIGINT)
+            try: child.wait(timeout=8)
+            except subprocess.TimeoutExpired: child.terminate();child.wait(timeout=5)
+            child.stdin.close();child.stdout.close();reader.join(timeout=2)
+            node.destroy_node();rclpy.shutdown()
+
 
 if __name__=='__main__':
     unittest.main()

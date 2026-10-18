@@ -69,6 +69,26 @@ class ConsoleTests(unittest.TestCase):
     def test_commands_are_not_an_api(self):
         self.assertEqual(self.request('/api/command', 'POST')[0], 405)
 
+    def test_mission_endpoint_requires_same_origin(self):
+        self.assertEqual(self.request('/api/mission/EXPLORE', 'POST')[0], 403)
+
+    def test_mission_disabled_by_default(self):
+        self.assertEqual(self.request('/api/mission/ESTOP', 'POST',
+            headers={'Origin': f'http://127.0.0.1:{self.http.server_port}'})[0], 403)
+
+    def test_mission_endpoint_is_independent_of_gui_window(self):
+        sender = Mock(return_value=(202, {'request_id': 'r', 'status': 'sent'}))
+        self.http.state.window['available'] = False
+        try:
+            with patch.object(self.http.state, 'send_task', sender):
+                code, _, body = self.request('/api/mission/ESTOP', 'POST',
+                    headers={'Origin': f'http://127.0.0.1:{self.http.server_port}'})
+            self.assertEqual(code, 202)
+            sender.assert_called_once_with('ESTOP')
+            self.assertEqual(json.loads(body)['status'], 'sent')
+        finally:
+            self.http.state.window['available'] = True
+
     def test_ros_command_wraps_environment_inside_container(self):
         self.assertEqual(server.ros_command('/wrapper', [], ['python3', 'x.py']),
                          ['/wrapper', 'python3', 'x.py'])

@@ -120,6 +120,7 @@ class G3StateMachineNode(Node):
         self._return_event_publisher = self.create_publisher(
             String, return_event_topic, 10
         )
+        self._command_result_publisher = self.create_publisher(String, command_topic + '/result', 20)
         self._command_subscription = self.create_subscription(
             String,
             command_topic,
@@ -238,11 +239,29 @@ class G3StateMachineNode(Node):
         self._apply_event(Event.RETURN, source='exploration:'+result['reason'])
 
     def _on_command(self, message: String) -> None:
+        # Keep legacy plain strings; web requests carry an ID for an exact receipt.
+        request_id = None
+        raw = message.data
         try:
-            event = parse_event(message.data)
-        except InvalidTransition as exc:
+            if raw.lstrip().startswith('{'):
+                envelope = json.loads(raw)
+                request_id = envelope.get('request_id')
+                if not isinstance(request_id, str) or not 1 <= len(request_id) <= 80:
+                    raise ValueError('invalid request_id')
+                raw = envelope.get('command')
+                if not isinstance(raw, str):
+                    raise ValueError('invalid command')
+            event = parse_event(raw)
+        except (InvalidTransition, ValueError, TypeError, AttributeError) as exc:
             self.get_logger().warning(str(exc))
             return
+
+        def receipt(accepted, reason=''):
+            if request_id is not None:
+                self._command_result_publisher.publish(String(data=json.dumps({
+                    'request_id': request_id, 'command': event.value.upper(),
+                    'accepted': accepted, 'state': mission_state_value(self._state), 'reason': reason,
+                })))
 
         if event is Event.RESET and self._state is State.ESTOP:
             block_reason = estop_reset_block_reason(
@@ -251,9 +270,17 @@ class G3StateMachineNode(Node):
             )
             if block_reason is not None:
                 self.get_logger().error(f"ESTOP reset rejected: {block_reason}")
+                receipt(False, block_reason)
                 return
-
+        try:
+            expected = transition(self._state, event)
+        except InvalidTransition as exc:
+            self.get_logger().warning(str(exc))
+            receipt(False, str(exc))
+            return
         self._apply_event(event, source="command")
+        accepted = self._state is expected
+        receipt(accepted, '' if accepted else '健康检查或导航释放条件未满足')
 
     def _on_battery(self, message: BatteryState) -> None:
         if not message.present:

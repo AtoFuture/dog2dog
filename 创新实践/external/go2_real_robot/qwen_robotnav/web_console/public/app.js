@@ -4,7 +4,7 @@ const $ = id => document.getElementById(id);
 let interactionRequested = true;
 let rfb, connected = false, state, filter = 'all', retry, toastTimer, lastMapPng, mapImage;
 const missions = {standby:'待机', exploring:'探索中', returning:'返航中', paused:'已暂停', estop:'急停'};
-const statuses = {sending:'下发目标', accepted:'目标已接收', succeeded:'执行成功', failed:'执行失败', canceled:'目标已取消', brain_requested:'请求决策', brain_selected:'决策完成', exploration_ended:'探索结束', search_unavailable:'暂无可用候选'};
+const statuses = {waiting_for_server:'等待导航服务',goal_request_sent:'已请求导航',cancel_requested:'请求取消',sending:'下发目标', accepted:'目标已接收', succeeded:'执行成功', failed:'执行失败', canceled:'目标已取消', brain_requested:'请求决策', brain_selected:'决策完成', exploration_ended:'探索结束', search_unavailable:'暂无可用候选'};
 const guardReasons = {allowed:'运动许可', footprint_clearance:'机身净空保护', predicted_footprint_collision:'预测净空保护', nav_command_unavailable:'导航请求过期', front_obstacle:'前方障碍', excessive_tilt:'倾角保护', 'mission:standby':'待机归零', 'mission:estop':'急停归零'};
 function toast(message) { $('toast').textContent=message; $('toast').hidden=false; clearTimeout(toastTimer); toastTimer=setTimeout(()=>$('toast').hidden=true,3500); }
 function syncInteraction() {
@@ -50,6 +50,36 @@ function fresh(key, limit=3) {
 function number(value, digits=2) { return Number.isFinite(value)?value.toFixed(digits):'—'; }
 function ageText(age) { return Number.isFinite(age)?age<3?`${age.toFixed(1)} s`:'已过期':'未接入'; }
 function setTag(id, text, live=false, warning=false) { const e=$(id);e.textContent=text;e.classList.toggle('live',live);e.classList.toggle('warning',warning); }
+const commandLabels={EXPLORE:'开始探索',PAUSE:'暂停',RESUME:'继续',RETURN:'返航',ESTOP:'急停',RESET:'解除急停',STANDBY:'待机'};
+const commandStatuses={sent:'已发送，等待 G3 回执',accepted:'G3 已接受',rejected:'G3 已拒绝',unconfirmed:'回执未确认'};
+let taskSending=0;
+function renderTasks() {
+  const control=state?.task_control;
+  const records=control?.records||[], pending=taskSending>0||records.some(r=>r.status==='sent');
+  document.querySelectorAll('[data-command]').forEach(button=>{
+    button.disabled=!control?.allowed?.includes(button.dataset.command)||(pending&&button.dataset.command!=='ESTOP');
+  });
+  $('task-badge').textContent=!state?'连接中断':!control?.enabled?'任务控制未启用':control.mission_fresh?(missions[fresh('mission')]||'已连接'):'任务状态已过期';
+  const latest=records.at(-1);
+  $('task-feedback').textContent=latest?`${commandLabels[latest.command]}：${commandStatuses[latest.status]}${latest.reason?' · '+latest.reason:''}`:
+    !state?'连接后可操作任务。':!control?.enabled?'服务端未启用任务控制。':control.mission_fresh?'操作交给 G3 执行；收到回执后显示接受或拒绝，任务执行结果见下方事件。':'等待实时任务状态；ROS 连接存活时仍可发送急停。';
+  const history=$('task-history');history.replaceChildren();
+  records.slice(-5).reverse().forEach(record=>{
+    const row=document.createElement('li');
+    [commandLabels[record.command],commandStatuses[record.status],record.reason||(record.state?`确认状态：${missions[record.state]||record.state}`:'等待回执')].forEach(text=>{
+      const span=document.createElement('span');span.textContent=text;row.append(span);
+    });history.append(row);
+  });
+}
+document.querySelectorAll('[data-command]').forEach(button=>button.addEventListener('click',async()=>{
+  const command=button.dataset.command;taskSending++;renderTasks();
+  try {
+    const response=await fetch(`/api/mission/${command}`,{method:'POST',signal:AbortSignal.timeout(5000)});
+    const record=await response.json();if(!response.ok)throw new Error(record.error||'指令发送失败');
+    if(state?.task_control&&!state.task_control.records.some(r=>r.request_id===record.request_id))state.task_control.records.push(record);
+  }catch(error){toast(error.message||'指令状态未知，请检查任务状态。');}
+  finally{taskSending--;renderTasks();}
+}));
 function render() {
   if(!state)return;
   const telemetry=state.telemetry, mission=fresh('mission'), guard=fresh('guard'), odom=fresh('odometry'), battery=fresh('battery',5);
@@ -72,7 +102,7 @@ function render() {
   $('dialog-display').textContent=`${state.window.display} / ${state.window.id||'未找到窗口'}`;
   $('dialog-ros').textContent=hasData?'正在接收数据':state.bridge_alive?'观察节点已连接，等待话题数据':'观察节点未连接';
   $('dialog-window').textContent=connected?(state.gui_interactive?'已连接 · 可交互':'已连接 · 只读'):state.window.message;
-  syncInteraction();renderMap(); renderEvents();
+  syncInteraction();renderTasks();renderMap(); renderEvents();
 }
 function renderMap() {
   const map=fresh('map',20), pose=fresh('pose'), canvas=$('map-canvas'), ctx=canvas.getContext('2d');
@@ -104,8 +134,8 @@ function renderEvents() {
   }
   rows.forEach(e=>{
     const row=document.createElement('div');row.className='event-row';
-    const values=[['event-index',e.attempt_id?`#${String(e.attempt_id).padStart(3,'0')}`:'—'],['event-status',statuses[e.status]||e.status],['event-target',e.target?`x ${number(e.target.x)}  y ${number(e.target.y)}`:e.reason||'—'],['event-purpose',e.purpose==='scan'?'扫描':e.purpose==='frontier'?'探索目标':'系统']];
-    values.forEach(([cls,text])=>{const span=document.createElement('span');span.className=cls;span.textContent=text;row.append(span);});root.append(row);
+    const values=[['event-index',e.attempt_id?`#${String(e.attempt_id).padStart(3,'0')}`:'—'],['event-status',statuses[e.status]||e.status],['event-target',e.target?`x ${number(e.target.x)}  y ${number(e.target.y)}`:e.reason||'—'],['event-purpose',e.purpose==='scan'?'扫描':e.purpose==='frontier'?'探索目标':e.purpose==='return'?'返航':'系统']];
+    values.forEach(([cls,text])=>{const span=document.createElement('span');span.className=cls;span.textContent=text;span.title=text;row.append(span);});root.append(row);
   });
 }
 let firstPoll=true;
@@ -116,7 +146,7 @@ async function poll() {
     if(firstPoll){firstPoll=false;connect();}
     if(!state.window.available&&connected){rfb?.disconnect();streamStatus(false,state.window.message);}
   } catch(error) {
-    state=undefined;syncInteraction(); ['linear-value','clearance-value','battery-value'].forEach(id=>$(id).textContent='—');
+    state=undefined;syncInteraction();renderTasks(); ['linear-value','clearance-value','battery-value'].forEach(id=>$(id).textContent='—');
     $('battery-bar').style.width='0%';$('map-details').textContent='MAP —';$('dialog-ros').textContent='状态连接已断开';
     $('mission-state').textContent='状态连接已断开';setTag('ros-badge','连接中断',false,true);setTag('guard-badge','数据已过期',false,true);
     $('guard-reason').textContent='状态连接已断开';$('pose-age').textContent='已过期';$('nav-age').textContent='已过期';

@@ -1,9 +1,11 @@
-"""Read-only ROS observer; stdout contains bounded JSON snapshots, never commands."""
+"""ROS telemetry observer with opt-in, allowlisted G3 command input on stdin."""
 import argparse
 import base64
 import io
 import json
 import math
+import queue
+import threading
 import os
 from pathlib import Path
 import sys
@@ -14,6 +16,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--domain', type=int, required=True)
     p.add_argument('--profile', type=Path, required=True)
+    p.add_argument('--enable-commands', action='store_true')
     args = p.parse_args()
     os.environ['ROS_DOMAIN_ID'] = str(args.domain)
     import rclpy
@@ -35,7 +38,7 @@ def main():
     class Telemetry(Node):
         def __init__(self):
             super().__init__('go2_web_console_observer')
-            self.values, self.seen, self.events = {}, {}, []
+            self.values, self.seen, self.events, self.receipts = {}, {}, [], []
             self.last_pose_stamp = -1
             self.tf = Buffer()
             self.listener = TransformListener(self.tf, self)
@@ -46,20 +49,55 @@ def main():
             self.create_subscription(Odometry, topics['odometry'], lambda m: self.save('odometry', {'linear': m.twist.twist.linear.x, 'angular': m.twist.twist.angular.z}), qos_profile_sensor_data)
             self.create_subscription(OccupancyGrid, topics['map'], self.mapping, durable)
             self.create_subscription(String, '/exploration/events', lambda m: self.structured('event', m.data), 20)
+            self.create_subscription(String, topics['command'] + '/result', self.receipt, 20)
+            self.create_subscription(String, '/g3/return_event', lambda m: self.structured('event', m.data, 'return'), 20)
+            if args.enable_commands:
+                self.commands = queue.Queue(maxsize=20)
+                self.publisher = self.create_publisher(String, topics['command'], 10)
+                threading.Thread(target=self.read_commands, daemon=True).start()
+                self.create_timer(.05, self.send_commands, clock=Clock(clock_type=ClockType.STEADY_TIME))
             self.create_timer(1., self.emit, clock=Clock(clock_type=ClockType.STEADY_TIME))
+
+        def receipt(self, message):
+            try:
+                data = json.loads(message.data)
+                if isinstance(data, dict):
+                    self.receipts = [*self.receipts[-39:], data]
+            except ValueError:
+                pass
+
+        def read_commands(self):
+            from task_control import COMMANDS
+            for line in sys.stdin:
+                try:
+                    data = json.loads(line)
+                    if (data.get('command') in COMMANDS and isinstance(data.get('request_id'), str)
+                            and len(data['request_id']) == 32):
+                        self.commands.put_nowait(data)
+                except (ValueError, AttributeError, queue.Full):
+                    continue
+
+        def send_commands(self):
+            while not self.commands.empty():
+                request = self.commands.get_nowait()
+                self.publisher.publish(String(data=json.dumps(request)))
+
 
         def save(self, key, value):
             self.values[key] = value
             self.seen[key] = time.monotonic()
 
-        def structured(self, key, value):
+        def structured(self, key, value, purpose=None):
             try:
                 data = json.loads(value)
                 if not isinstance(data, dict):
                     return
                 json.dumps(data, allow_nan=False)
                 if key == 'event':
-                    self.events.append({k: data[k] for k in ('status', 'purpose', 'attempt_id', 'target', 'reason') if k in data})
+                    event = {k: data[k] for k in ('status', 'purpose', 'attempt_id', 'target', 'reason') if k in data}
+                    if purpose:
+                        event['purpose'] = purpose
+                    self.events.append(event)
                     self.events = self.events[-30:]
                 else:
                     self.save(key, data)
@@ -95,7 +133,7 @@ def main():
                 pass
             now = time.monotonic()
             data = {'type': 'telemetry', 'values': self.values, 'ages': {k: now-v for k, v in self.seen.items()},
-                    'events': self.events, 'sim_time_s': self.get_clock().now().nanoseconds / 1e9}
+                    'events': self.events, 'command_receipts': self.receipts, 'sim_time_s': self.get_clock().now().nanoseconds / 1e9}
             try:
                 print(json.dumps(data, allow_nan=False), flush=True)
             except (ValueError, BrokenPipeError):

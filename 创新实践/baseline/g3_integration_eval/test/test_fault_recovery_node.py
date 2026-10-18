@@ -180,3 +180,28 @@ def test_estop_during_pause_invalidates_release(node):
     node._apply_event(Event.ESTOP,source='command')
     ack(node,token);healthy(node);node._check_recovery()
     assert node._state is State.ESTOP and not node._pause_released
+
+
+def test_web_command_receipt_correlates_request_and_transition(node):
+    healthy(node)
+    node._command_result_publisher = Mock()
+    node._on_command(String(data=json.dumps({'request_id': 'web-1', 'command': 'EXPLORE'})))
+    receipt = json.loads(node._command_result_publisher.publish.call_args.args[0].data)
+    assert receipt == dict(request_id='web-1', command='EXPLORE', accepted=True, state='exploring', reason='')
+    assert node._state is State.EXPLORE
+
+
+def test_web_command_receipt_reports_unstable_health(node):
+    node._command_result_publisher = Mock()
+    node._on_command(String(data=json.dumps({'request_id': 'web-2', 'command': 'EXPLORE'})))
+    receipt = json.loads(node._command_result_publisher.publish.call_args.args[0].data)
+    assert receipt['accepted'] is False and receipt['request_id'] == 'web-2'
+    assert receipt['reason'] and node._state is State.STANDBY
+
+
+def test_web_command_receipt_reports_invalid_transition(node):
+    node._command_result_publisher = Mock()
+    node._on_command(String(data=json.dumps({'request_id': 'web-3', 'command': 'RETURN'})))
+    receipt = json.loads(node._command_result_publisher.publish.call_args.args[0].data)
+    assert receipt['accepted'] is False and receipt['state'] == 'standby'
+    assert node._state is State.STANDBY

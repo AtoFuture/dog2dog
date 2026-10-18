@@ -249,3 +249,21 @@ dd { margin: 0; word-break: break-word; color: var(--text); }
   html { scroll-behavior: auto; }
   * { transition: none !important; }
 }
+
+.task-panel { grid-column: 1 / -1; }
+.task-actions { display: flex; flex-wrap: wrap; gap: 9px; padding: 16px 18px 0; }
+.task-actions button { color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px 15px; font-size: 12px; }
+.task-actions button:hover:not(:disabled) { border-color: var(--text); }
+.task-actions .stop-button { border: 2px solid var(--text); font-weight: 700; }
+.task-feedback { padding: 0 18px; margin: 12px 0 16px; font-size: 12px; }
+.task-history { list-style: none; padding: 0 18px; margin: 0; }
+.task-history li { display: flex; flex-wrap: wrap; gap: 6px 18px; border-top: 1px solid var(--border-soft); padding: 9px 0; font-size: 11px; }
+.task-history li span:last-child { flex: 1; min-width: 140px; overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  .task-actions { padding: 12px 13px 0; gap: 7px; }
+  .task-actions button { padding: 8px 10px; }
+  .task-feedback, .task-history { padding-left: 13px; padding-right: 13px; }
+}
+
+.event-index { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.event-status, .event-target { min-width: 0; overflow-wrap: anywhere; }
