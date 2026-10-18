@@ -40,64 +40,20 @@ CMD_TOPIC="/robot1/joint_group_controller/commands"
 GT_RAW="/world/world_demo/pose/info"
 GT_TOPIC="/g1/ground_truth"
 
-# ── 自清理：被 kill -9 时 trap 不执行，会漏下桥/中继；多个同名中继会互抢发布器 ──
-pkill -9 -f "gt_relay.py" 2>/dev/null
-pkill -9 -f "__node:=gt_bridge" 2>/dev/null
-pkill -9 -f "ros2 bag record" 2>/dev/null
-sleep 2
-
+# Each registered process owns a new session; never kill by executable name.
 PIDS=()
 cleanup() {
-    for pid in "${PIDS[@]:-}"; do
-        kill "${pid}" 2>/dev/null
-        wait "${pid}" 2>/dev/null
-    done
-    # ros2 run / parameter_bridge 的子进程可能比 wrapper 活得久，按名字兜底。
-    pkill -f "[g]t_bridge" 2>/dev/null
-    pkill -f "[g]t_relay.py" 2>/dev/null
+    trap - EXIT INT TERM
+    python3 "${TOOLS_DIR}/owned_processes.py" "${PIDS[@]}"
+    for pid in "${PIDS[@]}"; do wait "${pid}" 2>/dev/null || true; done
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 echo "== 1/5 前置自检：控制器 =="
-# 注意别用 tr -d "state='"：tr 删的是字符集，会把 active 里的字母也删掉
-query_state() {
-    timeout 20 ros2 service call "${CTRL_MGR}/list_controllers" \
-        controller_manager_msgs/srv/ListControllers 2>/dev/null \
-        | grep -oE "name='joint_group_controller', state='[a-z]+'" \
-        | sed -E "s/.*state='([a-z]+)'.*/\1/"
-}
-STATE="$(query_state)"
-CMD_PUBS="$(timeout 15 ros2 topic info "${CMD_TOPIC}" 2>/dev/null \
-    | grep -oE "Publisher count: [0-9]+" | grep -oE "[0-9]+")"
-if [ -z "${STATE}" ]; then
-    # 当前标准仿真没有 libgz_ros2_control-system.so，运动链走自定义
-    # quadruped_controller；controller_manager 服务不存在，但 commands 话题有 1 个发布者。
-    if [ "${CMD_PUBS:-0}" = "1" ]; then
-        echo "   controller_manager 不可用；commands 发布者=1 → 自定义 quadruped 控制器通路"
-    else
-        echo "ERROR: controller_manager 不可用，且 ${CMD_TOPIC} 发布者=${CMD_PUBS:-0}" >&2
-        echo "       命令进不去，狗不会动。停。" >&2
-        exit 2
-    fi
-elif [ "${STATE}" != "active" ]; then
-    echo "   当前 ${STATE} → 先 configure 再 switch"
-    # unconfigured 的控制器直接 switch 会返回 ok=True 但状态不变（实测）
-    if [ "${STATE}" != "inactive" ]; then
-        timeout 30 ros2 service call "${CTRL_MGR}/configure_controller" \
-            controller_manager_msgs/srv/ConfigureController \
-            "{name: joint_group_controller}" >"${LOG_DIR}/walk_configure.log" 2>&1
-    fi
-    timeout 30 ros2 service call "${CTRL_MGR}/switch_controller" \
-        controller_manager_msgs/srv/SwitchController \
-        "{activate_controllers: [joint_group_controller], strictness: 1}" \
-        >"${LOG_DIR}/walk_activate.log" 2>&1
-    STATE="$(query_state)"
-fi
-if [ -n "${STATE}" ] && [ "${STATE}" != "active" ]; then
-    echo "ERROR: joint_group_controller = ${STATE}，命令进不去，狗不会动。停。" >&2
-    exit 2
-fi
-echo "   joint_group_controller: active（或自定义控制器通路）"
+source "${TOOLS_DIR}/controller_check.sh"
+require_active_controllers "${LOG_DIR}" || exit 2
 
 echo "== 2/5 前置自检：commands 发布者数 =="
 PUBS="$(timeout 15 ros2 topic info "${CMD_TOPIC}" 2>/dev/null \
@@ -110,11 +66,11 @@ fi
 echo "   Publisher count: 1"
 
 echo "== 3/5 起真值桥 + 中转 =="
-ros2 run ros_gz_bridge parameter_bridge \
+setsid ros2 run ros_gz_bridge parameter_bridge \
     "${GT_RAW}@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V" \
     --ros-args -r __node:=gt_bridge >"${LOG_DIR}/walk_bridge.log" 2>&1 &
 PIDS+=($!)
-python3 "${TOOLS_DIR}/gt_relay.py" --ros-args -p use_sim_time:=true \
+setsid python3 "${TOOLS_DIR}/gt_relay.py" --ros-args -p use_sim_time:=true \
     >"${LOG_DIR}/walk_relay.log" 2>&1 &
 PIDS+=($!)
 for _ in $(seq 1 25); do
@@ -133,7 +89,7 @@ REC_SECS=$((TIMEOUT_S + 20))
 # 顺带录 /robot1/map：跑 slam 模式时它就是「边走边建图」的证据，
 # 收工后用 tools/map_growth.py <包> 判。AMCL 模式下这个话题只有 1 条静态图，
 # 录了也无害（map_growth 会如实报「不是 SLAM 边跑边建图」）。
-ros2 bag record -o "${OUT}" "${GT_TOPIC}" \
+setsid ros2 bag record -o "${OUT}" "${GT_TOPIC}" \
     /robot1/odom /robot1/odometry/filtered /robot1/cmd_vel \
     /robot1/robot_velocity /robot1/foot_contact /robot1/map \
     >"${LOG_DIR}/walk_record.log" 2>&1 &
@@ -141,13 +97,16 @@ REC=$!
 PIDS+=("${REC}")
 sleep 4
 
-python3 "${TOOLS_DIR}/walk_driver.py" "${DISTANCE}" --speed "${SPEED}" --timeout "${TIMEOUT_S}"
+setsid python3 "${TOOLS_DIR}/walk_driver.py" "${DISTANCE}" --speed "${SPEED}" --timeout "${TIMEOUT_S}" &
+DRIVER_PID=$!
+PIDS+=("${DRIVER_PID}")
+wait "${DRIVER_PID}"
 RC=$?
 
 echo "== 5/5 收尾 =="
 timeout 5 ros2 topic pub --once /robot1/cmd_vel geometry_msgs/msg/Twist \
     "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" >/dev/null 2>&1
-kill -INT "${REC}" 2>/dev/null
+kill -INT -- -"${REC}" 2>/dev/null
 wait "${REC}" 2>/dev/null
 
 # 包里必须真有真值，否则这轮什么也没验到（对照问题清单 H4：缺数据静默判通过）

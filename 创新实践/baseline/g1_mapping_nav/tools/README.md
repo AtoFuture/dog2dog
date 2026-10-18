@@ -230,3 +230,9 @@ initial_pose）**都还没有在仿真里重跑过**——下一轮跑 `goal_tes
 ⚠️ 上表是 2026-09-23 的验收数字，**用的还是旧的缩放器**。2026-09-24 的死区修复
 （第 4 坑）与 `movement_time_allowance` 对齐都还没有在仿真里重跑过——
 下一轮跑 `goal_test.sh` 时它会在收尾自动给出真值判定，先看那个。
+
+### 验收进程归属与控制器检查（2026-10-18）
+
+`slam_e2e_check.sh`、`walk_test.sh` 和 `start_nav2_isolated.sh` 使用 `owned_processes.py` 清理本次创建的子会话及后代，不清理其他实验的同名节点或录包进程。上次被强杀后留下的独立残留，应先确认归属再手动停止。
+
+两条验收入口都通过 `controller_check.sh` 确认关节控制器和关节状态广播器为 active；controller_manager 缺失时立即失败，不再用命令发布者数量放行。SLAM 直行验收为其 Nav2 子脚本设置 `G1_START_SCALER=0`，正常 Nav2 启动仍默认开启缩放器。

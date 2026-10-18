@@ -13,7 +13,8 @@
 #   DEMO_DOMAIN=227 DEMO_PARTITION=gui_demo_227 DEMO_DISPLAY=:2
 #   DEMO_OUT=/home/wy/data1/.runtime/gui_console_demo
 #   DEMO_WORLD=warehouse.sdf DEMO_ROBOT_MODEL=robot1_my_bot
-#   DEMO_CONSOLE_PORT=8765
+#   DEMO_CONSOLE_PORT=8765 DEMO_WS_PORT=8766 DEMO_VNC_PORT=5909
+#   DEMO_READY_TIMEOUT_S=180
 #
 # Ctrl+C stops the console, runtime, GUI client and simulator started here.
 set -euo pipefail
@@ -29,6 +30,10 @@ DISPLAY_NUM="${DEMO_DISPLAY:-:2}"
 WORLD="${DEMO_WORLD:-warehouse.sdf}"
 MODEL="${DEMO_ROBOT_MODEL:-robot1_my_bot}"
 CONSOLE_PORT="${DEMO_CONSOLE_PORT:-8765}"
+WS_PORT="${DEMO_WS_PORT:-8766}"
+VNC_PORT="${DEMO_VNC_PORT:-5909}"
+READY_TIMEOUT="${DEMO_READY_TIMEOUT_S:-180}"
+PROCESS_HELPER="${PROJECT_ROOT}/baseline/g1_mapping_nav/tools/owned_processes.py"
 SIM_WS="${G1_SIM_WORKSPACE:-${HOME}/go2_sim_ws/ROS2-Gazebo-GO2}"
 ROS_WRAPPER="${G1_ROS_WRAPPER:-${HOME}/.enroot/ros}"
 GUI_WRAPPER="${G1_GPU_WRAPPER:-${HOME}/.enroot/ros-gui}"
@@ -53,8 +58,14 @@ if LC_ALL=C grep -q '[^ -~]' <<<"${OUT}"; then fail "DEMO_OUT must be ASCII: ${O
 [[ "${DOMAIN}" =~ ^[0-9]+$ ]] && (( DOMAIN >= 1 && DOMAIN <= 232 )) && [[ "${DOMAIN}" != 0 && "${DOMAIN}" != 42 && "${DOMAIN}" != 43 ]] \
   || fail "DEMO_DOMAIN must be 1..232 and not 0/42/43"
 [[ -n "${PARTITION}" ]] || fail "DEMO_PARTITION must not be empty"
+for port in "${CONSOLE_PORT}" "${WS_PORT}" "${VNC_PORT}"; do
+  [[ "${port}" =~ ^[1-9][0-9]{3,4}$ ]] && (( port >= 1024 && port <= 65535 )) || fail "Invalid port: ${port}"
+done
+[[ "${CONSOLE_PORT}" != "${WS_PORT}" && "${CONSOLE_PORT}" != "${VNC_PORT}" && "${WS_PORT}" != "${VNC_PORT}" ]] || fail "Require three distinct ports"
+[[ "${READY_TIMEOUT}" =~ ^[1-9][0-9]*$ ]] || fail "DEMO_READY_TIMEOUT_S must be a positive integer"
+[[ -f "${PROCESS_HELPER}" ]] || fail "Missing process cleanup helper"
 [[ -x "${ROS_WRAPPER}" && -x "${GUI_WRAPPER}" ]] || fail "Missing ROS wrappers"
-for tool in x11vnc xwininfo xdotool python3 pgrep ss; do command -v "${tool}" >/dev/null || fail "Missing ${tool}"; done
+for tool in x11vnc xwininfo xdotool python3 setsid ss curl timeout; do command -v "${tool}" >/dev/null || fail "Missing ${tool}"; done
 [[ -f "${PROJECT_ROOT}/.env" ]] || fail "Missing ${PROJECT_ROOT}/.env (API key); see .env.example"
 if ss -ltn 2>/dev/null | grep -q ":${CONSOLE_PORT} "; then
   if (( RESTART == 0 )); then
@@ -89,6 +100,20 @@ if ss -ltn 2>/dev/null | grep -q ":${CONSOLE_PORT} "; then
   sleep 2
 fi
 
+PIDS=()
+STOPPING=0
+cleanup() {
+  STOPPING=1
+  trap - EXIT INT TERM
+  echo; echo "== stopping demo =="
+  python3 "${PROCESS_HELPER}" "${PIDS[@]}"
+  for pid in "${PIDS[@]}"; do wait "${pid}" 2>/dev/null || true; done
+  if [[ -f "${PID_FILE}" && "$(cat "${PID_FILE}" 2>/dev/null)" == "$$" ]]; then rm -f "${PID_FILE}"; fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 mkdir -p "${OUT}/logs"
 echo $$ >"${PID_FILE}"
 if [[ ! -f "${OUT}/gazebo_nav2.launch.py" || ! -d "${OUT}/progress_install" ]]; then
@@ -99,57 +124,15 @@ if [[ ! -f "${OUT}/gazebo_nav2.launch.py" || ! -d "${OUT}/progress_install" ]]; 
 fi
 
 # EGL vendor config for headless ogre2 (same workaround as run_slam_frontier.sh)
-mkdir -p /tmp/gz_egl
-if [[ ! -f /tmp/gz_egl/10_nvidia.json ]]; then
+mkdir -p ${OUT}/egl
+if [[ ! -f ${OUT}/egl/10_nvidia.json ]]; then
   if [[ -f /usr/share/glvnd/egl_vendor.d/10_nvidia.json ]]; then
-    cp /usr/share/glvnd/egl_vendor.d/10_nvidia.json /tmp/gz_egl/
+    cp /usr/share/glvnd/egl_vendor.d/10_nvidia.json ${OUT}/egl/
   else
     printf '%s\n' '{' '    "file_format_version" : "1.0.0",' '    "ICD" : {' \
-      '        "library_path" : "libEGL_nvidia.so.0"' '    }' '}' > /tmp/gz_egl/10_nvidia.json
+      '        "library_path" : "libEGL_nvidia.so.0"' '    }' '}' > ${OUT}/egl/10_nvidia.json
   fi
 fi
-
-PIDS=()
-STOPPING=0
-collect_tree() {
-  local parent="$1" child
-  for child in $(pgrep -P "${parent}" 2>/dev/null || true); do
-    ALL_PIDS+=("${child}")
-    collect_tree "${child}"
-  done
-}
-cleanup() {
-  STOPPING=1
-  trap - EXIT INT TERM
-  echo; echo "== stopping demo =="
-  # Collect descendants BEFORE signalling: launch/spawner children can be
-  # reparented to init once their parent exits, and then cannot be found.
-  ALL_PIDS=()
-  for pid in "${PIDS[@]}"; do collect_tree "${pid}"; ALL_PIDS+=("${pid}"); done
-  if ((${#ALL_PIDS[@]})); then
-    mapfile -t ALL_PIDS < <(printf '%s\n' "${ALL_PIDS[@]}" | awk '!seen[$0]++')
-  fi
-  # Each top-level component was started with setsid, so -PID addresses its group.
-  for pid in "${PIDS[@]}"; do kill -INT -"${pid}" 2>/dev/null || kill -INT "${pid}" 2>/dev/null || true; done
-  for pid in "${ALL_PIDS[@]}"; do kill -INT "${pid}" 2>/dev/null || true; done
-  local alive
-  for _ in $(seq 1 20); do
-    alive=0
-    for pid in "${ALL_PIDS[@]}"; do
-      if kill -0 "${pid}" 2>/dev/null; then alive=1; fi
-    done
-    if (( alive == 0 )); then break; fi
-    sleep 0.5
-  done
-  for pid in "${ALL_PIDS[@]}"; do kill -TERM "${pid}" 2>/dev/null || true; done
-  sleep 2
-  for pid in "${ALL_PIDS[@]}"; do kill -KILL "${pid}" 2>/dev/null || true; done
-  # Targeted fallback for the console's private ports (children use new sessions).
-  ss -ltn 2>/dev/null | grep -q ':8766 ' && pkill -f "websockify --heartbeat 15 127.0.0.1:8766" 2>/dev/null || true
-  ss -ltn 2>/dev/null | grep -q ':5909 ' && pkill -f "x11vnc -display ${DISPLAY_NUM} .*rfbport 5909" 2>/dev/null || true
-  if [[ -f "${PID_FILE}" && "$(cat "${PID_FILE}" 2>/dev/null)" == "$$" ]]; then rm -f "${PID_FILE}"; fi
-}
-trap cleanup EXIT INT TERM
 
 ros_env="source /opt/ros/humble/setup.bash
 source '${SIM_WS}/install/setup.bash'
@@ -160,9 +143,9 @@ export GZ_SIM_RESOURCE_PATH='${SIM_WS}/src/gazebo_sim/models'"
 
 # ---- 1. headless server + sensors/controllers (loads gz_ros2_control) -------
 echo "== starting headless simulator on domain ${DOMAIN} / ${PARTITION} =="
-setsid "${GUI_WRAPPER}" bash -c "${ros_env}
+DISPLAY="${DISPLAY_NUM}" XAUTHORITY="${XAUTHORITY:-${HOME}/.Xauthority}" setsid "${GUI_WRAPPER}" bash -c "${ros_env}
 export GZ_HEADLESS=1
-export __EGL_VENDOR_LIBRARY_FILENAMES=/tmp/gz_egl/10_nvidia.json
+export __EGL_VENDOR_LIBRARY_FILENAMES='${OUT}/egl/10_nvidia.json'
 export PYTHONPATH='${NAV_CONTAINER}':\"\${PYTHONPATH:-}\"
 exec ros2 launch '${OUT}/gazebo_nav2.launch.py' sensors:=true world:='${WORLD}'
 " >"${OUT}/logs/sim.log" 2>&1 < /dev/null &
@@ -179,7 +162,7 @@ echo "   controller active"
 
 # ---- 2. GUI client on the requested display --------------------------------
 echo "== starting GUI client on ${DISPLAY_NUM} =="
-setsid "${GUI_WRAPPER}" bash -c "
+DISPLAY="${DISPLAY_NUM}" XAUTHORITY="${XAUTHORITY:-${HOME}/.Xauthority}" setsid "${GUI_WRAPPER}" bash -c "
 source /opt/ros/humble/setup.bash
 source '${SIM_WS}/install/setup.bash'
 export IGN_PARTITION='${PARTITION}' GZ_PARTITION='${PARTITION}'
@@ -211,17 +194,28 @@ exec python3 '${NAV_CONTAINER}/scripts/run_navigation_runtime.py' \"\${ARGS[@]}\
 " >"${OUT}/logs/runtime.log" 2>&1 < /dev/null &
 RUNTIME_PID=$!; PIDS+=("${RUNTIME_PID}")
 
-for _ in $(seq 1 60); do
-  kill -0 "${RUNTIME_PID}" 2>/dev/null || { tail -30 "${OUT}/logs/runtime.log" >&2; fail "runtime exited"; }
-  "${ROS_WRAPPER}" bash -c "${ros_env}; timeout 5 ros2 topic echo /mission_state --once 2>/dev/null | grep -q standby" 2>/dev/null && break
-  sleep 2
-done
+runtime_state_is() {
+  timeout 10 "${ROS_WRAPPER}" bash -c "${ros_env}
+    timeout 5 ros2 topic echo /mission_state --once 2>/dev/null" \
+    | grep -qx "data: $1"
+}
+wait_runtime_state() {
+  local expected="$1" deadline=$((SECONDS + READY_TIMEOUT))
+  while (( SECONDS < deadline )); do
+    kill -0 "${RUNTIME_PID}" 2>/dev/null || { tail -30 "${OUT}/logs/runtime.log" >&2; fail "runtime exited"; }
+    if runtime_state_is "${expected}"; then return 0; fi
+    sleep 2
+  done
+  fail "runtime did not reach ${expected} within ${READY_TIMEOUT}s; see ${OUT}/logs/runtime.log"
+}
+wait_runtime_state standby
 echo "   runtime standby"
 
 # ---- 4. web console --------------------------------------------------------
 echo "== starting web console =="
 setsid python3 "${NAV_ROOT}/web_console/server.py" --display "${DISPLAY_NUM}" \
-  --domain "${DOMAIN}" --partition "${PARTITION}" --world world_demo --robot-model "${MODEL}" \
+  --port "${CONSOLE_PORT}" --ws-port "${WS_PORT}" --vnc-port "${VNC_PORT}" \
+  --ros-wrapper "${ROS_WRAPPER}" --domain "${DOMAIN}" --partition "${PARTITION}" --world world_demo --robot-model "${MODEL}" \
   --ros-env RMW_IMPLEMENTATION=rmw_cyclonedds_cpp --ros-env CYCLONEDDS_URI="${CYCLONE}" \
   --log-dir "${OUT}/logs/console" >"${OUT}/logs/console.log" 2>&1 < /dev/null &
 CONSOLE_PID=$!; PIDS+=("${CONSOLE_PID}")
@@ -238,7 +232,8 @@ if [[ "${EXPLORE}" == 1 ]]; then
   # Give G3 health debounce time to settle before accepting EXPLORE.
   sleep 5
   echo "== sending EXPLORE =="
-  "${ROS_WRAPPER}" bash -c "${ros_env}; timeout 8 ros2 topic pub --once /g3/command std_msgs/msg/String '{data: EXPLORE}'" >/dev/null 2>&1 || true
+  "${ROS_WRAPPER}" bash -c "${ros_env}; timeout 8 ros2 topic pub --once /g3/command std_msgs/msg/String '{data: EXPLORE}'" >"${OUT}/logs/explore.log" 2>&1 || fail "EXPLORE publish failed; see ${OUT}/logs/explore.log"
+  wait_runtime_state exploring
 fi
 
 cat <<EOF

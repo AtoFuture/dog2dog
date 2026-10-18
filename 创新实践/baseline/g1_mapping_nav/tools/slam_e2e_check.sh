@@ -23,21 +23,15 @@ TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${OUT}_logs"
 mkdir -p "${LOG_DIR}"
 
-NAV_PID=""
+PIDS=()
 cleanup() {
-    [ -n "${NAV_PID}" ] && kill "${NAV_PID}" 2>/dev/null
-    # ros2 launch 的子节点可能在被父进程丢弃后继续运行；按可执行文件名兜底清理。
-    # 本脚本只应在隔离域使用，这些名字不会命中共享仿真里的节点。
-    for pattern in "[n]av2_scaled.launch.py" "[s]ync_slam_toolbox_node" \
-        "[n]av2_controller/controller_server" "[n]av2_planner/planner_server" \
-        "[n]av2_bt_navigator/bt_navigator" "[n]av2_behaviors/behavior_server" \
-        "[n]av2_smoother/smoother_server" "[n]av2_waypoint_follower/waypoint_follower" \
-        "[n]av2_lifecycle_manager/lifecycle_manager" "[n]av2_map_server/map_saver_server" \
-        "[c]md_vel_scaler.py" "[g]t_bridge" "[g]t_relay.py"; do
-        pkill -f "${pattern}" 2>/dev/null
-    done
+    trap - EXIT INT TERM
+    python3 "${TOOLS_DIR}/owned_processes.py" "${PIDS[@]}"
+    for pid in "${PIDS[@]}"; do wait "${pid}" 2>/dev/null || true; done
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 fail() { echo "ERROR: $*" >&2; exit 2; }
 
@@ -74,11 +68,13 @@ echo "== 2/5 起 Nav2（slam 模式）=="
 # G1_LOG_DIR 必须显式导出：它决定 start_nav2_isolated.sh / cmd_vel_scaler 的日志位置，
 # 之前不导出时 e2e 在 /tmp 找日志、脚本却写到 /tmp/g1_p1，永远等不到。
 export G1_LOG_DIR="${LOG_DIR}"
-bash "${TOOLS_DIR}/start_nav2_isolated.sh" --slam >"${LOG_DIR}/slam_e2e_nav2.log" 2>&1 &
+G1_START_SCALER=0 setsid bash "${TOOLS_DIR}/start_nav2_isolated.sh" --slam >"${LOG_DIR}/slam_e2e_nav2.log" 2>&1 &
 NAV_PID=$!
+PIDS+=("${NAV_PID}")
 echo "   pid=${NAV_PID}，等 slam_toolbox 起来"
 for _ in $(seq 1 30); do
     grep -qE "Using solver plugin" "${LOG_DIR}/nav2_scaled.log" 2>/dev/null && break
+    kill -0 "${NAV_PID}" 2>/dev/null || fail "Nav2 启动失败，见 ${LOG_DIR}/slam_e2e_nav2.log"
     sleep 3
 done
 sleep 12
@@ -116,13 +112,12 @@ MAPUBS="$(timeout 15 ros2 topic info /robot1/map --no-daemon 2>/dev/null | grep 
 echo "   Publisher count = ${MAPUBS} ✓"
 
 echo "== 5/5 驱动 + 判定 =="
-# 本验收用 walk_driver 直接发 /robot1/cmd_vel；cmd_vel_scaler 会按 N3 的安全行为
-# 以 50 Hz 持续发零，和 walk_driver 抢同一个话题，狗会走不动。先停掉它。
-# Nav2 的 velocity_smoother 输出仍去 cmd_vel_scaled_out，没人消费也无副作用。
-pkill -f "[c]md_vel_scaler.py" 2>/dev/null
-sleep 1
+# This run never starts the scaler, so no shared publisher needs to be stopped.
 echo "   让狗走 ${DISTANCE} m（真值闭环），同时录 /robot1/map"
-bash "${TOOLS_DIR}/walk_test.sh" "${DISTANCE}" 0.02 "${OUT}" 200
+setsid bash "${TOOLS_DIR}/walk_test.sh" "${DISTANCE}" 0.02 "${OUT}" 200 &
+WALK_PID=$!
+PIDS+=("${WALK_PID}")
+wait "${WALK_PID}"
 WALK_RC=$?
 
 echo
@@ -135,9 +130,6 @@ else
     MAP_RC=$?
 fi
 
-kill "${NAV_PID}" 2>/dev/null
-pkill -f "[n]av2_scaled.launch.py" 2>/dev/null
-pkill -f "[c]md_vel_scaler.py" 2>/dev/null
 
 echo
 echo "===================== 汇总 ====================="
