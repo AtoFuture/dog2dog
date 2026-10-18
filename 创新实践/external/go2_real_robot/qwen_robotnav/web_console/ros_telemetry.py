@@ -51,6 +51,7 @@ def main():
             self.create_subscription(String, '/exploration/events', lambda m: self.structured('event', m.data), 20)
             self.create_subscription(String, topics['command'] + '/result', self.receipt, 20)
             self.create_subscription(String, '/g3/return_event', lambda m: self.structured('event', m.data, 'return'), 20)
+            self.create_subscription(String, '/g3/localization_status', lambda m: self.structured('event', m.data, 'localization'), 20)
             if args.enable_commands:
                 self.commands = queue.Queue(maxsize=20)
                 self.publisher = self.create_publisher(String, topics['command'], 10)

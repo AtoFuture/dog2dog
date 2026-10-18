@@ -37,8 +37,8 @@ def evaluate(root):
     body=[];frontier_events=[];areas=[];sensor=None;pose=None;hit_frames=[0]*len(scene['boxes']) if scene else []
     manifest=json.loads((root/'runtime_manifest.json').read_text());exit_info=json.loads((root/'runtime_exit.json').read_text())
     successes=set();accepted=set();returned=[];goals=set();commands=[];status=[];poses=[];states=[]
-    names={t['actuator_command'],t['guard_status'],t['mission'],'/exploration/events','/g3/return_event',t['action']+'/_action/status','/frontier_trial/gt_pose'}
-    completions=[];exploration_results=[];operator_commands=[];return_triggers=[]
+    names={t['actuator_command'],t['guard_status'],t['mission'],'/exploration/events','/g3/return_event','/g3/localization_status',t['action']+'/_action/status','/frontier_trial/gt_pose'}
+    completions=[];exploration_results=[];operator_commands=[];return_triggers=[];return_ids=set();localization_events=[]
     names.update({t['command'],t['planning_map'],'/exploration/completion','/g3/exploration_result',t['map']})
     names.add(t['tf'])
     if scene:names.update({t['scan'],t['tf_static']})
@@ -91,8 +91,12 @@ def evaluate(root):
             elif name=='/g3/return_event':
                 e=json.loads(msg.data)
                 if e['status']=='accepted':
-                    accepted.add((e['attempt_id'],e['goal_id']));return_triggers.append(e.get('trigger'))
+                    accepted.add((e['attempt_id'],e['goal_id']))
+                    return_id=e.get('logical_return_id') or e['attempt_id']
+                    if return_id not in return_ids:
+                        return_ids.add(return_id);return_triggers.append(e.get('trigger'))
                 if e['status']=='succeeded':returned.append((e['attempt_id'],e['goal_id']))
+            elif name=='/g3/localization_status':localization_events.append(json.loads(msg.data))
             else:
                 e=json.loads(msg.data)
                 frontier_events.append(dict(e,recorded_time=wall))
@@ -103,6 +107,7 @@ def evaluate(root):
     motion=[c for c in commands if abs(c[1])+abs(c[2])>1e-6]
     allowed=all(abs(c[1])<=profile['guard']['linear_max']+1e-8 and abs(c[2])<=profile['guard']['angular_max']+1e-8 and c[1]>=0 for c in commands)
     returned_ok=len(returned)==1 and returned[0] in accepted and returned[0][1] in successes
+    verified_returns=[e for e in localization_events if e.get('status')=='return_verified']
     home_reference=compose_pose(alignment,(profile['mission']['home_x'],profile['mission']['home_y'],profile['mission']['home_yaw'])) if alignment is not None else None
     home_error=math.dist(home_reference[:2],poses[-1][1:]) if poses and home_reference is not None else math.inf
     checks=dict(main_passed=report.get('success') is True,runtime_exited_cleanly=runtime_exit_ok(exit_info,expected_runtime_roles(profile)) and report.get('runtime_exit_code')==0,
@@ -112,6 +117,9 @@ def evaluate(root):
        actual_guarded_motion=bool(motion) and bool(poses) and max(math.dist(p[1:],poses[0][1:]) for p in poses)>=.5,
        command_limits=bool(commands) and allowed,completed_frontiers=len(goals)>=2,
        real_return_action=returned_ok,home_reference_registered=home_reference is not None,body_returned_home=home_error<=.4)
+    if profile.get('return_localization',{}).get('enabled',False):
+        checks['return_localization_verified']=(len(verified_returns)==1 and bool(returned)
+            and verified_returns[0].get('attempt_id')==returned[0][0])
     padding=max(1.,profile['navigation']['robot_radius_m']+profile['navigation']['inflation_radius_m'])
     checks['planning_map_preserves_observations']=bool(planning_maps) and all(
         (source:=source_maps.get((msg.header.stamp.sec,msg.header.stamp.nanosec))) is not None
@@ -156,6 +164,7 @@ def evaluate(root):
                 candidate_selector=profile['decision']['candidate_selector'],deepseek_selections=brain_selected,brain_fallback_selections=brain_fallback,
                 static_scene=static_result,known_area_growth_m2=areas[-1][1]-areas[0][1] if areas else None,
                 exploration_results=exploration_results,operator_commands=operator_commands,return_triggers=return_triggers,
+                localization_events=localization_events,
                 return_goal_ids=[goal for attempt,goal in returned],scope=('static '+scene['scenario'] if scene else 'ordinary Gazebo warehouse')+'; standalone runtime without evaluator velocity publisher')
     (root/'runtime_validation.json').write_text(json.dumps(result,indent=2));return result
 

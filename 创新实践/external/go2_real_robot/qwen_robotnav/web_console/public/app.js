@@ -4,7 +4,7 @@ const $ = id => document.getElementById(id);
 let interactionRequested = true;
 let rfb, connected = false, state, filter = 'all', retry, toastTimer, lastMapPng, mapImage;
 const missions = {standby:'待机', exploring:'探索中', returning:'返航中', paused:'已暂停', estop:'急停'};
-const statuses = {waiting_for_server:'等待导航服务',goal_request_sent:'已请求导航',cancel_requested:'请求取消',sending:'下发目标', accepted:'目标已接收', succeeded:'执行成功', failed:'执行失败', canceled:'目标已取消', brain_requested:'请求决策', brain_selected:'决策完成', exploration_ended:'探索结束', search_unavailable:'暂无可用候选'};
+const statuses = {waiting_for_server:'等待导航服务',goal_request_sent:'已请求导航',cancel_requested:'请求取消',sending:'下发目标', accepted:'目标已接收', succeeded:'执行成功', failed:'执行失败', canceled:'目标已取消', nav_succeeded_pending_verification:'导航到达，正在复核', localization_rejected:'定位复核未通过', localization_failed:'返航定位失败', home_reference_captured:'已记录归位基准', verification_started:'开始归位复核', correction_requested:'请求归位修正', return_replan_requested:'定位变化，准备重规划', return_replan_started:'返航已重规划', integrity_fault:'定位跳变', integrity_recovered:'定位已稳定', odometry_home_rebased:'里程计基准已校正', map_home_rebased:'地图基准已校正', return_verified:'真实归位已确认', brain_requested:'请求决策', brain_selected:'决策完成', exploration_ended:'探索结束', search_unavailable:'暂无可用候选'};
 const guardReasons = {allowed:'运动许可', footprint_clearance:'机身净空保护', predicted_footprint_collision:'预测净空保护', nav_command_unavailable:'导航请求过期', front_obstacle:'前方障碍', excessive_tilt:'倾角保护', 'mission:standby':'待机归零', 'mission:estop':'急停归零'};
 function toast(message) { $('toast').textContent=message; $('toast').hidden=false; clearTimeout(toastTimer); toastTimer=setTimeout(()=>$('toast').hidden=true,3500); }
 function syncInteraction() {
@@ -134,7 +134,7 @@ function renderEvents() {
   }
   rows.forEach(e=>{
     const row=document.createElement('div');row.className='event-row';
-    const values=[['event-index',e.attempt_id?`#${String(e.attempt_id).padStart(3,'0')}`:'—'],['event-status',statuses[e.status]||e.status],['event-target',e.target?`x ${number(e.target.x)}  y ${number(e.target.y)}`:e.reason||'—'],['event-purpose',e.purpose==='scan'?'扫描':e.purpose==='frontier'?'探索目标':e.purpose==='return'?'返航':'系统']];
+    const values=[['event-index',e.attempt_id?`#${String(e.attempt_id).padStart(3,'0')}`:'—'],['event-status',statuses[e.status]||e.status],['event-target',e.target?`x ${number(e.target.x)}  y ${number(e.target.y)}`:e.reason||'—'],['event-purpose',e.purpose==='scan'?'扫描':e.purpose==='frontier'?'探索目标':e.purpose==='return'?'返航':e.purpose==='localization'?'定位复核':'系统']];
     values.forEach(([cls,text])=>{const span=document.createElement('span');span.className=cls;span.textContent=text;span.title=text;row.append(span);});root.append(row);
   });
 }

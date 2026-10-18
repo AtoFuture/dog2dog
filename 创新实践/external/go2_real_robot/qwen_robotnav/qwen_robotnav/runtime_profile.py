@@ -18,6 +18,15 @@ KEYS={
  'decision':set('candidate_selector mission_instruction brain_base_url brain_model brain_timeout brain_max_candidates'.split()),
  'battery_model':{'initial_percentage','moving_drain_per_sec','idle_drain_per_sec','publish_rate_hz'},
 }
+RETURN_LOCALIZATION_KEYS=set(
+    'enabled stale_s jump_translation_m jump_yaw_rad stationary_linear_mps '
+    'stationary_angular_radps stationary_drift_m stationary_drift_yaw_rad '
+    'position_tolerance_m yaw_tolerance_rad stable_s verification_timeout_s '
+    'max_corrections scan_match_required scan_match_rmse_m '
+    'scan_match_min_inlier_ratio scan_match_max_correspondence_m '
+    'scan_match_min_points scan_match_max_points scan_match_max_iterations '
+    'scan_match_convergence_m max_scan_correction_m '
+    'max_scan_correction_yaw_rad'.split())
 
 
 def load_profile(path):
@@ -25,14 +34,23 @@ def load_profile(path):
 
 
 def validate_profile(value):
-    if not isinstance(value,dict) or set(value)!={'schema_version','backend','use_sim_time',*KEYS}:
+    sections=dict(KEYS)
+    if isinstance(value,dict) and 'return_localization' in value:
+        sections['return_localization']=RETURN_LOCALIZATION_KEYS
+    if not isinstance(value,dict) or set(value)!={'schema_version','backend','use_sim_time',*sections}:
         raise ValueError('Unknown or missing runtime profile fields')
     if type(value['schema_version']) is not int or value['schema_version']!=1 or value['backend']!='gazebo_go2' or value['use_sim_time'] is not True:
         raise ValueError('Only the measured gazebo_go2 simulation profile is supported')
-    for section,keys in KEYS.items():
+    for section,keys in sections.items():
         data=value[section]
         if not isinstance(data,dict) or set(data)!=keys:raise ValueError('Unknown or missing '+section+' fields')
         for key,item in data.items():
+            if section=='return_localization' and key in ('enabled','scan_match_required'):
+                if type(item) is not bool:raise ValueError('Expected boolean '+section+' '+key)
+                continue
+            if section=='return_localization' and key in ('max_corrections','scan_match_min_points','scan_match_max_points','scan_match_max_iterations'):
+                if type(item) is not int or item < (0 if key=='max_corrections' else 1):raise ValueError('Invalid integer '+key)
+                continue
             if section=='decision':continue
             if section=='explorer' and key in ('task_completion_enabled','require_path_clearance'):
                 if item is not True:raise ValueError('Formal runtime requires '+key)
@@ -59,6 +77,15 @@ def validate_profile(value):
     if n['inflation_radius_m']<n['robot_radius_m'] or n['robot_radius_m']<.4:raise ValueError('Invalid navigation clearance')
     if not 0<value['battery_model']['initial_percentage']<=1:raise ValueError('Invalid simulated initial battery')
     if t['action']!='/robot1/navigate_to_pose':raise ValueError('This backend requires the robot1 Nav2 action')
+    if 'return_localization' in value:
+        r=value['return_localization']
+        if (r['stable_s']>=r['verification_timeout_s']
+                or not 0<r['scan_match_min_inlier_ratio']<=1
+                or r['scan_match_min_points']>r['scan_match_max_points']
+                or r['position_tolerance_m']>.4
+                or r['max_scan_correction_m']>2.0
+                or r['max_scan_correction_yaw_rad']>math.pi/2):
+            raise ValueError('Unvalidated return localization limits')
     e=value['explorer']
     if type(e['max_bootstrap_scans']) is not int or not 1<=e['max_bootstrap_scans']<=3:raise ValueError('Expected 1..3 bootstrap scans')
     if e['candidate_wait_s']<=30:raise ValueError('Candidate wait must exceed blacklist TTL')
@@ -98,6 +125,11 @@ def ros_parameters(p, runtime_root=None):
     }
     if runtime_root is not None:
         result['vision_explorer']['ros__parameters']['scan_bt_path']=str(Path(runtime_root).resolve()/'scan_bt.xml')
+    if p.get('return_localization',{}).get('enabled',False):
+        result['g3_state_machine']['ros__parameters'].update(
+            odometry_topic=t['odometry'],odom_frame=f['odom'],
+            localization_status_topic='/g3/localization_status',
+            return_localization_config=json.dumps(p['return_localization'],sort_keys=True))
     if d['candidate_selector']=='deepseek':
         result['mission_brain']={'ros__parameters':dict(common,mission_state_topic=t['mission'],
             context_topic='/mission/context',candidates_topic='/exploration/candidates',decision_topic='/brain/decision')}

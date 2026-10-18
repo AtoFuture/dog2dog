@@ -27,13 +27,14 @@ from qwen_robotnav.static_scenarios import load_scene,quaternion_rpy,compose_pos
 class Observer(Node):
     def __init__(self,profile):
         super().__init__('runtime_validation_observer');self.profile=profile
-        self.truth_pose=None;self.poses=[];self.events=[];self.returns=[];self.states=[];self.status=[];self.command_samples=[];self.latest_map=None;self.first_area=None;self.exploration_results=[];self.operator_commands=[]
+        self.truth_pose=None;self.poses=[];self.events=[];self.returns=[];self.localization_events=[];self.states=[];self.status=[];self.command_samples=[];self.latest_map=None;self.first_area=None;self.exploration_results=[];self.operator_commands=[]
         self.tf=Buffer();self.listener=TransformListener(self.tf,self)
         self.create_subscription(String,'/g3/exploration_result',lambda m:self.exploration_results.append(json.loads(m.data)),QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.command_pub=self.create_publisher(String,profile['topics']['command'],10)
         self.create_subscription(TFMessage,'/frontier_trial/gt_pose',self.truth,10)
         self.create_subscription(String,'/exploration/events',lambda m:self.events.append(json.loads(m.data)),30)
         self.create_subscription(String,'/g3/return_event',lambda m:self.returns.append(json.loads(m.data)),30)
+        self.create_subscription(String,'/g3/localization_status',lambda m:self.localization_events.append(json.loads(m.data)),30)
         self.create_subscription(String,profile['topics']['guard_status'],lambda m:self.status.append(json.loads(m.data)),30)
         self.create_subscription(String,profile['topics']['mission'],lambda m:self.states.append(m.data),QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_subscription(OccupancyGrid,profile['topics']['map'],self.mapping,QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -102,7 +103,7 @@ def main():
             '--ros-args','-r','__node:=runtime_truth_observer','-r','/world/world_demo/pose/info:=/frontier_trial/gt_pose'],'gt_bridge.log')
         wait(lambda:node.poses and .18<node.poses[-1][3]<.35,150)
         recorder=start(['ros2','bag','record','--include-hidden-topics','-o',str(root/'bag'),'/clock',
-            *topics.values(),'/exploration/events','/g3/return_event','/g3/recovery_event','/frontier_trial/gt_pose',
+            *topics.values(),'/exploration/events','/g3/return_event','/g3/recovery_event','/g3/localization_status','/frontier_trial/gt_pose',
             '/navigation/handoff_request','/navigation/handoff_ack','/g3/exploration_session','/exploration/completion','/g3/exploration_result','/brain/decision','/mission/context','/exploration/candidates',topics['action']+'/_action/status'],'bag.log')
         runtime=start(['python3',str(Path(__file__).with_name('run_navigation_runtime.py')),'--profile',str(a.profile),
             '--navigation-dir',str(root),'--expected-domain',str(a.expected_domain),
@@ -164,7 +165,8 @@ def main():
                 try:child.wait(timeout=5)
                 except subprocess.TimeoutExpired:os.killpg(child.pid,signal.SIGKILL);child.wait()
         report.update(static_scenario=scene['scenario'] if scene else None,autonomous_completion=a.autonomous_completion,operator_commands=node.operator_commands,exploration_results=node.exploration_results,recorder_exit_code=recorder.returncode if recorder else None,runtime_exit_code=runtime.returncode if runtime else None,
-            recording_complete=(root/'bag/metadata.yaml').is_file(),return_events=node.returns,guard_status=node.status[-1] if node.status else None)
+            recording_complete=(root/'bag/metadata.yaml').is_file(),return_events=node.returns,
+            localization_events=node.localization_events,guard_status=node.status[-1] if node.status else None)
         if report['recorder_exit_code']!=0 or report['runtime_exit_code']!=0 or not report['recording_complete']:report['success']=False
         (root/'report.json').write_text(json.dumps(report,indent=2));print(json.dumps(report),flush=True)
         for stream in streams:stream.close()

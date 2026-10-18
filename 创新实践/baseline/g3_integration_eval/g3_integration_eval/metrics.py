@@ -50,6 +50,8 @@ RETURN_FAILURE_STATUSES = {
     "send_error",
     "goal_response_error",
     "result_error",
+    "localization_rejected",
+    "localization_failed",
     "unknown",
 }
 RETURN_TERMINAL_STATUSES = RETURN_FAILURE_STATUSES | {"succeeded"}
@@ -521,8 +523,10 @@ def return_statistics(events: Iterable[dict]) -> ReturnStatistics:
 
         if terminal:
             status = next(iter(terminal))
-            if status in {"send_error", "goal_response_error", "result_error"}:
+            if status in {"send_error", "goal_response_error", "result_error", "localization_failed"}:
                 counts["error"] += 1
+            elif status == "localization_rejected":
+                counts["rejected"] += 1
             else:
                 counts[status] += 1
         elif "preview" in statuses:

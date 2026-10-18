@@ -48,7 +48,7 @@ class ReconTaskNode(Node):
         if (self.directory/'mission_report.json').exists():
             raise ValueError('Use a fresh reconnaissance output directory')
         self.state='waiting';self.mission=None;self.started_stamp=None
-        self.targets={};self.completed_goals=set();self.return_attempt=None;self.return_requested=False
+        self.targets={};self.completed_goals=set();self.return_attempt=None;self.return_logical_id=None;self.return_requested=False
         self.search_timeout=float(self.get_parameter('search_timeout_s').value)
         self.no_candidate_timeout=float(self.get_parameter('no_candidate_timeout_s').value)
         if not all(math.isfinite(v) and v>0 for v in (self.search_timeout,self.no_candidate_timeout)):
@@ -85,6 +85,7 @@ class ReconTaskNode(Node):
             required_target_recency_s=self.required_target_recency_s,targets_fresh=self._targets_recent(),
             observation_window_pending=(not self._observation_duration_complete() and self._targets_recent() and self.objective_confirmed() and len(self.completed_goals)>=self.minimum_goals and self._views_complete()),
             return_requested=self.return_requested,return_attempt_id=self.return_attempt,
+            return_logical_id=getattr(self,'return_logical_id',None),
             success=self.state=='returned',return_success=self.state in ('returned','returned_incomplete'),
             return_reason=self.return_reason,missing_counts=self.missing_counts(),
             search_timeout_s=self.search_timeout,paused_duration_s=paused_wall,
@@ -216,13 +217,24 @@ class ReconTaskNode(Node):
         if not self.return_requested or self.state in ('returned','returned_incomplete','failed'):return
         try:
             event=json.loads(msg.data);attempt=event['attempt_id'];status=event['status']
+            logical=event.get('logical_return_id')
         except (ValueError,KeyError,TypeError):return
+        active_logical=getattr(self,'return_logical_id',None)
+        if active_logical is None and isinstance(logical,str) and logical:
+            self.return_logical_id=logical;active_logical=logical
+        if active_logical is not None and logical!=active_logical:return
         if self.return_attempt is None and status in ('waiting_for_server','goal_request_sent','accepted'):
+            self.return_attempt=attempt
+        elif (active_logical is not None and logical==active_logical
+              and status in ('waiting_for_server','goal_request_sent','accepted')):
             self.return_attempt=attempt
         if not attempt or attempt!=self.return_attempt:return
         if status=='succeeded':
             self._transition('returned' if getattr(self,'return_reason',None) in (None,'objective_completed') else 'returned_incomplete')
-        elif status in ('aborted','canceled','rejected','server_unavailable'):self._transition('failed')
+        elif status=='localization_rejected':
+            self.return_attempt=None;self._save()
+        elif status in ('aborted','canceled','rejected','server_unavailable','localization_failed'):
+            self._transition('failed')
 
 
     def destroy_node(self):

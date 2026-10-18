@@ -9,6 +9,8 @@
 
 正式运行已支持探索时间预算、覆盖增长停滞和候选耗尽后的自动返航；只有多帧确认无 frontier 才记为探索完成。失败区域采用临时拉黑和每轮次数上限。运行 `run_runtime_trial.py --autonomous-completion` 可验证运行栈自行结束任务，详见 [任务闭环](docs/navigation-runtime.md#自主结束探索与有界恢复)。
 
+返航现按当前 `map→odom` 动态重算任务起点，并在 Nav2 到达后使用起点雷达关键帧、里程计和静止窗口复核；定位不一致时有限修正，无法可靠归位时进入 ESTOP，不再把 action 成功直接当作身体归位。配置和事件协议见[返航定位闭环](docs/navigation-runtime.md#返航定位闭环)。
+
 静态窄通道、死胡同与不可达窄口的重复验收见 [静态场景回归](docs/static-navigation-validation.md)。正式链路会按机器人净空校验整条候选路径及延迟决策，历史人物实验保持冻结。
 
 浏览器查看/操作现有 Gazebo 窗口、ROS 状态与地图，见 [仿真工作台](web_console/README.md)。

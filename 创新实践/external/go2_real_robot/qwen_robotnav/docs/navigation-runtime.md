@@ -11,6 +11,8 @@ flowchart LR
     Brain --> G2
     G2 --> Nav2
     G3[G3 状态与返航交接] --> Nav2
+    LidarHome[起点雷达关键帧] --> G3
+    OdomHome[里程计起点基准] --> G3
     G3 -->|状态心跳| Guard[独立速度监护]
     Nav2 --> Scaler[仿真速度缩放]
     Scaler --> Guard
@@ -40,6 +42,43 @@ flowchart LR
 默认 `candidate_selector: deepseek`。CLI 选择器、任务指令和供应商环境变量的覆盖先合并到有效 profile，再生成参数与 hash。所有组件读取同一份 `runtime_profile.yaml` / `runtime_ros_params.yaml`，监护状态携带同一个配置 SHA-256；验收同时核对 profile、实际 ROS 参数、角色清单和 selector。
 
 API key 仅来自环境，不写入配置、manifest 或命令行。通过主机 launcher 启动时复用项目 `.env`；独立启动 runtime 前须设置 `MISSION_BRAIN_API_KEY` 或已有 `DEEPSEEK_API_KEY`。模型地址和名称仍允许既有环境变量覆盖，并保存非秘密的有效配置。
+
+## 返航定位闭环
+
+正式 profile 启用 `return_localization`。每次从 `standby` 接受 `EXPLORE` 前，G3
+必须同时取得新鲜的里程计、`map→odom` 和一帧有效激光扫描；它把当时的里程计
+位姿保存为归位基准，把转换到机身坐标的扫描点保存为 home 关键帧。任一输入缺失时
+拒绝开始任务，避免带着空基准出发。
+
+返航不再一直发送配置文件中的固定地图原点。G3 使用当前 `map→odom` 变换重新表达
+任务开始时的里程计 home，因此 SLAM 在探索期间调整地图坐标后，目标会随当前地图坐标
+更新。Nav2 的 `succeeded` 只产生 `nav_succeeded_pending_verification`，此时任务仍保持
+`RETURN`，不会进入 `STANDBY`，也不会触发模拟充电。
+
+到点复核同时检查以下条件：
+
+- 当前地图位姿位于本次实际发送的返航目标容差内；
+- 当前里程计与任务起点基准一致；
+- 机器人线速度和角速度低于静止阈值；
+- 当前雷达扫描与起点关键帧的 ICP 匹配满足点数、内点率和 RMSE 门槛；
+- `map→odom` 没有短时跳变或机器人静止时的持续漂移；
+- 上述条件连续稳定 3 秒。
+
+雷达判断机器人尚未真正到家时，G3 根据雷达估计的相对位姿生成当前地图坐标下的
+修正目标，记录 `localization_rejected`，再通过同一个 Nav2 action 有限重试，默认最多
+2 次。探索中出现定位跳变会先暂停并完成导航交接，定位连续稳定后才能恢复；返航目标
+执行中出现跳变会取消旧目标，稳定后按新的 `map→odom` 重新发送 home。雷达确认已经
+到家但地图或里程计坐标已跳变时，以雷达 home 为独立锚点重建本轮
+home 坐标，并重新等待稳定窗口。超过修正次数、修正量越界、雷达匹配不可信、定位过期
+或稳定确认超时都会发布 `localization_failed` 并进入 `ESTOP`，不会发布返航成功。
+
+最终 `succeeded` 事件带有 `verification`，包含地图、里程计、雷达误差、匹配质量、稳定
+时间和修正次数。诊断事件发布到 `/g3/localization_status`，统一录包和闭包审计要求存在
+唯一的 `return_verified`，并继续用 Gazebo 真值独立检查身体归位误差；真值不进入运行栈。
+
+这套闭环解决的是定位漂移造成的假返航成功，并可在 home 附近用雷达闭环修正。重复
+几何环境仍可能让单帧雷达匹配产生歧义；实机若要求可证明的绝对归位，应把 AprilTag、
+UWB 或充电桩定位作为额外独立锚点接入同一最终确认门。
 
 本轮没有统一所有算法内部参数，也没有更改冻结的人物身份关联和动态障碍算法。只支持已经测量过的 `gazebo_go2` 仿真后端；仿真的 `.03` 速度限幅是步态输入幅度，不能当作实机米每秒。
 

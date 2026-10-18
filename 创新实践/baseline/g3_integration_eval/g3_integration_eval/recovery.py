@@ -25,6 +25,12 @@ class RecoveryHealth:
             self.stamps[source] = stamp
         self.sources[source] = now
 
+    def invalidate(self, source):
+        if source not in self.sources:
+            raise ValueError('Unknown health source')
+        self.sources[source] = None
+        self.healthy_since = None
+
     def missing(self, now):
         return [name for name, stamp in self.sources.items()
                 if stamp is None or not 0 <= now-stamp <= self.stale_s]
