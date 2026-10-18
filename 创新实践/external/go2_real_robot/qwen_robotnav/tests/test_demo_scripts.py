@@ -62,6 +62,9 @@ elif name=='ros2':
 class ScriptTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='go2-script-tests-')
+        # unittest runs cleanups after tearDown, in reverse registration order.
+        # Keep the private process helper until all launchers have been stopped.
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         # A private checkout skeleton avoids depending on the developer's .env.
         project=self.root/'project'
@@ -84,9 +87,6 @@ class ScriptTests(unittest.TestCase):
                         G1_GPU_WRAPPER=str(self.bin/'gui-wrapper'), DEMO_READY_TIMEOUT_S='1',
                         DEMO_CONSOLE_PORT='18765', DEMO_WS_PORT='18766', DEMO_VNC_PORT='15909',
                         DEMO_DISPLAY=':98', DISPLAY=':777')
-
-    def tearDown(self):
-        self.temp.cleanup()
 
     def records(self):
         p=self.root/'trace'
@@ -125,6 +125,30 @@ class ScriptTests(unittest.TestCase):
             self.assertEqual(console['args'][console['args'].index(flag)+1],value)
         self.stop(child)
         self.assertFalse((self.out/'demo.pid').exists())
+
+    def test_registered_cleanup_stops_private_children_before_removing_checkout(self):
+        child,log=self.launch()
+        deadline=time.monotonic()+10
+        while time.monotonic()<deadline and child.poll() is None:
+            if 'Demo ready:' in log.read_text():break
+            time.sleep(.05)
+        self.assertIn('Demo ready:',log.read_text())
+        prefix=str(self.bin)+'/'
+        owned=[]
+        for p in Path('/proc').iterdir():
+            if not p.name.isdigit():continue
+            try:args=(p/'cmdline').read_bytes().split(b'\0')
+            except OSError:continue
+            if any(a.decode(errors='replace').startswith(prefix) for a in args):
+                owned.append(int(p.name))
+        self.assertGreaterEqual(len(owned),3)
+        self.doCleanups()
+        self.assertFalse(self.root.exists())
+        self.assertIsNotNone(child.poll())
+        for pid in owned:
+            stat=Path(f'/proc/{pid}/stat')
+            self.assertTrue(not stat.exists() or stat.read_text().rsplit(')',1)[1].split()[0]=='Z',
+                            f'private test process {pid} leaked')
 
     def test_busy_port_is_detected_with_large_socket_listing(self):
         child,log=self.launch('occupied-many')
