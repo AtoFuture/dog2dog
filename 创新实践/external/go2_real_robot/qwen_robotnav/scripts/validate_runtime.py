@@ -103,6 +103,8 @@ def main():
             '--ros-args','-r','__node:=runtime_truth_observer','-r','/world/world_demo/pose/info:=/frontier_trial/gt_pose'],'gt_bridge.log')
         wait(lambda:node.poses and .18<node.poses[-1][3]<.35,150)
         recorder=start(['ros2','bag','record','--include-hidden-topics','-o',str(root/'bag'),'/clock',
+            topics['guard_status']+'/corridor',
+            topics['action'].rsplit('/',1)[0]+'/plan',
             *topics.values(),'/exploration/events','/g3/return_event','/g3/recovery_event','/g3/localization_status','/frontier_trial/gt_pose',
             '/navigation/handoff_request','/navigation/handoff_ack','/g3/exploration_session','/exploration/completion','/g3/exploration_result','/brain/decision','/mission/context','/exploration/candidates',topics['action']+'/_action/status'],'bag.log')
         runtime=start(['python3',str(Path(__file__).with_name('run_navigation_runtime.py')),'--profile',str(a.profile),
@@ -130,7 +132,7 @@ def main():
         # paired measured poses. Startup settling is not the navigation origin.
         baseline=node.register_home()
         node.command('EXPLORE')
-        wait(lambda:'exploring' in node.states,10)
+        wait(lambda:'exploring' in node.states,40)
         if a.autonomous_completion:
             wait(lambda:bool(node.exploration_results),a.exploration_timeout)
         else:

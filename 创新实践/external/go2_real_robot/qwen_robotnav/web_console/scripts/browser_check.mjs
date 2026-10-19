@@ -108,6 +108,7 @@ async function main() {
         title: document.title, stream: v('stream-state'), mission: v('mission-state'),
         domain: v('domain-value'), battery: v('battery-value'), linear: v('linear-value'),
         clearance: v('clearance-value'), guard: v('guard-reason'), poseAge: v('pose-age'),
+        corridor: v('corridor-state'), corridorGeometry: v('corridor-geometry'),
         mapDetails: v('map-details'), windowLabel: v('window-label'), vnc: pixels,
         interaction: {
           text: document.getElementById('interaction')?.textContent,
@@ -128,6 +129,7 @@ async function main() {
         /m\/px/.test(dom.mapDetails || '') &&
         Boolean(dom.poseAge) && dom.poseAge !== '未接入'
       ),
+      corridorTelemetry: !live || (Boolean(dom.corridor) && dom.corridor !== '等待有效雷达'),
     };
 
     await evaluate(`document.getElementById('interaction').click()`);

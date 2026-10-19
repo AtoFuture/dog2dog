@@ -1,5 +1,7 @@
 # 静态探索收敛修正与复测（2026-10-18）
 
+后续窄通道几何识别与控制接入见[通道识别复测](corridor-awareness-validation.md)，本页 4/6 历史矩阵保持原判。
+
 本轮接续[执行轨迹净空与返航验证](trajectory-clearance-validation.md)。旧矩阵
 `.runtime/trajectory_suite_v4` 的 3/6 结果原样保留；人物跟踪和动态障碍方向继续冻结。
 

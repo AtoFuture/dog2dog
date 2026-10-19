@@ -145,7 +145,7 @@ def main(args=None):
         for _ in range(3):
             node.tick();rclpy.spin_once(node,timeout_sec=.05)
         node.destroy_node()
-        if rclpy.ok():rclpy.shutdown()
+        if rclpy.ok():rclpy.shutdown(uninstall_handlers=False)
 
 
 if __name__=='__main__':main()

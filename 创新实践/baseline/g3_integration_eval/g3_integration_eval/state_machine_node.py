@@ -65,6 +65,9 @@ MISSION_STATE_QOS = QoSProfile(
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
 )
 
+EXPLORE_HOME_CAPTURE_TIMEOUT_S = 30.0
+RETURN_GOAL_LOCALIZATION_TIMEOUT_S = 30.0
+
 
 class G3StateMachineNode(Node):
     """Expose the controller with navigation transmission disabled by default."""
@@ -85,6 +88,7 @@ class G3StateMachineNode(Node):
         self.declare_parameter("home_x", 0.0)
         self.declare_parameter("home_y", 0.0)
         self.declare_parameter("home_yaw", 0.0)
+        self.declare_parameter("return_bt_path", "")
         self.declare_parameter("battery_timeout_sec", 30.0)
         self.declare_parameter("odometry_topic", "/robot1/odometry/filtered")
         self.declare_parameter("odom_frame", "odom")
@@ -112,6 +116,8 @@ class G3StateMachineNode(Node):
         self._latest_scan_points = None
         self._latest_scan_stamp_ns = None
         self._home_reference = None
+        self._explore_capture_pending = None
+        self._return_goal_pending = None
         self._return_logical_id = None
         self._return_trigger = None
         self._return_correction_count = 0
@@ -403,6 +409,10 @@ class G3StateMachineNode(Node):
 
     def _apply_event(self, event: Event, *, source: str) -> None:
         previous = self._state
+        if event is not Event.EXPLORE:
+            # A queued start must not survive a user stop, even when ESTOP is
+            # reset before the next localization timer callback runs.
+            self._explore_capture_pending = None
         if event is Event.RETURN and previous is State.PAUSED and self._health is not None and not self._health.ready(time.monotonic()):
             self._apply_event(Event.ESTOP, source='return_health_fault')
             return
@@ -421,8 +431,13 @@ class G3StateMachineNode(Node):
                 and self._return_localization_enabled):
             self._return_logical_id = None
             if not self._capture_home_reference():
+                if self._explore_capture_pending is None:
+                    self._explore_capture_pending = (
+                        time.monotonic() + EXPLORE_HOME_CAPTURE_TIMEOUT_S,
+                        source,
+                    )
                 self.get_logger().warning(
-                    'EXPLORE rejected: a fresh odometry pose and LiDAR home keyframe are required'
+                    'EXPLORE deferred: waiting for a fresh odometry pose and LiDAR home keyframe'
                 )
                 return
         try:
@@ -461,6 +476,7 @@ class G3StateMachineNode(Node):
             self._return_stable_since = None
             self._return_replan_pending = False
             self._return_replan_started = None
+            self._return_goal_pending = None
         self._publish_state()
 
         if self._state is State.PAUSED and previous is not State.PAUSED:
@@ -494,6 +510,7 @@ class G3StateMachineNode(Node):
         self._return_last_scan_match = None
         self._return_replan_pending = False
         self._return_replan_started = None
+        self._return_goal_pending = None
         if self._require_handoff:
             token = uuid.uuid4().hex
             self._handoff_pending = (token, trigger, time.monotonic()+self._handoff_timeout)
@@ -541,15 +558,29 @@ class G3StateMachineNode(Node):
                 return
             sample = self._current_localization()
             if sample is None:
-                self._fail_return_without_goal("localization_unavailable_before_goal")
+                if self._return_goal_pending is None:
+                    self._return_goal_pending = (
+                        trigger,
+                        target,
+                        target_source,
+                        time.monotonic() + RETURN_GOAL_LOCALIZATION_TIMEOUT_S,
+                    )
+                self.get_logger().warning(
+                    'RETURN goal deferred: waiting for a fresh localization sample'
+                )
                 return
             if target is None:
-                target = dynamic_home_target(
-                    sample.map_to_odom,
-                    self._home_reference.odom_pose,
-                )
                 if target_source == "configured_map_home":
-                    target_source = "dynamic_odometry_home"
+                    target = Pose2(
+                        x=float(self.get_parameter("home_x").value),
+                        y=float(self.get_parameter("home_y").value),
+                        yaw=float(self.get_parameter("home_yaw").value),
+                    )
+                else:
+                    target = dynamic_home_target(
+                        sample.map_to_odom,
+                        self._home_reference.odom_pose,
+                    )
             home_target = {
                 "frame_id": str(self.get_parameter("recovery_map_frame").value),
                 **pose_dict(target),
@@ -578,6 +609,9 @@ class G3StateMachineNode(Node):
             y=home_target["y"],
             yaw=home_target["yaw"],
         )
+        return_bt_path = str(self.get_parameter("return_bt_path").value)
+        if return_bt_path:
+            goal.behavior_tree = return_bt_path
         self._navigator.request_return(
             goal,
             trigger=trigger,
@@ -814,7 +848,10 @@ class G3StateMachineNode(Node):
             transform = self._recovery_tf.lookup_transform(
                 str(self.get_parameter("recovery_map_frame").value),
                 str(self.get_parameter("odom_frame").value),
-                Time(),
+                # SLAM's latest TF can be future-dated. Compose the frame
+                # transform at the measured odometry time, not at its latest
+                # broadcast time; freshness still rejects stale/future data.
+                Time(nanoseconds=odometry["stamp_ns"]),
             )
         except TransformException:
             return None
@@ -930,6 +967,42 @@ class G3StateMachineNode(Node):
             self._observe_localization_integrity(sample, now)
             if sample is not None else None
         )
+        pending = self._explore_capture_pending
+        if pending is not None:
+            deadline, pending_source = pending
+            if self._state is not State.STANDBY:
+                self._explore_capture_pending = None
+            elif now >= deadline:
+                self._explore_capture_pending = None
+                self.get_logger().warning(
+                    'EXPLORE rejected: home reference capture timed out'
+                )
+            elif self._capture_home_reference():
+                self._explore_capture_pending = None
+                self.get_logger().info(
+                    'EXPLORE resumed: home reference captured'
+                )
+                self._apply_event(Event.EXPLORE, source=pending_source)
+            return
+        goal_pending = self._return_goal_pending
+        if goal_pending is not None:
+            goal_trigger, goal_target, goal_source, goal_deadline = goal_pending
+            if self._state is not State.RETURN:
+                self._return_goal_pending = None
+            elif now >= goal_deadline:
+                self._return_goal_pending = None
+                self._fail_return_without_goal("localization_unavailable_before_goal")
+            elif self._current_localization() is not None:
+                self._return_goal_pending = None
+                self.get_logger().info(
+                    'RETURN goal resumed: fresh localization sample available'
+                )
+                self._send_return(
+                    goal_trigger,
+                    target=goal_target,
+                    target_source=goal_source,
+                )
+            return
         if self._state is not State.RETURN:
             return
         if self._return_replan_pending and self._return_pending_success is None:
@@ -1365,16 +1438,8 @@ class G3StateMachineNode(Node):
 
 
 def main(args: Optional[Sequence[str]] = None) -> None:
-    rclpy.init(args=args)
-    node = G3StateMachineNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    from g3_integration_eval.node_lifecycle import run_node
+    run_node(G3StateMachineNode, args)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 
 NAV = Path(__file__).resolve().parents[1]
 PROJECT = NAV.parents[2]
@@ -254,6 +255,25 @@ class ScriptTests(unittest.TestCase):
         canary=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],start_new_session=True)
         try:
             subprocess.run([sys.executable,str(TOOLS/'owned_processes.py'),'--grace','0.1',str(wrapper.pid)],check=True,timeout=4)
+            stat=Path(f'/proc/{descendant}/stat')
+            self.assertTrue(not stat.exists() or stat.read_text().rsplit(')',1)[1].split()[0]=='Z')
+            self.assertIsNone(canary.poll())
+        finally:
+            canary.terminate();canary.wait()
+            try:os.kill(descendant,signal.SIGKILL)
+            except ProcessLookupError:pass
+
+    def test_private_partition_retains_detached_orphan_without_stopping_other_sessions(self):
+        partition='runtime_'+uuid.uuid4().hex[:12]
+        pidfile=self.root/'detached.pid'
+        code="import subprocess,pathlib,sys; p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],start_new_session=True);pathlib.Path(sys.argv[1]).write_text(str(p.pid))"
+        wrapper=subprocess.Popen([sys.executable,'-c',code,str(pidfile)],env=dict(os.environ,IGN_PARTITION=partition),
+                                 start_new_session=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        wrapper.wait(timeout=3);descendant=int(pidfile.read_text())
+        canary=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],start_new_session=True,
+                                env=dict(os.environ,IGN_PARTITION='runtime_'+uuid.uuid4().hex[:12]))
+        try:
+            subprocess.run([sys.executable,str(TOOLS/'owned_processes.py'),'--grace','.1','--partition',partition],check=True,timeout=4)
             stat=Path(f'/proc/{descendant}/stat')
             self.assertTrue(not stat.exists() or stat.read_text().rsplit(')',1)[1].split()[0]=='Z')
             self.assertIsNone(canary.poll())

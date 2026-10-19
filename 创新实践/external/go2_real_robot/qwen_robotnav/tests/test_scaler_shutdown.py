@@ -15,7 +15,8 @@ SCALER = Path(__file__).resolve().parents[4]/'baseline/g1_mapping_nav/tools/cmd_
 
 
 @pytest.mark.parametrize('signals',[(signal.SIGINT,), (signal.SIGTERM,), (signal.SIGINT,signal.SIGTERM)])
-def test_high_rate_input_shutdown_keeps_a_clean_exit(tmp_path, signals):
+@pytest.mark.parametrize('role',['scaler','guard'])
+def test_high_rate_input_shutdown_keeps_a_clean_exit(tmp_path, signals, role):
     rclpy.init()
     peer=rclpy.create_node('scaler_shutdown_test_'+uuid.uuid4().hex[:8])
     prefix='/scaler_shutdown_'+uuid.uuid4().hex[:8]
@@ -26,10 +27,17 @@ def test_high_rate_input_shutdown_keeps_a_clean_exit(tmp_path, signals):
         msg=Twist();msg.linear.x=.1;publisher.publish(msg)
     peer.create_timer(.002,publish)
     log=tmp_path/'scaler.log'
+    command=[sys.executable,str(SCALER),'--ros-args',
+        '-p','input_topic:='+prefix+'/input','-p','output_topic:='+prefix+'/output']
+    if role=='guard':
+        import yaml
+        from qwen_robotnav.runtime_profile import load_profile
+        profile=load_profile(Path(__file__).parents[1]/'config/sim_runtime.yaml')
+        profile['topics'].update(guarded_input=prefix+'/input',actuator_command=prefix+'/output')
+        path=tmp_path/'guard.yaml';path.write_text(yaml.safe_dump(profile))
+        command=[sys.executable,'-m','qwen_robotnav_ros.velocity_guard','--profile',str(path)]
     with log.open('w') as stream:
-        child=subprocess.Popen([sys.executable,str(SCALER),'--ros-args',
-            '-p','input_topic:='+prefix+'/input','-p','output_topic:='+prefix+'/output'],
-            stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
+        child=subprocess.Popen(command,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
     try:
         deadline=time.monotonic()+8
         while time.monotonic()<deadline and len(outputs)<20:

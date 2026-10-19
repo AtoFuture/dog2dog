@@ -9,6 +9,7 @@ import sys
 import yaml
 from qwen_robotnav.runtime_profile import load_profile,profile_hash
 from qwen_robotnav.static_scenarios import SCENARIOS
+from qwen_robotnav.source_audit import runtime_sources, changed_sources
 
 
 def case_specs(repeats):
@@ -28,12 +29,15 @@ def summarize(root, repeats):
         summary=json.loads(path.read_text()) if path.is_file() else {}
         status=directory/'suite_runner_exit.json'
         runner=json.loads(status.read_text()).get('exit_code') if status.is_file() else None
+        source_status=directory/'source_audit.json'
+        source_valid=(json.loads(source_status.read_text()).get('unchanged') is True
+                      if source_status.is_file() else not plan.get('source_audit_required',False))
         audit=summary.get('audit',{})
-        success=(runner==0 and summary.get('runner_exit_code')==0 and summary.get('success') is True
+        success=(source_valid and runner==0 and summary.get('runner_exit_code')==0 and summary.get('success') is True
                  and summary.get('static_scenario')==scenario and audit.get('success') is True
                  and (audit.get('static_scene') or {}).get('scenario')==scenario
                  and audit.get('profile_sha256')==plan['profile_sha256'])
-        cases.append(dict(name=name,scenario=scenario,success=success,runner_exit_code=runner,
+        cases.append(dict(name=name,scenario=scenario,success=success,source_unchanged=source_valid,runner_exit_code=runner,
             end_reason=(audit.get('exploration_results') or [{}])[0].get('reason'),
             home_error_m=audit.get('home_error_m'),completed_frontiers=audit.get('completed_frontiers'),
             deepseek_selections=audit.get('deepseek_selections'),brain_fallback_selections=audit.get('brain_fallback_selections'),
@@ -64,11 +68,19 @@ def main():
     # Same profile for every case; only geometry and case-specific assertions differ.
     root.mkdir(parents=True)
     profile_path=root/'profile.yaml';profile_path.write_text(yaml.safe_dump(profile,sort_keys=False))
-    plan=dict(schema_version=1,domain=a.domain,profile_sha256=profile_hash(profile),
+    repository=Path(__file__).resolve().parents[5]
+    sources=runtime_sources(repository)
+    (root/'source_sha256.json').write_text(json.dumps(sources,indent=2,ensure_ascii=False))
+    plan=dict(schema_version=1,domain=a.domain,profile_sha256=profile_hash(profile),source_audit_required=True,
               cases=[dict(name=name,scenario=scenario) for name,scenario in case_specs(a.repeats)])
     (root/'plan.json').write_text(json.dumps(plan,indent=2))
     script=Path(__file__).with_name('run_runtime_trial.py')
     for name,scenario in case_specs(a.repeats):
+        drift=changed_sources(sources,runtime_sources(repository))
+        if drift:
+            (root/'source_drift.json').write_text(json.dumps(drift,indent=2,ensure_ascii=False))
+            print('Runtime source changed; stopping the suite',flush=True)
+            return 1
         print(json.dumps(dict(case=name,phase='starting')),flush=True)
         with (root/(name+'.log')).open('w') as stream:
             child=subprocess.Popen([sys.executable,str(script),str(root/name),'--profile',str(profile_path),
@@ -83,9 +95,14 @@ def main():
                 raise
         # Outer exit code is independent of the inner reported success.
         directory=root/name;directory.mkdir(exist_ok=True)
+        drift=changed_sources(sources,runtime_sources(repository))
+        (directory/'source_audit.json').write_text(json.dumps(dict(unchanged=not drift,changed=drift),indent=2,ensure_ascii=False))
         (directory/'suite_runner_exit.json').write_text(json.dumps(dict(exit_code=code)))
         result=summarize(root,a.repeats)
         print(json.dumps(next(c for c in result['cases'] if c['name']==name)),flush=True)
+        if drift:
+            print('Runtime source changed during this case; result invalidated and suite stopped',flush=True)
+            return 1
     return 0 if result['success'] else 1
 
 

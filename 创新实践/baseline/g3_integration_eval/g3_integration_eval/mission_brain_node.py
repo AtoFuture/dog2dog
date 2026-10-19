@@ -145,18 +145,8 @@ class MissionBrainNode(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = None
-    try:
-        node = MissionBrainNode()
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        if node is not None:
-            node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    from g3_integration_eval.node_lifecycle import run_node
+    run_node(MissionBrainNode, args)
 
 
 if __name__ == '__main__':

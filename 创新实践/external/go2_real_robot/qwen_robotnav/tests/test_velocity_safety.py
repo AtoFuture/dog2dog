@@ -88,6 +88,12 @@ def test_generated_nav2_uses_profile_geometry_and_speed(tmp_path):
     controller=config['controller_server']['ros__parameters']
     assert controller['general_goal_checker']['yaw_goal_tolerance']==6.28
     assert controller['general_goal_checker']['xy_goal_tolerance']==.25
+    assert controller['return_goal_checker']['xy_goal_tolerance']==.25
+    assert controller['return_goal_checker']['yaw_goal_tolerance']==.25
+    import xml.etree.ElementTree as ET
+    assert {follow.get('goal_checker_id') for follow in ET.parse(tmp_path/'return_bt.xml').findall('.//FollowPath')}=={'return_goal_checker'}
+    assert {follow.get('goal_checker_id') for follow in ET.parse(tmp_path/'nav2_go2_bt.xml').findall('.//FollowPath')}=={'general_goal_checker'}
+    assert ros_parameters(p,tmp_path)['g3_state_machine']['ros__parameters']['return_bt_path']==str(tmp_path/'return_bt.xml')
     assert controller['FollowPath']['rotate_to_heading_min_angle']==pytest.approx(3.141592653589793/2)
     assert controller['FollowPath']['min_approach_linear_velocity']==.30
     assert controller['FollowPath']['regulated_linear_scaling_min_speed']==.30

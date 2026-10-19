@@ -18,6 +18,14 @@ KEYS={
  'decision':set('candidate_selector mission_instruction brain_base_url brain_model brain_timeout brain_max_candidates'.split()),
  'battery_model':{'initial_percentage','moving_drain_per_sec','idle_drain_per_sec','publish_rate_hz'},
 }
+CORRIDOR_KEYS=set(
+    'enabled steering_enabled max_width_m min_span_m wall_tolerance_m '
+    'lookahead_m heading_gain turn_rate_radps max_heading_error_rad '
+    'approach_distance_m path_lookahead_m alignment_tolerance_rad '
+    'alignment_confirmations'.split())
+OPTIONAL_CORRIDOR_KEYS=set(
+    'steering_enabled approach_distance_m path_lookahead_m '
+    'alignment_tolerance_rad alignment_confirmations'.split())
 RETURN_LOCALIZATION_KEYS=set(
     'enabled stale_s jump_translation_m jump_yaw_rad stationary_linear_mps '
     'stationary_angular_radps stationary_drift_m stationary_drift_yaw_rad '
@@ -35,6 +43,8 @@ def load_profile(path):
 
 def validate_profile(value):
     sections=dict(KEYS)
+    if isinstance(value,dict) and 'corridor' in value:
+        sections['corridor']=CORRIDOR_KEYS
     if isinstance(value,dict) and 'return_localization' in value:
         sections['return_localization']=RETURN_LOCALIZATION_KEYS
     if not isinstance(value,dict) or set(value)!={'schema_version','backend','use_sim_time',*sections}:
@@ -43,13 +53,17 @@ def validate_profile(value):
         raise ValueError('Only the measured gazebo_go2 simulation profile is supported')
     for section,keys in sections.items():
         data=value[section]
-        if not isinstance(data,dict) or set(data)!=keys:raise ValueError('Unknown or missing '+section+' fields')
+        required = keys-OPTIONAL_CORRIDOR_KEYS if section=='corridor' else keys
+        if not isinstance(data,dict) or not required <= set(data) <= keys:raise ValueError('Unknown or missing '+section+' fields')
         for key,item in data.items():
-            if section=='return_localization' and key in ('enabled','scan_match_required'):
+            if section in ('corridor','return_localization') and key in ('enabled','steering_enabled','scan_match_required'):
                 if type(item) is not bool:raise ValueError('Expected boolean '+section+' '+key)
                 continue
             if section=='return_localization' and key in ('max_corrections','scan_match_min_points','scan_match_max_points','scan_match_max_iterations'):
                 if type(item) is not int or item < (0 if key=='max_corrections' else 1):raise ValueError('Invalid integer '+key)
+                continue
+            if section=='corridor' and key=='alignment_confirmations':
+                if type(item) is not int or not 2<=item<=6:raise ValueError('Invalid integer '+key)
                 continue
             if section=='decision':continue
             if section=='explorer' and key in ('task_completion_enabled','require_path_clearance'):
@@ -77,6 +91,16 @@ def validate_profile(value):
     if n['inflation_radius_m']<n['robot_radius_m'] or n['robot_radius_m']<.4:raise ValueError('Invalid navigation clearance')
     if not 0<value['battery_model']['initial_percentage']<=1:raise ValueError('Invalid simulated initial battery')
     if t['action']!='/robot1/navigate_to_pose':raise ValueError('This backend requires the robot1 Nav2 action')
+    if 'corridor' in value:
+        c=value['corridor']
+        if not (1. <= c['max_width_m'] <= 2. and 1. <= c['min_span_m'] <= 3.
+                and .02 <= c['wall_tolerance_m'] <= .08 and .5 <= c['lookahead_m'] <= 2.
+                and .1 <= c['heading_gain'] <= 2. and .1 <= c['turn_rate_radps'] <= .4
+                and .12 <= c['max_heading_error_rad'] <= .35
+                and .5 <= c.get('approach_distance_m',1.) <= 1.5
+                and .5 <= c.get('path_lookahead_m',1.) <= 2.
+                and .04 <= c.get('alignment_tolerance_rad',.08) < c['max_heading_error_rad']):
+            raise ValueError('Unvalidated corridor guidance limits')
     if 'return_localization' in value:
         r=value['return_localization']
         if (r['stable_s']>=r['verification_timeout_s']
@@ -125,6 +149,13 @@ def ros_parameters(p, runtime_root=None):
     }
     if runtime_root is not None:
         result['vision_explorer']['ros__parameters']['scan_bt_path']=str(Path(runtime_root).resolve()/'scan_bt.xml')
+        if p.get('return_localization',{}).get('enabled',False):
+            result['g3_state_machine']['ros__parameters']['return_bt_path']=str(Path(runtime_root).resolve()/'return_bt.xml')
+    if p.get('corridor',{}).get('enabled',False):
+        result['cmd_vel_scaler']['ros__parameters']['corridor_config']=json.dumps(dict(
+            settings=p['corridor'],scan_topic=t['scan'],base_frame=f['base'],mission_topic=t['mission'],
+            path_topic=t['action'].rsplit('/',1)[0]+'/plan',
+            status_topic=t['guard_status']+'/corridor',sensor_timeout_s=min(.5,p['guard']['sensor_timeout_s'])))
     if p.get('return_localization',{}).get('enabled',False):
         result['g3_state_machine']['ros__parameters'].update(
             odometry_topic=t['odometry'],odom_frame=f['odom'],
@@ -186,6 +217,20 @@ def configure_navigation(root,p):
     # Fixed-gait backend cannot execute an arbitrarily slow final approach.
     # Preserve the original tolerance; independent truth-home acceptance remains .4m.
     controller['general_goal_checker']['xy_goal_tolerance']=.25
+    if p.get('return_localization',{}).get('enabled',False):
+        import xml.etree.ElementTree as ET
+        # Frontier goals may ignore final yaw. RETURN must satisfy the same
+        # orientation contract as its subsequent independent home verifier.
+        controller['return_goal_checker']=dict(
+            plugin='nav2_controller::SimpleGoalChecker',stateful=True,
+            xy_goal_tolerance=.25,
+            yaw_goal_tolerance=min(.25,p['return_localization']['yaw_tolerance_rad']))
+        if 'return_goal_checker' not in controller['goal_checker_plugins']:
+            controller['goal_checker_plugins'].append('return_goal_checker')
+        tree=ET.parse(root/'nav2_go2_bt.xml')
+        for follow_path in tree.findall('.//FollowPath'):
+            follow_path.set('goal_checker_id','return_goal_checker')
+        tree.write(root/'return_bt.xml',encoding='utf-8',xml_declaration=True)
     follow=controller['FollowPath']
     follow.update(lookahead_dist=.35,min_lookahead_dist=.25,max_lookahead_dist=.5,
                   rotate_to_heading_min_angle=math.pi/2,rotate_to_heading_angular_vel=.4,max_angular_accel=3.2,

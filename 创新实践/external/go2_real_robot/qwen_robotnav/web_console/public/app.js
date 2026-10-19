@@ -83,6 +83,10 @@ document.querySelectorAll('[data-command]').forEach(button=>button.addEventListe
 function render() {
   if(!state)return;
   const telemetry=state.telemetry, mission=fresh('mission'), guard=fresh('guard'), odom=fresh('odometry'), battery=fresh('battery',5);
+  const corridor=fresh('corridor',2), geometry=corridor?.scan_fresh&&corridor?.confirmed?corridor.geometry:undefined;
+  const corridorModes={observing:'通道观测 · 导航控制',centering:'居中行驶',approaching:'入口居中',entry_aligning:'入口停车对准',entry_stabilizing:'入口稳定确认',direction_unconfirmed:'等待通道方向',turning:'受控转向',aligning:'停车调整方向',stationary:'已识别 · 静止',inactive:'已识别 · 待机',awaiting_path:'等待导航路径',goal_approach:'接近目标',planner_obstacle_avoidance:'通道内避障'};
+  $('corridor-state').textContent=geometry?(corridorModes[corridor.mode]||'已识别窄通道'):corridor?.scan_fresh?'未确认窄通道':'等待有效雷达';
+  $('corridor-geometry').textContent=geometry?`${number(geometry.width_m)} m / ${geometry.center_offset_m>=0?'左':'右'} ${number(Math.abs(geometry.center_offset_m))} m`:'—';
   const hasData=Object.keys(telemetry.ages||{}).some(key=>fresh(key)!==undefined);
   setTag('ros-badge',hasData?'ROS 在线':state.bridge_alive?'等待 ROS':'ROS 未连接',hasData);
   $('mission-state').textContent=missions[mission]||mission||'未接入';

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import uuid
 from qwen_robotnav.runtime_profile import load_profile
 from qwen_robotnav.static_scenarios import SCENARIOS
@@ -30,9 +31,12 @@ def main():
         child=subprocess.Popen(['bash','-c',script.read_text(),str(script),str(root/'trial'),str(a.goals)],env=env,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
         try:code=child.wait()
         except KeyboardInterrupt:
-            os.killpg(child.pid,signal.SIGINT)
-            try:child.wait(timeout=45)
-            except subprocess.TimeoutExpired:os.killpg(child.pid,signal.SIGTERM);child.wait(timeout=15)
+            helper=Path(__file__).resolve().parents[4]/'baseline/g1_mapping_nav/tools/owned_processes.py'
+            # The UUID also retains detached children if an interrupted startup
+            # wrapper has already exited and ancestry/session ownership is lost.
+            subprocess.run([sys.executable,str(helper),'--grace','45','--partition',env['SLAM_IGN_PARTITION'],
+                *([str(child.pid)] if child.poll() is None else [])],check=True,timeout=55)
+            child.wait(timeout=5)
             raise
     audit=root/'trial/runtime_validation.json';value=json.loads(audit.read_text()) if audit.exists() else {}
     result=dict(static_scenario=a.static_scenario,success=code==0 and value.get('success') is True and (not a.static_scenario or (value.get('static_scene') or {}).get('scenario')==a.static_scenario),runner_exit_code=code,audit=value)

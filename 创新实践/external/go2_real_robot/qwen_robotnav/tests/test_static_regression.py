@@ -41,3 +41,27 @@ def test_aggregate_rejects_partial_or_wrong_case_success(tmp_path,bad):
 def test_scene_plan_cannot_be_silently_reduced(tmp_path):
     suite(tmp_path)
     with pytest.raises(ValueError,match='plan'):module.summarize(tmp_path,1)
+
+
+def test_source_changes_or_missing_audit_invalidate_success(tmp_path):
+    suite(tmp_path)
+    plan=tmp_path/'plan.json';value=json.loads(plan.read_text())
+    value['source_audit_required']=True;plan.write_text(json.dumps(value))
+    assert module.summarize(tmp_path,2)['passed']==0
+    for name,_ in module.case_specs(2):
+        (tmp_path/name/'source_audit.json').write_text('{"unchanged":true}')
+    assert module.summarize(tmp_path,2)['success']
+    (tmp_path/'narrow_1/source_audit.json').write_text('{"unchanged":false,"changed":["state_machine_node.py"]}')
+    assert module.summarize(tmp_path,2)['passed']==5
+
+
+def test_source_manifest_detects_additions_deletions_and_changes(tmp_path):
+    from qwen_robotnav.source_audit import runtime_sources,changed_sources
+    root=tmp_path/'创新实践/baseline/g3_integration_eval';root.mkdir(parents=True)
+    first=root/'state.py';first.write_text('before')
+    before=runtime_sources(tmp_path)
+    first.write_text('after');(root/'new.py').write_text('new')
+    after=runtime_sources(tmp_path)
+    assert len(changed_sources(before,after))==2
+    first.unlink()
+    assert any(name.endswith('state.py') for name in changed_sources(after,runtime_sources(tmp_path)))

@@ -65,7 +65,9 @@ amcl_G5 那个包里 694 条指令有 **163 条**被裁，goal_G5 里 802 条有
 """
 
 import math
+import json
 import signal
+import time
 
 import rclpy
 from geometry_msgs.msg import Twist
@@ -91,6 +93,7 @@ class CmdVelScaler(Node):
         self.declare_parameter("angular_decel", 2.0)
         self.declare_parameter("ramp_rate", 50.0)
         self.declare_parameter("cmd_timeout", 1.0)
+        self.declare_parameter("corridor_config", "")
 
         input_topic = str(self.get_parameter("input_topic").value)
         output_topic = str(self.get_parameter("output_topic").value)
@@ -106,6 +109,32 @@ class CmdVelScaler(Node):
         self._angular_decel = float(self.get_parameter("angular_decel").value)
         ramp_rate = float(self.get_parameter("ramp_rate").value)
         self._cmd_timeout = float(self.get_parameter("cmd_timeout").value)
+        self._corridor = None
+        self._raw_command = (0., 0.)
+        config = str(self.get_parameter('corridor_config').value)
+        if config:
+            from qwen_robotnav.corridor import CorridorGuidance
+            from sensor_msgs.msg import LaserScan
+            from nav_msgs.msg import Path
+            from std_msgs.msg import String
+            from rclpy.qos import QoSProfile, DurabilityPolicy, qos_profile_sensor_data
+            from tf2_ros import Buffer, TransformListener
+            self._corridor_config = json.loads(config)
+            self._corridor = CorridorGuidance(self._corridor_config['settings'])
+            self._corridor_scan_at = -math.inf
+            self._corridor_mission_at = -math.inf
+            self._corridor_mission = 'standby'
+            self._corridor_status_at = -math.inf
+            self._corridor_mode = None
+            self._corridor_path = None
+            self._corridor_path_at = -math.inf
+            self._corridor_tf = Buffer()
+            self._corridor_listener = TransformListener(self._corridor_tf, self)
+            self._corridor_pub = self.create_publisher(String, self._corridor_config['status_topic'], 10)
+            self.create_subscription(LaserScan, self._corridor_config['scan_topic'], self._corridor_scan, qos_profile_sensor_data)
+            self.create_subscription(Path, self._corridor_config['path_topic'], self._corridor_plan, 10)
+            self.create_subscription(String, self._corridor_config['mission_topic'], self._corridor_state,
+                QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
         self._pub = self.create_publisher(Twist, output_topic, 10)
         self._sub = self.create_subscription(
@@ -156,6 +185,9 @@ class CmdVelScaler(Node):
         if (now - self._last_cmd_time).nanoseconds * 1e-9 > self._cmd_timeout:
             self._target_lx = 0.0
             self._target_az = 0.0
+            self._raw_command = (0., 0.)
+        if self._corridor is not None:
+            self._guide_corridor()
         out = Twist()
         self._current_lx = self._ramp_step(
             self._current_lx, self._target_lx, self._linear_accel, self._linear_decel
@@ -181,9 +213,100 @@ class CmdVelScaler(Node):
 
     def _on_cmd(self, msg: Twist) -> None:
         self._last_cmd_time = self.get_clock().now()
+        self._raw_command = (msg.linear.x, msg.angular.z)
         self._target_lx = self._linear(msg.linear.x)
         az = msg.angular.z * self._angular_scale
         self._target_az = self._clip(az, self._angular_max)
+
+    def _corridor_state(self, msg):
+        self._corridor_mission = msg.data
+        self._corridor_mission_at = time.monotonic()
+
+    def _corridor_plan(self, msg):
+        self._corridor_path = msg if msg.poses and msg.header.frame_id else None
+        self._corridor_path_at = time.monotonic()
+
+    def _corridor_target(self):
+        from rclpy.time import Time
+        path = self._corridor_path
+        if path is None or time.monotonic()-self._corridor_path_at>2.:
+            return None
+        try:
+            age=(self.get_clock().now().nanoseconds-(path.header.stamp.sec*10**9+path.header.stamp.nanosec))*1e-9
+            if not -.1<=age<=2.:return None
+            if path.header.frame_id==self._corridor_config['base_frame']:
+                points=[(pose.pose.position.x,pose.pose.position.y) for pose in path.poses]
+            else:
+                tr=self._corridor_tf.lookup_transform(self._corridor_config['base_frame'],path.header.frame_id,Time()).transform
+                q=tr.rotation
+                if (not all(math.isfinite(v) for v in (tr.translation.x,tr.translation.y,q.x,q.y,q.z,q.w))
+                        or abs(q.x)+abs(q.y)>.01 or abs(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w-1.)>.01):return None
+                yaw=2*math.atan2(q.z,q.w);c,s=math.cos(yaw),math.sin(yaw)
+                points=[(tr.translation.x+c*pose.pose.position.x-s*pose.pose.position.y,
+                         tr.translation.y+s*pose.pose.position.x+c*pose.pose.position.y)
+                        for pose in path.poses]
+            if not points or not all(all(math.isfinite(v) for v in point) for point in points):return None
+            lookahead=self._corridor_config['settings'].get('path_lookahead_m',1.)
+            return next((point for point in points if math.hypot(*point)>=lookahead),points[-1])
+        except Exception:
+            return None
+
+    def _corridor_scan(self, msg):
+        from rclpy.time import Time
+        from qwen_robotnav.velocity_safety import scan_points
+        try:
+            age = (self.get_clock().now().nanoseconds - (msg.header.stamp.sec*10**9 + msg.header.stamp.nanosec))*1e-9
+            if not -.1 <= age <= self._corridor_config['sensor_timeout_s']:
+                raise ValueError('stale scan')
+            base = self._corridor_config['base_frame']
+            if msg.header.frame_id == base:
+                sensor = (0., 0., 0.)
+            else:
+                tr = self._corridor_tf.lookup_transform(base, msg.header.frame_id, Time.from_msg(msg.header.stamp)).transform
+                q = tr.rotation
+                if (not all(math.isfinite(v) for v in (tr.translation.x,tr.translation.y,q.x,q.y,q.z,q.w))
+                        or abs(q.x)+abs(q.y) > .01 or abs(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w-1.) > .01):
+                    raise ValueError('invalid planar laser transform')
+                sensor = (tr.translation.x, tr.translation.y, 2*math.atan2(q.z,q.w))
+            points = scan_points(msg.ranges,msg.angle_min,msg.angle_increment,msg.range_min,msg.range_max,sensor)
+            if points is None:
+                raise ValueError('incomplete scan')
+            stamp = msg.header.stamp.sec*10**9 + msg.header.stamp.nanosec
+            if self._corridor.observe(points, stamp):
+                self._corridor_scan_at = time.monotonic()
+        except Exception:
+            self._corridor_scan_at = -math.inf
+            self._corridor.geometry = self._corridor.previous = None
+            self._corridor.confirmations = 0
+
+    def _guide_corridor(self):
+        from std_msgs.msg import String
+        now = time.monotonic()
+        raw_x, raw_z = self._raw_command
+        target = self._corridor_target()
+        if not all(math.isfinite(v) for v in (raw_x,raw_z)):
+            self._corridor.reset_alignment()
+            x,z,mode = 0.,0.,'invalid_command'
+        elif self._corridor_mission not in ('exploring','returning') or now-self._corridor_mission_at > 2.:
+            self._corridor.reset_alignment()
+            x,z,mode = 0.,0.,'inactive'
+        elif now-self._corridor_scan_at > self._corridor_config['sensor_timeout_s']:
+            self._corridor.geometry = self._corridor.previous = None
+            self._corridor.confirmations = 0
+            self._corridor.reset_alignment()
+            x,z,mode = 0.,0.,'scan_unavailable'
+        else:
+            x,z,mode = self._corridor.guide(0. if abs(raw_x)<self._nav_deadband else raw_x, raw_z,target)
+        self._target_lx = self._linear(x)
+        self._target_az = self._clip(z*self._angular_scale, self._angular_max)
+        if mode != self._corridor_mode or now-self._corridor_status_at >= .5:
+            self._corridor_mode, self._corridor_status_at = mode, now
+            snapshot = self._corridor.snapshot()
+            snapshot.update(mode=mode, source='measured_scan', scan_fresh=now-self._corridor_scan_at <= self._corridor_config['sensor_timeout_s'],
+                            requested=[raw_x,raw_z], guided=[x,z], scan_stamp_ns=self._corridor.last_stamp,
+                            path_target_base=target,
+                            stamp_ns=self.get_clock().now().nanoseconds)
+            self._corridor_pub.publish(String(data=json.dumps(snapshot)))
 
 
 def main():
@@ -205,7 +328,7 @@ def main():
     finally:
         node.destroy_node()
         if rclpy.ok():
-            rclpy.shutdown()
+            rclpy.shutdown(uninstall_handlers=False)
 
 
 if __name__ == "__main__":

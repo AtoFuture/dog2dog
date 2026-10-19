@@ -34,6 +34,7 @@ class TelemetryTransport(unittest.TestCase):
         battery = node.create_publisher(BatteryState, '/runtime/battery_state', 10)
         odom = node.create_publisher(Odometry, '/robot1/odometry/filtered', 10)
         guard = node.create_publisher(String, '/runtime/velocity_guard_status', 10)
+        corridor = node.create_publisher(String, '/runtime/velocity_guard_status/corridor', 10)
         events = node.create_publisher(String, '/exploration/events', 10)
         tf = TransformBroadcaster(node)
         child = subprocess.Popen([sys.executable, '-u', str(root/'ros_telemetry.py'), '--domain', '232',
@@ -62,6 +63,8 @@ class TelemetryTransport(unittest.TestCase):
                 o.twist.twist.linear.x=.25
                 odom.publish(o)
                 guard.publish(String(data=json.dumps({'reason':'mission:standby','footprint_clearance_m':.8})))
+                corridor.publish(String(data=json.dumps({'confirmed':True,'scan_fresh':True,'mode':'centering',
+                    'geometry':{'width_m':1.4,'center_offset_m':-.12}})))
                 events.publish(String(data=json.dumps({'status':'accepted','purpose':'frontier','attempt_id':7})))
                 transforms=[]
                 for parent, frame, x, y in [('map','odom',0.,0.),('odom','base_link',.75,.25)]:
@@ -78,7 +81,7 @@ class TelemetryTransport(unittest.TestCase):
                 while not messages.empty():
                     try:
                         data=json.loads(messages.get_nowait())
-                        if {'mission','map','battery','odometry','guard','pose'}<=set(data.get('values',{})) and data.get('events'):
+                        if {'mission','map','battery','odometry','guard','corridor','pose'}<=set(data.get('values',{})) and data.get('events'):
                             result=data
                     except ValueError:
                         pass
@@ -87,6 +90,8 @@ class TelemetryTransport(unittest.TestCase):
             self.assertEqual(values['mission'],'standby')
             self.assertAlmostEqual(values['odometry']['linear'],.25)
             self.assertAlmostEqual(values['pose']['x'],.75)
+            self.assertEqual(values['corridor']['mode'],'centering')
+            self.assertAlmostEqual(values['corridor']['geometry']['width_m'],1.4)
             self.assertEqual(result['events'][-1]['attempt_id'],7)
             image=Image.open(io.BytesIO(base64.b64decode(values['map']['png'])))
             self.assertEqual(image.size,(3,2))
