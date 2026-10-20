@@ -11,7 +11,7 @@ import yaml
 KEYS={
  'topics':set('nav_command guarded_input actuator_command scan odometry imu battery mission command guard_status map planning_map action tf tf_static'.split()),
  'frames':{'map','odom','base'},
- 'guard':set('clearance_margin_m prediction_horizon_s prediction_speed_mps rate_hz command_timeout_s sensor_timeout_s battery_timeout_s mission_timeout_s stamp_future_tolerance_s linear_max angular_max front_half_angle_rad front_clearance_m max_tilt_rad'.split()),
+ 'guard':set('clearance_margin_m prediction_horizon_s prediction_speed_mps rate_hz command_timeout_s sensor_timeout_s battery_timeout_s mission_timeout_s stamp_future_tolerance_s linear_max angular_max front_half_angle_rad front_clearance_m max_tilt_rad clearance_recovery_enabled'.split()),
  'scaler':set('linear_scale linear_max linear_min nav_deadband angular_scale angular_max linear_accel linear_decel angular_accel angular_decel ramp_rate cmd_timeout'.split()),
  'navigation':{'robot_radius_m','inflation_radius_m','desired_linear_velocity_mps','goal_turn_clearance_m','return_turn_handoff_enabled'},
  'mission':set('heartbeat_period_s recovery_stale_s recovery_stable_s recovery_timeout_s low_battery_threshold home_x home_y home_yaw'.split()),
@@ -23,10 +23,10 @@ CORRIDOR_KEYS=set(
     'enabled steering_enabled max_width_m min_span_m wall_tolerance_m '
     'lookahead_m heading_gain turn_rate_radps max_heading_error_rad '
     'approach_distance_m path_lookahead_m alignment_tolerance_rad '
-    'alignment_confirmations turn_settle_enabled reversal_turn_enabled'.split())
+    'alignment_confirmations turn_settle_enabled reversal_turn_enabled turn_recenter_enabled'.split())
 OPTIONAL_CORRIDOR_KEYS=set(
     'steering_enabled approach_distance_m path_lookahead_m '
-    'alignment_tolerance_rad alignment_confirmations turn_settle_enabled reversal_turn_enabled'.split())
+    'alignment_tolerance_rad alignment_confirmations turn_settle_enabled reversal_turn_enabled turn_recenter_enabled'.split())
 RETURN_LOCALIZATION_KEYS=set(
     'enabled stale_s jump_translation_m jump_yaw_rad stationary_linear_mps '
     'stationary_angular_radps stationary_drift_m stationary_drift_yaw_rad '
@@ -56,12 +56,13 @@ def validate_profile(value):
         data=value[section]
         required = keys-OPTIONAL_CORRIDOR_KEYS if section=='corridor' else keys
         if section=='navigation':required=keys-{'goal_turn_clearance_m','return_turn_handoff_enabled'}
+        if section=='guard':required=keys-{'clearance_recovery_enabled'}
         if not isinstance(data,dict) or not required <= set(data) <= keys:raise ValueError('Unknown or missing '+section+' fields')
         for key,item in data.items():
             if section=='navigation' and key=='return_turn_handoff_enabled':
                 if type(item) is not bool:raise ValueError('Expected boolean navigation '+key)
                 continue
-            if section in ('corridor','return_localization') and key in ('enabled','steering_enabled','scan_match_required','turn_settle_enabled','reversal_turn_enabled'):
+            if section in ('corridor','return_localization','guard') and key in ('enabled','steering_enabled','scan_match_required','turn_settle_enabled','reversal_turn_enabled','turn_recenter_enabled','clearance_recovery_enabled'):
                 if type(item) is not bool:raise ValueError('Expected boolean '+section+' '+key)
                 continue
             if section=='return_localization' and key in ('max_corrections','scan_match_min_points','scan_match_max_points','scan_match_max_iterations'):

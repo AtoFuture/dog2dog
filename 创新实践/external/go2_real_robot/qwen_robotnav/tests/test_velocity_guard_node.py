@@ -32,10 +32,13 @@ def transport():
             scan.header.frame_id='guard_test_laser'
             if bad_scan[0]=='laser':scan.ranges[180]=.3
         elif bad_scan[0]=='side_wall':scan.ranges[270]=.42
+        elif bad_scan[0] in ('recovery_rear','recovery_rear_turn'):scan.ranges[0]=.435
+        elif bad_scan[0]=='recovery_front':scan.ranges[180]=.435
         elif bad_scan[0]=='front_only':scan.angle_min=-.5;scan.angle_increment=.5;scan.ranges=[2.]*3
         odom=Odometry();odom.header.stamp=stamp;odom.header.frame_id='odom';odom.child_frame_id='base_link';odom.pose.pose.orientation.w=1.
         imu=Imu();imu.header.stamp=stamp;imu.orientation.x=math.sin(tilt[0]/2);imu.orientation.w=math.cos(tilt[0]/2)
         command=Twist();command.linear.x=.02;command.angular.z=.2
+        if bad_scan[0] in ('recovery_rear','recovery_front'):command.angular.z=0.
         battery=BatteryState(present=True,percentage=.8)
         for key,msg in dict(scan=scan,odometry=odom,imu=imu,nav_command=command,guarded_input=command,battery=battery,mission=String(data=state[0])).items():
             if sending[key]:pubs[key].publish(msg)
@@ -95,3 +98,18 @@ def test_scan_requires_measured_extrinsic_before_allowing_output(transport):
     tr.transform.translation.x=.22;tr.transform.rotation.w=1.
     broadcaster.sendTransform(tr);bad_scan[0]='laser'
     until(lambda:guard.last_reason=='predicted_footprint_collision' and outputs[-1][1]==0 and outputs[-1][2]>.1)
+
+
+def test_protected_stop_can_only_resume_along_certified_escape(transport):
+    guard,peer,outputs,sending,state,tilt,bad_scan,until=transport
+    guard.policy.settings['clearance_recovery_enabled']=False
+    state[0]='returning';bad_scan[0]='recovery_rear'
+    until(lambda:guard.last_reason=='footprint_clearance' and outputs[-1][1:]==(0.,0.))
+    guard.policy.settings['clearance_recovery_enabled']=True
+    until(lambda:guard.last_reason=='clearance_recovery' and outputs[-1][1:]==(.02,0.))
+    bad_scan[0]='recovery_rear_turn'
+    until(lambda:guard.last_reason=='footprint_clearance' and outputs[-1][1:]==(0.,0.))
+    bad_scan[0]='recovery_front'
+    until(lambda:guard.last_reason=='footprint_clearance' and outputs[-1][1:]==(0.,0.))
+    bad_scan[0]=True
+    until(lambda:guard.last_reason=='scan_unavailable' and outputs[-1][1:]==(0.,0.))

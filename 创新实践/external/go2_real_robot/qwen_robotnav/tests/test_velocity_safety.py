@@ -105,7 +105,7 @@ def test_generated_nav2_uses_profile_geometry_and_speed(tmp_path):
     assert controller['FollowPath']['max_angular_accel']==3.2
     assert controller['controller_plugins'].count('ReturnFollowPath')==1
     assert controller['ReturnFollowPath']==dict(controller['FollowPath'],rotate_to_heading_min_angle=.5,
-        plugin='qwen_robotnav_progress::ReturnController',terminal_turn_handoff_enabled=False)
+        plugin='qwen_robotnav_progress::ReturnController',terminal_turn_handoff_enabled=True)
     assert ros_parameters(p)['vision_explorer']['ros__parameters']['goal_turn_clearance_m']==0.
     p['navigation']['goal_turn_clearance_m']=.75
     assert ros_parameters(p)['vision_explorer']['ros__parameters']['goal_turn_clearance_m']==.75
@@ -129,10 +129,10 @@ def test_generated_nav2_uses_profile_geometry_and_speed(tmp_path):
     assert 'velocity_smoother' not in config
     assert direct_navigation_commands(source,p['topics']['nav_command'])==source
     assert 'cmd_vel_nav' not in source
-    p['navigation']['return_turn_handoff_enabled']=True
+    p['navigation'].pop('return_turn_handoff_enabled')
     configure_navigation(tmp_path,p)
     explicit=yaml.safe_load((tmp_path/'nav2.yaml').read_text())['controller_server']['ros__parameters']
-    assert explicit['ReturnFollowPath']['terminal_turn_handoff_enabled'] is True
+    assert explicit['ReturnFollowPath']['terminal_turn_handoff_enabled'] is False
     assert explicit['return_goal_checker']==controller['return_goal_checker']
     assert explicit['FollowPath']==controller['FollowPath']
 

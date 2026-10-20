@@ -35,6 +35,32 @@ def swept_collision(points,radius,velocity,horizon):
     return False
 
 
+def clearance_increasing_escape(points, clearance, speed, horizon, measured_velocity):
+    """Certify a straight retreat from an already occupied safety margin.
+
+    Every sampled swept circle preserves the *current* measured clearance;
+    the endpoint must gain at least 2cm. Check both signs of a small yaw lag,
+    and reject residual body drift that continues decreasing clearance.
+    This never authorizes rotation, missing scans, or deeper encroachment.
+    """
+    if not points or not all(math.isfinite(v) for v in measured_velocity):
+        return False
+    if swept_collision(points, clearance-1e-4, measured_velocity, horizon):
+        return False
+    for omega in (-.1, 0., .1):
+        for step in range(1,21):
+            dt=horizon*step/20
+            if omega:
+                cx=speed*math.sin(omega*dt)/omega
+                cy=speed*(1-math.cos(omega*dt))/omega
+            else:
+                cx,cy=speed*dt,0.
+            distance=min(math.hypot(px-cx,py-cy) for px,py in points)
+            if distance < clearance-1e-4 or (step==20 and distance < clearance+.02):
+                return False
+    return True
+
+
 class VelocitySafety:
     def __init__(self,settings,enabled=False,robot_radius=.4):
         self.settings=settings;self.enabled=enabled;self.seen={};self.stamps={}
@@ -75,7 +101,18 @@ class VelocitySafety:
         # A 1cm recovery band avoids latching both outputs at a soft approach
         # boundary. The configured footprint still retains >=4cm turn margin.
         hard_radius=radius-.01
-        if clearance<hard_radius:return 0.,0.,'footprint_clearance'
+        if clearance<hard_radius:
+            # The ordinary hard boundary remains unchanged. A bounded straight
+            # escape is allowed only outside the physical body plus 2cm and
+            # only when its full swept envelope increases existing clearance.
+            if (g.get('clearance_recovery_enabled',False) and x>0 and abs(z)<1e-6
+                    and clearance>=self.robot_radius+.02
+                    and clearance_increasing_escape(self.obstacles,clearance,
+                        max(g['prediction_speed_mps'],math.hypot(*self.measured_velocity[:2])),
+                        g['prediction_horizon_s']+max(0.,now-self.seen['scan']),
+                        self.measured_velocity)):
+                return x,0.,'clearance_recovery'
+            return 0.,0.,'footprint_clearance'
         if x or z:
             horizon=g['prediction_horizon_s']+max(0.,now-self.seen['scan'])
             # Residual/lateral gait drift matters even during an in-place turn.

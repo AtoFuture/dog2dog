@@ -1,5 +1,7 @@
 # 返航末段位置与朝向交接（2026-10-20）
 
+后续已接入 [掉头回中与受保护停车恢复](corridor-turn-recovery.md)。本文保留当时的默认关闭配置与失败结果；当前启用状态以该文和 `config/sim_runtime.yaml` 为准。
+
 接续[窄通道切换试验](corridor-turn-transition.md)。上一轮 `centered_reversal_1`
 完成深入和回程平移，但实际机身接近起点后又偏向侧墙，最终朝向未完成，整体失败。
 

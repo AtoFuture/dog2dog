@@ -113,7 +113,7 @@ class CmdVelScaler(Node):
         self._raw_command = (0., 0.)
         config = str(self.get_parameter('corridor_config').value)
         if config:
-            from qwen_robotnav.corridor import CorridorGuidance, CorridorTurnSettler
+            from qwen_robotnav.corridor import CorridorGuidance, CorridorTurnSettler, CorridorTurnRecovery
             from sensor_msgs.msg import LaserScan
             from nav_msgs.msg import Path
             from std_msgs.msg import String
@@ -122,6 +122,9 @@ class CmdVelScaler(Node):
             self._corridor_config = json.loads(config)
             self._corridor = CorridorGuidance(self._corridor_config['settings'])
             self._corridor_turn_settler = CorridorTurnSettler()
+            self._corridor_recovery = CorridorTurnRecovery()
+            self._corridor_sensor_radius = math.inf
+            self._corridor_range_min = math.inf
             self._corridor_scan_at = -math.inf
             self._corridor_mission_at = -math.inf
             self._corridor_mission = 'standby'
@@ -220,6 +223,8 @@ class CmdVelScaler(Node):
         self._target_az = self._clip(az, self._angular_max)
 
     def _corridor_state(self, msg):
+        if msg.data != self._corridor_mission:
+            self._corridor_recovery.reset()
         self._corridor_mission = msg.data
         self._corridor_mission_at = time.monotonic()
 
@@ -275,6 +280,8 @@ class CmdVelScaler(Node):
             stamp = msg.header.stamp.sec*10**9 + msg.header.stamp.nanosec
             if self._corridor.observe(points, stamp):
                 self._corridor_scan_at = time.monotonic()
+                self._corridor_sensor_radius = math.hypot(*sensor[:2])
+                self._corridor_range_min = msg.range_min
         except Exception:
             self._corridor_scan_at = -math.inf
             self._corridor.geometry = self._corridor.previous = None
@@ -298,6 +305,14 @@ class CmdVelScaler(Node):
             x,z,mode = 0.,0.,'scan_unavailable'
         else:
             x,z,mode = self._corridor.guide(0. if abs(raw_x)<self._nav_deadband else raw_x, raw_z,target)
+        recovery_enabled=(self._corridor.settings.get('steering_enabled',False)
+            and self._corridor.settings.get('turn_recenter_enabled',False)
+            and mode not in ('inactive','invalid_command','scan_unavailable','awaiting_path'))
+        x,z,mode = self._corridor_recovery.filter(x,z,mode,
+            geometry=self._corridor.geometry,sensor_radius=self._corridor_sensor_radius,
+            range_min=self._corridor_range_min,requested=abs(raw_x)+abs(raw_z)>1e-6,
+            now=self.get_clock().now().nanoseconds*1e-9,
+            current_linear=self._current_lx,current_angular=self._current_az,enabled=recovery_enabled)
         z, settling = self._corridor_turn_settler.filter(
             x, z, self._current_lx, self._current_az,
             self.get_clock().now().nanoseconds * 1e-9,
@@ -311,6 +326,7 @@ class CmdVelScaler(Node):
         if mode != self._corridor_mode or now-self._corridor_status_at >= .5:
             self._corridor_mode, self._corridor_status_at = mode, now
             snapshot = self._corridor.snapshot()
+            snapshot.update(self._corridor_recovery.snapshot())
             snapshot.update(mode=mode, source='measured_scan', scan_fresh=now-self._corridor_scan_at <= self._corridor_config['sensor_timeout_s'],
                             requested=[raw_x,raw_z], guided=[x,z], scan_stamp_ns=self._corridor.last_stamp,
                             path_target_base=target,

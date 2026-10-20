@@ -9,6 +9,7 @@ from qwen_robotnav.runtime_profile import load_profile, validate_profile
 def guide(offset=.12, angle=0.):
     settings=load_profile(Path(__file__).parents[1]/'config/sim_runtime.yaml')['corridor']
     settings['reversal_turn_enabled']=True
+    settings['turn_recenter_enabled']=False  # Exercise the legacy slip-only option.
     result=CorridorGuidance(settings)
     result.geometry=Corridor(1.4,angle,offset,3.,80,
         positive_wall_start_m=-3.,negative_wall_start_m=-3.)
@@ -61,7 +62,7 @@ def test_no_self_start_no_override_for_obstacle_and_explicit_opt_in():
 @pytest.mark.parametrize('key',['reversal_turn_enabled','turn_settle_enabled'])
 def test_experimental_options_require_booleans(key):
     profile=load_profile(Path(__file__).parents[1]/'config/sim_runtime.yaml')
-    assert key not in profile['corridor']
+    assert profile['corridor'][key] is True
     profile['corridor'][key]=True;validate_profile(profile)
     profile['corridor'][key]=1
     with pytest.raises(ValueError):validate_profile(profile)

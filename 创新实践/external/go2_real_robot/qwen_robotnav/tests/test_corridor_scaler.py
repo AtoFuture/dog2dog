@@ -34,6 +34,10 @@ def test_real_corridor_guidance_before_ramp_and_fail_closed_sensor_lifecycle(tmp
     config['settings']['steering_enabled']=True
     config['settings']['turn_settle_enabled']=True
     config['settings']['reversal_turn_enabled']=True
+    # This fixed-geometry fixture exercises the legacy guidance and settling;
+    # measured recenter progress is covered by test_turn_recovery_transport.
+    config['settings']['turn_recenter_enabled']=False
+    config['settings']['lookahead_m']=.5
     params=tmp_path/'params.yaml'
     params.write_text(yaml.safe_dump({'cmd_vel_scaler':{'ros__parameters':dict(
         input_topic=prefix+'/input',output_topic=prefix+'/output',corridor_config=json.dumps(config),

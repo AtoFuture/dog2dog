@@ -304,9 +304,13 @@ class CorridorGuidance:
         if self._reversal_sign is None:
             # Require a near reversal and a measured lateral offset. At an
             # arbitrary crossing angle there is no calibrated slip prediction.
-            if abs(heading) < 2.2 or abs(g.center_offset_m) < .06:
+            minimum_offset=.015 if self.settings.get('turn_recenter_enabled',False) else .06
+            if abs(heading) < 2.2 or abs(g.center_offset_m) < minimum_offset:
                 return None
-            self._reversal_sign = -math.copysign(1., g.center_offset_m*math.cos(g.heading_rad))
+            sign=math.copysign(1., g.center_offset_m*math.cos(g.heading_rad))
+            # With measured recentering, turn through the inward-facing half
+            # plane so a forward correction can increase wall clearance.
+            self._reversal_sign = sign if self.settings.get('turn_recenter_enabled',False) else -sign
         rate = self.settings['turn_rate_radps']
         if not linear:
             rate = min(rate, abs(angular))
@@ -317,3 +321,89 @@ class CorridorGuidance:
                     alignment_confirmations=self.alignment_confirmations,
                     reversal_turn_sign=self._reversal_sign,
                     geometry=asdict(self.geometry) if self.geometry is not None else None)
+
+
+class CorridorTurnRecovery:
+    """Measured, bounded forward recentering during an existing turn request.
+
+    No goal/velocity publisher and no motion from a zero upstream request.
+    The full scan and downstream guard remain authoritative. Wall geometry
+    is expressed in the body frame; neither map nor ground truth is used.
+    Stop both ramps and let the gait settle before changing motion type.
+    """
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.phase=None
+        self.started_at=None
+        self.stopped_since=None
+        self.episodes=0
+        self.center_limit=None
+        self.blocked=False
+
+    def cancel(self):
+        self.phase=None
+        self.started_at=None
+        self.stopped_since=None
+
+    def _settled(self, now, current_linear, current_angular):
+        if abs(current_linear)>1e-6 or abs(current_angular)>1e-6:
+            self.stopped_since=None
+            return False
+        if self.stopped_since is None or now<self.stopped_since:
+            self.stopped_since=now
+        return now-self.stopped_since>=.8
+
+    def filter(self, linear, angular, mode, *, geometry, sensor_radius, range_min,
+               requested, now, current_linear, current_angular, enabled):
+        if not enabled or not requested or geometry is None:
+            self.cancel()
+            return linear,angular,mode
+        g=geometry
+        # A complete rotation must keep the displaced sensor beyond its near
+        # clip, with 4cm reserve. Stop/recenter well before that boundary.
+        self.center_limit=min(.08,g.width_m/2-sensor_radius-range_min-.04)
+        if self.center_limit<=.02:
+            return (0.,0.,'turn_sensor_clearance') if angular else (linear,angular,mode)
+        offset=g.center_offset_m
+        inward_x=-math.sin(g.heading_rad)*math.copysign(1.,offset)
+        inward_y=math.cos(g.heading_rad)*math.copysign(1.,offset)
+        turning=abs(angular)>1e-6 and abs(linear)<1e-6
+        if self.phase is None:
+            if not turning or abs(offset)<=self.center_limit:
+                return linear,angular,mode
+            if self.blocked or self.episodes>=8:
+                return 0.,0.,'turn_recovery_exhausted'
+            self.episodes+=1
+            self.phase='brake_turn'
+            self.started_at=now
+        elapsed=now-self.started_at
+        if elapsed>12. or elapsed < -1e-6:
+            self.blocked=True
+            return 0.,0.,'turn_recovery_timeout'
+        if self.phase in ('brake_turn','brake_center','settle'):
+            if not self._settled(now,current_linear,current_angular):
+                return 0.,0.,'turn_recovery_settling'
+            self.stopped_since=None
+            if self.phase=='settle':
+                self.cancel()
+                return 0.,0.,'turn_recovery_complete'
+            self.phase='center' if inward_x>=.6 else 'orient'
+        if self.phase=='orient':
+            if inward_x>=.6:
+                self.phase='brake_center'
+                return 0.,0.,'turn_recovery_settling'
+            # Orient towards the corridor centre before any translation.
+            angle=math.atan2(inward_y,inward_x)
+            return 0.,math.copysign(.3,angle),'turn_recovery_orienting'
+        if abs(offset)<=.035 or inward_x<.25:
+            self.phase='settle'
+            return 0.,0.,'turn_recovery_settling'
+        # Fixed gait uses the already calibrated forward command. The final
+        # guard independently checks the complete measured swept envelope.
+        return .32,0.,'turn_recentering'
+
+    def snapshot(self):
+        return dict(recovery_phase=self.phase,recovery_episodes=self.episodes,
+                    turn_center_limit_m=self.center_limit,recovery_blocked=self.blocked)
