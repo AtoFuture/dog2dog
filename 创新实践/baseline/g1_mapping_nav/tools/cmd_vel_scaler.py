@@ -113,7 +113,7 @@ class CmdVelScaler(Node):
         self._raw_command = (0., 0.)
         config = str(self.get_parameter('corridor_config').value)
         if config:
-            from qwen_robotnav.corridor import CorridorGuidance
+            from qwen_robotnav.corridor import CorridorGuidance, CorridorTurnSettler
             from sensor_msgs.msg import LaserScan
             from nav_msgs.msg import Path
             from std_msgs.msg import String
@@ -121,6 +121,7 @@ class CmdVelScaler(Node):
             from tf2_ros import Buffer, TransformListener
             self._corridor_config = json.loads(config)
             self._corridor = CorridorGuidance(self._corridor_config['settings'])
+            self._corridor_turn_settler = CorridorTurnSettler()
             self._corridor_scan_at = -math.inf
             self._corridor_mission_at = -math.inf
             self._corridor_mission = 'standby'
@@ -297,6 +298,14 @@ class CmdVelScaler(Node):
             x,z,mode = 0.,0.,'scan_unavailable'
         else:
             x,z,mode = self._corridor.guide(0. if abs(raw_x)<self._nav_deadband else raw_x, raw_z,target)
+        z, settling = self._corridor_turn_settler.filter(
+            x, z, self._current_lx, self._current_az,
+            self.get_clock().now().nanoseconds * 1e-9,
+            enabled=(self._corridor.settings.get('steering_enabled', False)
+                     and self._corridor.settings.get('turn_settle_enabled', False)
+                     and self._corridor.geometry is not None))
+        if settling and mode not in ('inactive', 'invalid_command', 'scan_unavailable', 'awaiting_path'):
+            mode = 'turn_settling'
         self._target_lx = self._linear(x)
         self._target_az = self._clip(z*self._angular_scale, self._angular_max)
         if mode != self._corridor_mode or now-self._corridor_status_at >= .5:

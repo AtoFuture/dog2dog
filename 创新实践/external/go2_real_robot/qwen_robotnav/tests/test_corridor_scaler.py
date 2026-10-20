@@ -32,6 +32,8 @@ def test_real_corridor_guidance_before_ramp_and_fail_closed_sensor_lifecycle(tmp
         path_topic=prefix+'/plan',
         status_topic=prefix+'/status',sensor_timeout_s=.5)
     config['settings']['steering_enabled']=True
+    config['settings']['turn_settle_enabled']=True
+    config['settings']['reversal_turn_enabled']=True
     params=tmp_path/'params.yaml'
     params.write_text(yaml.safe_dump({'cmd_vel_scaler':{'ros__parameters':dict(
         input_topic=prefix+'/input',output_topic=prefix+'/output',corridor_config=json.dumps(config),
@@ -43,15 +45,15 @@ def test_real_corridor_guidance_before_ramp_and_fail_closed_sensor_lifecycle(tmp
     outputs=[];statuses=[]
     peer.create_subscription(Twist,prefix+'/output',lambda m:outputs.append((m.linear.x,m.angular.z)),10)
     peer.create_subscription(String,prefix+'/status',lambda m:statuses.append(json.loads(m.data)),10)
-    state=dict(scan=True,mission='exploring',linear=.32,frame='base_link',freeze=False,plan=True,offset=.15)
+    state=dict(scan=True,mission='exploring',linear=.32,angular=0.,frame='base_link',freeze=False,plan=True,offset=.15,target_x=3.)
     stamp=peer.get_clock().now().to_msg()
     def publish():
         nonlocal stamp
-        msg=Twist();msg.linear.x=state['linear'];commands.publish(msg)
+        msg=Twist();msg.linear.x=state['linear'];msg.angular.z=state['angular'];commands.publish(msg)
         missions.publish(String(data=state['mission']))
         if state['plan']:
             path=NavPath();path.header.frame_id='base_link';path.header.stamp=peer.get_clock().now().to_msg()
-            end=PoseStamped();end.pose.position.x=3.;path.poses.append(end);plans.publish(path)
+            end=PoseStamped();end.pose.position.x=state['target_x'];path.poses.append(end);plans.publish(path)
         if state['scan']:
             msg=LaserScan();msg.header.frame_id=state['frame']
             if not state['freeze']:stamp=peer.get_clock().now().to_msg()
@@ -84,6 +86,24 @@ def test_real_corridor_guidance_before_ramp_and_fail_closed_sensor_lifecycle(tmp
         state['offset']=.03
         wait_for(lambda: statuses and statuses[-1]['mode']=='centering' and outputs and outputs[-1][0]>.019 and outputs[-1][1]>.05)
         assert statuses[-1]['geometry']['width_m']==pytest.approx(1.4,abs=.03)
+        # Exercise actual timer/ramp ordering: turn only after both command
+        # ramps stop and the backend receives a full auto-rest interval.
+        state.update(linear=0.,angular=.4);outputs.clear();statuses.clear()
+        wait_for(lambda: statuses and statuses[-1]['mode']=='turn_settling' and stopped())
+        zero_at=time.monotonic()
+        assert statuses[-1]['guided']==[0.,0.]
+        wait_for(lambda: statuses[-1]['mode']=='turning' and outputs[-1][1]>.1)
+        assert time.monotonic()-zero_at>.5
+        state.update(linear=.32,angular=0.)
+        wait_for(lambda: statuses[-1]['mode']=='centering' and outputs[-1][0]>.019)
+        state.update(linear=0.,angular=.4,offset=.12,target_x=-3.)
+        wait_for(lambda: statuses[-1]['mode']=='reversal_turning' and outputs[-1][1]<-.2)
+        assert statuses[-1]['reversal_turn_sign']==-1.
+        assert all(abs(x)<1e-7 for x,_ in outputs[-4:])
+        # Replanning to the forward axis releases the latched direction.
+        state.update(linear=.32,angular=0.,offset=.03,target_x=3.)
+        wait_for(lambda: statuses[-1]['mode']=='centering' and outputs[-1][0]>.019)
+        assert statuses[-1]['reversal_turn_sign'] is None
         # A raw zero must never become a self-starting centering motion.
         state['linear']=0.;outputs.clear()
         wait_for(lambda: stopped() and statuses[-1]['mode']=='stationary')

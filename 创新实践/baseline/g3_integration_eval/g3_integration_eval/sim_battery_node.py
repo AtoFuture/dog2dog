@@ -1,12 +1,14 @@
 """Publish a gradually discharging BatteryState for Gazebo integration."""
 
 from math import floor
+import signal
 from typing import Optional, Sequence
 
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import BatteryState
 from std_msgs.msg import String
 
@@ -207,10 +209,19 @@ class SimulatedBatteryNode(Node):
 
 
 def main(args: Optional[Sequence[str]] = None) -> None:
-    rclpy.init(args=args)
+    # Finish an active DDS take before shutting down the context. The default
+    # asynchronous signal handler can invalidate a subscription mid-conversion.
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
+    stopping = False
+    def request_stop(_signal, _frame):
+        nonlocal stopping
+        stopping = True
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
     node = SimulatedBatteryNode()
     try:
-        rclpy.spin(node)
+        while rclpy.ok() and not stopping:
+            rclpy.spin_once(node, timeout_sec=.05)
     except KeyboardInterrupt:
         pass
     finally:

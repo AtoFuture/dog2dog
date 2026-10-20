@@ -158,3 +158,19 @@ def test_old_profiles_and_legacy_scaler_keep_guidance_disabled():
 def test_unvalidated_corridor_parameters_are_rejected(key,value):
     p=load_profile(PROFILE);p['corridor'][key]=value
     with pytest.raises(ValueError):validate_profile(p)
+
+
+def test_shorter_centering_lookahead_is_bounded_without_changing_path_or_turn_limits():
+    p=load_profile(PROFILE)
+    p['corridor']['lookahead_m']=.25
+    validate_profile(p)
+    g=CorridorGuidance(p['corridor'])
+    g.observe(walls(offset=.02),1);g.observe(walls(offset=.02),2)
+    x,z,mode=stabilize(g,walls(offset=.02))
+    assert x==.32 and mode=='centering'
+    assert z==pytest.approx(1.2*math.atan2(.02,.25),abs=.002)
+    assert p['corridor']['path_lookahead_m']==1.
+    assert p['corridor']['turn_rate_radps']==.4
+    assert load_profile(PROFILE)['corridor']['lookahead_m']==.5
+    p['corridor']['lookahead_m']=.249
+    with pytest.raises(ValueError):validate_profile(p)

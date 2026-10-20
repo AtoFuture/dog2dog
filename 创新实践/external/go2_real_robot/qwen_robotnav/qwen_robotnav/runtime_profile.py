@@ -23,10 +23,10 @@ CORRIDOR_KEYS=set(
     'enabled steering_enabled max_width_m min_span_m wall_tolerance_m '
     'lookahead_m heading_gain turn_rate_radps max_heading_error_rad '
     'approach_distance_m path_lookahead_m alignment_tolerance_rad '
-    'alignment_confirmations'.split())
+    'alignment_confirmations turn_settle_enabled reversal_turn_enabled'.split())
 OPTIONAL_CORRIDOR_KEYS=set(
     'steering_enabled approach_distance_m path_lookahead_m '
-    'alignment_tolerance_rad alignment_confirmations'.split())
+    'alignment_tolerance_rad alignment_confirmations turn_settle_enabled reversal_turn_enabled'.split())
 RETURN_LOCALIZATION_KEYS=set(
     'enabled stale_s jump_translation_m jump_yaw_rad stationary_linear_mps '
     'stationary_angular_radps stationary_drift_m stationary_drift_yaw_rad '
@@ -58,7 +58,7 @@ def validate_profile(value):
         if section=='navigation':required=keys-{'goal_turn_clearance_m'}
         if not isinstance(data,dict) or not required <= set(data) <= keys:raise ValueError('Unknown or missing '+section+' fields')
         for key,item in data.items():
-            if section in ('corridor','return_localization') and key in ('enabled','steering_enabled','scan_match_required'):
+            if section in ('corridor','return_localization') and key in ('enabled','steering_enabled','scan_match_required','turn_settle_enabled','reversal_turn_enabled'):
                 if type(item) is not bool:raise ValueError('Expected boolean '+section+' '+key)
                 continue
             if section=='return_localization' and key in ('max_corrections','scan_match_min_points','scan_match_max_points','scan_match_max_iterations'):
@@ -100,7 +100,7 @@ def validate_profile(value):
     if 'corridor' in value:
         c=value['corridor']
         if not (1. <= c['max_width_m'] <= 2. and 1. <= c['min_span_m'] <= 3.
-                and .02 <= c['wall_tolerance_m'] <= .08 and .5 <= c['lookahead_m'] <= 2.
+                and .02 <= c['wall_tolerance_m'] <= .08 and .25 <= c['lookahead_m'] <= 2.
                 and .1 <= c['heading_gain'] <= 2. and .1 <= c['turn_rate_radps'] <= .4
                 and .12 <= c['max_heading_error_rad'] <= .35
                 and .5 <= c.get('approach_distance_m',1.) <= 1.5

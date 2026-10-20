@@ -144,6 +144,38 @@ def detect_corridor(points, settings):
     return best
 
 
+class CorridorTurnSettler:
+    """Separate a corridor walk from a pure turn in the fixed-gait backend.
+
+    Inputs ``current_*`` are scaler outputs, not measured body velocities.
+    ``now`` uses the backend's ROS clock, so a slower simulation cannot shorten
+    the wait. Once both ramps stop, 0.8s covers its longest auto-rest boundary:
+    44 controller ticks at 60Hz. This is command sequencing, not a guarantee
+    of physical stationarity. A pending stop survives loss of wall detection.
+    """
+
+    def __init__(self):
+        self.pending = False
+        self.stopped_since = None
+
+    def filter(self, linear, angular, current_linear, current_angular, now, enabled):
+        if enabled and (abs(linear) > 1e-6 or abs(current_linear) > 1e-6):
+            self.pending = True
+            self.stopped_since = None
+        if not self.pending or abs(linear) > 1e-6:
+            return angular, False
+        if abs(current_linear) > 1e-6 or abs(current_angular) > 1e-6:
+            self.stopped_since = None
+            return 0., True
+        if self.stopped_since is None or now < self.stopped_since:
+            self.stopped_since = now
+        if now - self.stopped_since < .8:
+            return 0., True
+        self.pending = False
+        self.stopped_since = None
+        return angular, False
+
+
 class CorridorGuidance:
     def __init__(self, settings):
         self.settings = settings
@@ -154,11 +186,13 @@ class CorridorGuidance:
         self.alignment_confirmations = 0
         self._alignment_stamp = None
         self._aligned_direction = None
+        self._reversal_sign = None
 
     def reset_alignment(self):
         self.alignment_confirmations = 0
         self._alignment_stamp = None
         self._aligned_direction = None
+        self._reversal_sign = None
 
     def observe(self, points, stamp):
         if self.last_stamp is not None and stamp <= self.last_stamp:
@@ -189,6 +223,9 @@ class CorridorGuidance:
         if linear < 0:
             return linear, angular, 'reverse_passthrough'  # Final guard refuses reverse.
         turn_limit = self.settings['turn_rate_radps']
+        reversal = self._reversal_turn(linear, angular, target_xy)
+        if reversal is not None:
+            return 0., reversal, 'reversal_turning'
         if linear == 0:
             return 0., max(-turn_limit, min(turn_limit, angular)), 'turning' if angular else 'stationary'
         if target_xy is None or not all(math.isfinite(v) for v in target_xy):
@@ -238,7 +275,45 @@ class CorridorGuidance:
             return linear, steering, 'approaching'
         return linear, steering, 'goal_approach' if math.hypot(*target_xy)<.5 else 'centering'
 
+    def _reversal_turn(self, linear, angular, target_xy):
+        """Experimental direction choice for this backend's measured turn slip.
+
+        A positive stationary turn drifts locally right, a negative one left.
+        Choose once near a corridor reversal; keep the choice across angle wrap
+        and zero requests. Never create motion from a zero request, modify a
+        near-goal orientation maneuver, or replace planner obstacle avoidance.
+        """
+        if not self.settings.get('reversal_turn_enabled', False):
+            return None
+        g = self.geometry
+        if (target_xy is None or not all(math.isfinite(v) for v in target_xy)
+                or math.hypot(*target_xy) < .5):
+            self._reversal_sign = None
+            return None
+        projection = target_xy[0]*math.cos(g.heading_rad)+target_xy[1]*math.sin(g.heading_rad)
+        direction = 1 if projection >= 0 else -1
+        wall_start = g.positive_wall_start_m if direction > 0 else g.negative_wall_start_m
+        obstacle = g.forward_obstacle_m if direction > 0 else g.backward_obstacle_m
+        heading = math.atan2(math.sin(g.heading_rad+(math.pi if direction < 0 else 0)),
+                             math.cos(g.heading_rad+(math.pi if direction < 0 else 0)))
+        if wall_start is None or (obstacle is not None and obstacle < abs(projection)) or abs(heading) < .35:
+            self._reversal_sign = None
+            return None
+        if not linear and not angular:
+            return None
+        if self._reversal_sign is None:
+            # Require a near reversal and a measured lateral offset. At an
+            # arbitrary crossing angle there is no calibrated slip prediction.
+            if abs(heading) < 2.2 or abs(g.center_offset_m) < .06:
+                return None
+            self._reversal_sign = -math.copysign(1., g.center_offset_m*math.cos(g.heading_rad))
+        rate = self.settings['turn_rate_radps']
+        if not linear:
+            rate = min(rate, abs(angular))
+        return self._reversal_sign*rate
+
     def snapshot(self):
         return dict(confirmed=self.geometry is not None, confirmations=self.confirmations,
                     alignment_confirmations=self.alignment_confirmations,
+                    reversal_turn_sign=self._reversal_sign,
                     geometry=asdict(self.geometry) if self.geometry is not None else None)
