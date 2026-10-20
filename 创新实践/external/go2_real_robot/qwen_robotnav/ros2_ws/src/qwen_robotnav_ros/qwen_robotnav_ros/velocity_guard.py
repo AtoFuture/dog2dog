@@ -22,7 +22,8 @@ from qwen_robotnav.velocity_safety import VelocitySafety,scan_points
 class VelocityGuard(Node):
     def __init__(self,profile,enabled=False):
         super().__init__('velocity_guard')
-        self.profile=profile;self.policy=VelocitySafety(profile['guard'],enabled,profile['navigation']['robot_radius_m'])
+        self.profile=profile;self.policy=VelocitySafety(profile['guard'],enabled,profile['navigation']['robot_radius_m'],
+            reverse_enabled=profile['navigation'].get('reverse_retreat_enabled',False))
         self.tf=Buffer();self.listener=TransformListener(self.tf,self)
         t=profile['topics'];self.outputs=0;self.moving=0;self.last_reason=None;self.status_at=-math.inf
         self.pub=self.create_publisher(Twist,t['actuator_command'],10)

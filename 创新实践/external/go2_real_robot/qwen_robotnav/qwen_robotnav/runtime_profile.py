@@ -13,7 +13,7 @@ KEYS={
  'frames':{'map','odom','base'},
  'guard':set('clearance_margin_m prediction_horizon_s prediction_speed_mps rate_hz command_timeout_s sensor_timeout_s battery_timeout_s mission_timeout_s stamp_future_tolerance_s linear_max angular_max front_half_angle_rad front_clearance_m max_tilt_rad clearance_recovery_enabled'.split()),
  'scaler':set('linear_scale linear_max linear_min nav_deadband angular_scale angular_max linear_accel linear_decel angular_accel angular_decel ramp_rate cmd_timeout'.split()),
- 'navigation':{'robot_radius_m','inflation_radius_m','desired_linear_velocity_mps','goal_turn_clearance_m','return_turn_handoff_enabled'},
+ 'navigation':{'robot_radius_m','inflation_radius_m','desired_linear_velocity_mps','goal_turn_clearance_m','return_turn_handoff_enabled','reverse_retreat_enabled'},
  'mission':set('heartbeat_period_s recovery_stale_s recovery_stable_s recovery_timeout_s low_battery_threshold home_x home_y home_yaw'.split()),
  'explorer':set('max_bootstrap_scans require_path_clearance tick_period_s min_goal_distance_m task_completion_enabled exploration_budget_s coverage_stall_s coverage_min_gain_m2 candidate_wait_s no_frontier_confirm_s max_region_failures max_consecutive_failures'.split()),
  'decision':set('candidate_selector mission_instruction brain_base_url brain_model brain_timeout brain_max_candidates'.split()),
@@ -55,11 +55,11 @@ def validate_profile(value):
     for section,keys in sections.items():
         data=value[section]
         required = keys-OPTIONAL_CORRIDOR_KEYS if section=='corridor' else keys
-        if section=='navigation':required=keys-{'goal_turn_clearance_m','return_turn_handoff_enabled'}
+        if section=='navigation':required=keys-{'goal_turn_clearance_m','return_turn_handoff_enabled','reverse_retreat_enabled'}
         if section=='guard':required=keys-{'clearance_recovery_enabled'}
         if not isinstance(data,dict) or not required <= set(data) <= keys:raise ValueError('Unknown or missing '+section+' fields')
         for key,item in data.items():
-            if section=='navigation' and key=='return_turn_handoff_enabled':
+            if section=='navigation' and key in ('return_turn_handoff_enabled','reverse_retreat_enabled'):
                 if type(item) is not bool:raise ValueError('Expected boolean navigation '+key)
                 continue
             if section in ('corridor','return_localization','guard') and key in ('enabled','steering_enabled','scan_match_required','turn_settle_enabled','reversal_turn_enabled','turn_recenter_enabled','clearance_recovery_enabled'):
@@ -167,6 +167,11 @@ def ros_parameters(p, runtime_root=None):
             settings=p['corridor'],scan_topic=t['scan'],base_frame=f['base'],mission_topic=t['mission'],
             path_topic=t['action'].rsplit('/',1)[0]+'/plan',
             status_topic=t['guard_status']+'/corridor',sensor_timeout_s=min(.5,p['guard']['sensor_timeout_s']),
+            odometry_topic=t['odometry'],odom_frame=f['odom'],
+            reverse_retreat=(dict(robot_radius_m=p['navigation']['robot_radius_m'],
+                desired_linear_velocity_mps=p['navigation']['desired_linear_velocity_mps'],
+                **{k:p['guard'][k] for k in ('clearance_margin_m','prediction_speed_mps','prediction_horizon_s')})
+                if p['navigation'].get('reverse_retreat_enabled',False) else None),
             clearance_escape=(dict(robot_radius_m=p['navigation']['robot_radius_m'],
                 **{k:p['guard'][k] for k in ('clearance_margin_m','prediction_speed_mps','prediction_horizon_s')})
                 if p['guard'].get('clearance_recovery_enabled',False) else None)))

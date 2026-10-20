@@ -1,0 +1,291 @@
+{
+  "status": "experimental_default_disabled_end_to_end_return_not_passed",
+  "profile_flag": "navigation.reverse_retreat_enabled",
+  "default_enabled": false,
+  "regression": {
+    "passed": 671,
+    "seconds": 124.83,
+    "log": ".runtime/reverse_20261020/full-tests-final.log"
+  },
+  "calibration": {
+    "calibration_1": {
+      "success": false,
+      "error": "Startup failed before controller imports; no report was created",
+      "evidence_dir": ".runtime/reverse_20261020/calibration_1"
+    },
+    "calibration_2": {
+      "calibration_only": true,
+      "truth_used_for_control": false,
+      "sole_actuator": "velocity_guard",
+      "success": false,
+      "guard_reasons": [
+        "allowed",
+        "battery_unavailable",
+        "mission:standby",
+        "predicted_footprint_collision"
+      ],
+      "negative_outputs": 7,
+      "recorder_exit_code": 0,
+      "recording_complete": true,
+      "child_exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "evidence_dir": ".runtime/reverse_20261020/calibration_2"
+    },
+    "calibration_3": {
+      "calibration_only": true,
+      "truth_used_for_control": false,
+      "sole_actuator": "velocity_guard",
+      "success": true,
+      "measurements": [
+        {
+          "raw": -0.2666666667,
+          "scaled_expected": -0.0200000000025,
+          "start": 34.516000000000005,
+          "stop": 36.016000000000005,
+          "end": 39.021,
+          "body_dx_m": -0.3130813727355494,
+          "body_dy_m": -0.002670378705674031,
+          "yaw_change_rad": -0.024211910639965768,
+          "max_sample_speed_mps": 0.28411876395574626,
+          "last_second_drift_m": 0.0,
+          "passed": true
+        },
+        {
+          "raw": -0.32,
+          "scaled_expected": -0.024,
+          "start": 39.021,
+          "stop": 40.526,
+          "end": 43.526,
+          "body_dx_m": -0.341833990534383,
+          "body_dy_m": -0.00333879203921748,
+          "yaw_change_rad": 0.024492343303856384,
+          "max_sample_speed_mps": 0.36404855820425297,
+          "last_second_drift_m": 0.0,
+          "passed": true
+        }
+      ],
+      "guard_reasons": [
+        "allowed",
+        "battery_unavailable",
+        "mission:standby"
+      ],
+      "negative_outputs": 73,
+      "recorder_exit_code": 0,
+      "recording_complete": true,
+      "child_exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "evidence_dir": ".runtime/reverse_20261020/calibration_3"
+    }
+  },
+  "native_warehouse": {
+    "success": false,
+    "error": "Runtime entered ESTOP before mission acceptance",
+    "static_scenario": null,
+    "autonomous_completion": true,
+    "operator_commands": [
+      "EXPLORE",
+      "ESTOP"
+    ],
+    "recorder_exit_code": 0,
+    "runtime_exit_code": 0,
+    "recording_complete": true,
+    "home_error_m": 3.482969029544453,
+    "evidence_dir": ".runtime/reverse_20261020/native_1/trial",
+    "negative_actuator_samples": 0
+  },
+  "injected_request_exercises": {
+    "exercise_1": {
+      "calibration_only": true,
+      "truth_used_for_control": false,
+      "sole_actuator": "velocity_guard",
+      "success": false,
+      "error": "TimeoutError('Calibration deadline')",
+      "recorder_exit_code": 0,
+      "recording_complete": true,
+      "child_exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "evidence_dir": ".runtime/reverse_20261020/exercise_1"
+    },
+    "exercise_2": {
+      "calibration_only": true,
+      "truth_used_for_control": false,
+      "sole_actuator": "velocity_guard",
+      "success": false,
+      "injected_planner_request": true,
+      "real_nav2_action": false,
+      "test_fixture": "dead_end",
+      "prediction_speed_mps": 1.1,
+      "reverse_complete": false,
+      "measurements": [
+        {
+          "raw": null,
+          "scaled_expected": -0.024,
+          "start": 45.282000000000004,
+          "stop": 66.94,
+          "end": 69.943,
+          "body_dx_m": -0.18961135035827603,
+          "body_dy_m": 0.032542358169738286,
+          "yaw_change_rad": 2.412716165544511,
+          "max_sample_speed_mps": 0.27523876364772093,
+          "last_second_drift_m": 0.0,
+          "passed": false
+        }
+      ],
+      "guard_reasons": [
+        "allowed",
+        "battery_unavailable",
+        "command_unavailable",
+        "mission:standby",
+        "scan_unavailable"
+      ],
+      "negative_outputs": 0,
+      "recorder_exit_code": 0,
+      "recording_complete": true,
+      "child_exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "evidence_dir": ".runtime/reverse_20261020/exercise_2"
+    },
+    "exercise_3": {
+      "calibration_only": true,
+      "truth_used_for_control": false,
+      "sole_actuator": "velocity_guard",
+      "success": false,
+      "error": "TimeoutError('Calibration deadline')",
+      "recorder_exit_code": 0,
+      "recording_complete": true,
+      "child_exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "evidence_dir": ".runtime/reverse_20261020/exercise_3",
+      "motion_diagnosis": {
+        "method": "Closed-bag sampled independent body diagnosis, never runtime input. Body interval endpoints approximate actuator intervals; ramp stopping motion may extend beyond them.",
+        "negative_actuator_samples": 83,
+        "negative_segments": [
+          {
+            "start": 1792506532.4294102,
+            "end": 1792506535.7791772,
+            "duration_wall_s": 3.349766969680786,
+            "negative_commands": 68,
+            "body_dx_m": -0.6970114216348663,
+            "body_dy_m": 0.021207957628487078,
+            "yaw_change_rad": -0.023542797799952032,
+            "max_abs_command": 0.024,
+            "max_abs_yaw_command": 0.0
+          },
+          {
+            "start": 1792506536.9310572,
+            "end": 1792506537.6314101,
+            "duration_wall_s": 0.7003529071807861,
+            "negative_commands": 15,
+            "body_dx_m": -0.14456755892201395,
+            "body_dy_m": 0.0014351944529468787,
+            "yaw_change_rad": -0.002738022769277676,
+            "max_abs_command": 0.024,
+            "max_abs_yaw_command": 0.0
+          }
+        ],
+        "max_episodes": 1
+      }
+    }
+  },
+  "final_real_nav2_trial": {
+    "manual_initial_nav2_goal": true,
+    "real_nav2_return": true,
+    "autonomous_exploration": false,
+    "truth_used_for_control": false,
+    "success": false,
+    "private_overrides": {
+      "frontier_mission_topic": "/reverse_calibration/frontier_disabled"
+    },
+    "calibration_geometry_modified": true,
+    "entry_body": {
+      "t": 38.258,
+      "x": 1.2289338231390816,
+      "y": -0.023436388716633703,
+      "z": 0.22999944916305914,
+      "yaw": 0.0011905127573196084
+    },
+    "error": "TimeoutError('Nav2 operator trial deadline')",
+    "recorder_exit_code": 0,
+    "recording_complete": true,
+    "child_exit_codes": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "motion_diagnosis": {
+      "method": "Closed-bag sampled independent body diagnosis, never runtime input. Body interval endpoints approximate actuator intervals; ramp stopping motion may extend beyond them.",
+      "negative_actuator_samples": 78,
+      "negative_segments": [
+        {
+          "start": 1792507579.5062299,
+          "end": 1792507583.3562922,
+          "duration_wall_s": 3.850062370300293,
+          "negative_commands": 78,
+          "body_dx_m": -0.7642475019603469,
+          "body_dy_m": 0.007471960875303262,
+          "yaw_change_rad": 0.0033555233366441913,
+          "max_abs_command": 0.024,
+          "max_abs_yaw_command": 0.0
+        }
+      ],
+      "max_episodes": 1
+    },
+    "source_audit": {
+      "unchanged": true,
+      "changed": []
+    },
+    "geometry": {
+      "canonical_static_scene": false,
+      "visible_collision_match": true,
+      "passage_width_m": 1.2,
+      "original_fixture_sha256": "97d03697e44a6a236f13a1a4fee568a527a2ec19e8fdfe5325b86d581ce274bf",
+      "world_sha256": "7d3e5104a109fc074c61f0ca47fc80b0749be2fa3b4c35b2efe37b07fd3970d7",
+      "source_world_modified": false
+    },
+    "evidence_dir": ".runtime/reverse_20261020/nav2_trial_1",
+    "failure_stage": "cumulative_odometry_distance_limit_before_wide_exit",
+    "limit_odometry_distance_m": 1.500247102560786
+  },
+  "cleanup": {
+    "228": [],
+    "229": []
+  },
+  "limitations": [
+    "Simulation only; no hardware validation",
+    "Short gait calibration does not establish a universal physical speed bound",
+    "Private modified geometry is not a canonical static-scene pass",
+    "Initial forward goal was operator-supplied; final test did not run autonomous DeepSeek exploration",
+    "Cumulative odometry distance differs from independent body displacement",
+    "Warehouse admission trial used an earlier policy version; no warehouse pass claimed"
+  ]
+}

@@ -123,6 +123,13 @@ class CmdVelScaler(Node):
             self._corridor = CorridorGuidance(self._corridor_config['settings'])
             self._corridor_turn_settler = CorridorTurnSettler()
             self._corridor_recovery = CorridorTurnRecovery()
+            self._reverse_retreat = None
+            self._reverse_odom_at = -math.inf
+            if self._corridor_config.get('reverse_retreat'):
+                from qwen_robotnav.reverse_retreat import ReverseRetreat
+                from nav_msgs.msg import Odometry
+                self._reverse_retreat = ReverseRetreat(self._corridor_config['reverse_retreat'])
+                self.create_subscription(Odometry,self._corridor_config['odometry_topic'],self._reverse_odometry,10)
             self._corridor_sensor_radius = math.inf
             self._corridor_range_min = math.inf
             self._corridor_points = None
@@ -228,6 +235,25 @@ class CmdVelScaler(Node):
             self._corridor_recovery.reset()
         self._corridor_mission = msg.data
         self._corridor_mission_at = time.monotonic()
+        if self._reverse_retreat is not None:self._reverse_retreat.set_mission(msg.data)
+
+    def _reverse_odometry(self,msg):
+        try:
+            p=msg.pose.pose.position;q=msg.pose.pose.orientation
+            stamp=msg.header.stamp.sec+msg.header.stamp.nanosec*1e-9
+            age=self.get_clock().now().nanoseconds*1e-9-stamp
+            if (not -.1<=age<=.5 or msg.header.frame_id!=self._corridor_config['odom_frame']
+                    or msg.child_frame_id!=self._corridor_config['base_frame']
+                    or not all(math.isfinite(v)for v in (p.x,p.y,p.z,q.x,q.y,q.z,q.w))
+                    or abs(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w-1.)>.01):
+                raise ValueError('Invalid reverse trail odometry')
+            yaw=math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))
+            if self._reverse_retreat.observe_pose((p.x,p.y,yaw),stamp):
+                self._reverse_odom_at=time.monotonic()
+        except Exception:
+            self._reverse_odom_at=-math.inf
+            self._reverse_retreat.pose=None
+            self._reverse_retreat.trail.clear()
 
     def _corridor_plan(self, msg):
         self._corridor_path = msg if msg.poses and msg.header.frame_id else None
@@ -311,21 +337,35 @@ class CmdVelScaler(Node):
         recovery_enabled=(self._corridor.settings.get('steering_enabled',False)
             and self._corridor.settings.get('turn_recenter_enabled',False)
             and mode not in ('inactive','invalid_command','scan_unavailable','awaiting_path'))
-        x,z,mode = self._corridor_recovery.filter(x,z,mode,
-            geometry=self._corridor.geometry,sensor_radius=self._corridor_sensor_radius,
-            range_min=self._corridor_range_min,requested=abs(raw_x)+abs(raw_z)>1e-6,
-            now=self.get_clock().now().nanoseconds*1e-9,
-            current_linear=self._current_lx,current_angular=self._current_az,enabled=recovery_enabled,
-            escape_points=self._corridor_points,
-            escape_settings=self._corridor_config.get('clearance_escape'),
-            scan_age=max(0.,now-self._corridor_scan_at))
+        reverse=None
+        if self._reverse_retreat is not None:
+            reverse=self._reverse_retreat.filter(requested=abs(raw_x)+abs(raw_z)>1e-6,
+                target=target,points=self._corridor_points,scan_id=self._corridor.last_stamp,
+                scan_age=max(0.,now-self._corridor_scan_at),odom_fresh=0<=now-self._reverse_odom_at<=.5,
+                enabled=mode not in ('inactive','invalid_command','scan_unavailable','awaiting_path'),
+                now=self.get_clock().now().nanoseconds*1e-9,
+                current_linear=self._current_lx,current_angular=self._current_az,
+                sensor_radius=self._corridor_sensor_radius,range_min=self._corridor_range_min)
+        if reverse is not None:
+            self._corridor_recovery.cancel(resumable=True)
+            x,z,mode=reverse
+        else:
+            x,z,mode = self._corridor_recovery.filter(x,z,mode,
+                geometry=self._corridor.geometry,sensor_radius=self._corridor_sensor_radius,
+                range_min=self._corridor_range_min,requested=abs(raw_x)+abs(raw_z)>1e-6,
+                now=self.get_clock().now().nanoseconds*1e-9,
+                current_linear=self._current_lx,current_angular=self._current_az,enabled=recovery_enabled,
+                escape_points=self._corridor_points,
+                escape_settings=self._corridor_config.get('clearance_escape'),
+                scan_age=max(0.,now-self._corridor_scan_at))
         z, settling = self._corridor_turn_settler.filter(
             x, z, self._current_lx, self._current_az,
             self.get_clock().now().nanoseconds * 1e-9,
             enabled=(self._corridor.settings.get('steering_enabled', False)
                      and self._corridor.settings.get('turn_settle_enabled', False)
                      and self._corridor.geometry is not None))
-        if settling and mode not in ('inactive', 'invalid_command', 'scan_unavailable', 'awaiting_path'):
+        if (settling and mode not in ('inactive', 'invalid_command', 'scan_unavailable', 'awaiting_path')
+                and not mode.startswith('reverse_')):
             mode = 'turn_settling'
         self._target_lx = self._linear(x)
         self._target_az = self._clip(z*self._angular_scale, self._angular_max)
@@ -333,6 +373,7 @@ class CmdVelScaler(Node):
             self._corridor_mode, self._corridor_status_at = mode, now
             snapshot = self._corridor.snapshot()
             snapshot.update(self._corridor_recovery.snapshot())
+            if self._reverse_retreat is not None:snapshot.update(self._reverse_retreat.snapshot())
             snapshot.update(mode=mode, source='measured_scan', scan_fresh=now-self._corridor_scan_at <= self._corridor_config['sensor_timeout_s'],
                             requested=[raw_x,raw_z], guided=[x,z], scan_stamp_ns=self._corridor.last_stamp,
                             path_target_base=target,

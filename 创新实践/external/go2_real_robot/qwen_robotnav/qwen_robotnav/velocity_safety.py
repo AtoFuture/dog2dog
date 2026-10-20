@@ -62,11 +62,12 @@ def clearance_increasing_escape(points, clearance, speed, horizon, measured_velo
 
 
 class VelocitySafety:
-    def __init__(self,settings,enabled=False,robot_radius=.4):
+    def __init__(self,settings,enabled=False,robot_radius=.4,*,reverse_enabled=False):
         self.settings=settings;self.enabled=enabled;self.seen={};self.stamps={}
         self.command=(0.,0.);self.mission='standby';self.front=0.;self.tilt=math.inf
         self.publisher_conflict=False;self.robot_radius=robot_radius
         self.obstacles=None;self.measured_velocity=(0.,0.,0.)
+        self.reverse_enabled=reverse_enabled is True
 
     def observe(self,source,now,stamp=None):
         if stamp is not None:
@@ -92,9 +93,11 @@ class VelocitySafety:
         if not math.isfinite(self.tilt) or self.tilt>g['max_tilt_rad']:return 0.,0.,'excessive_tilt'
         x,z=self.command
         if not all(math.isfinite(v) for v in (x,z)):return 0.,0.,'invalid_command'
-        # Reverse is unsupported until rear clearance is independently measured.
-        if x<0:return 0.,0.,'reverse_not_supported'
-        x=min(g['linear_max'],x);z=max(-g['angular_max'],min(g['angular_max'],z))
+        if x<0:
+            if not self.reverse_enabled or self.mission!='returning':
+                return 0.,0.,'reverse_not_supported'
+            if abs(z)>1e-6:return 0.,0.,'reverse_turn_not_supported'
+        x=max(-g['linear_max'],min(g['linear_max'],x));z=max(-g['angular_max'],min(g['angular_max'],z))
         if self.obstacles is None:return 0.,0.,'footprint_evidence_unavailable'
         clearance=min((math.hypot(px,py) for px,py in self.obstacles),default=math.inf)
         radius=self.robot_radius+g['clearance_margin_m']
@@ -105,10 +108,10 @@ class VelocitySafety:
             # The ordinary hard boundary remains unchanged. A bounded straight
             # escape is allowed only outside the physical body plus 2cm and
             # only when its full swept envelope increases existing clearance.
-            if (g.get('clearance_recovery_enabled',False) and x>0 and abs(z)<1e-6
+            if (g.get('clearance_recovery_enabled',False) and x!=0 and abs(z)<1e-6
                     and clearance>=self.robot_radius+.02
                     and clearance_increasing_escape(self.obstacles,clearance,
-                        max(g['prediction_speed_mps'],math.hypot(*self.measured_velocity[:2])),
+                        math.copysign(max(g['prediction_speed_mps'],math.hypot(*self.measured_velocity[:2])),x),
                         g['prediction_horizon_s']+max(0.,now-self.seen['scan']),
                         self.measured_velocity)):
                 return x,0.,'clearance_recovery'
@@ -118,10 +121,10 @@ class VelocitySafety:
             # Residual/lateral gait drift matters even during an in-place turn.
             if swept_collision(self.obstacles,hard_radius,self.measured_velocity,horizon):
                 return 0.,0.,'predicted_footprint_collision'
-            if x>0:
+            if x!=0:
                 # Scaled command units are not m/s. Include angular lag and the
                 # measured simulator gait envelope; do not reduce this to x.
-                speed=max(g['prediction_speed_mps'],math.hypot(*self.measured_velocity[:2]))
+                speed=math.copysign(max(g['prediction_speed_mps'],math.hypot(*self.measured_velocity[:2])),x)
                 if any(swept_collision(self.obstacles,min(radius,clearance),v,horizon)
                        for v in ((speed,0.,0.),(speed,0.,z*.6))):
                     return 0.,z,'predicted_footprint_collision'
