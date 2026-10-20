@@ -70,14 +70,67 @@ def test_real_clock_reset_stops_recovery():
     assert step(r,100.)==(0.,0.,'turn_recovery_timeout')
 
 
-def test_repeated_zero_requests_do_not_reset_the_mission_recovery_budget():
+def test_short_zero_requests_reuse_one_episode_without_refreshing_its_deadline():
     r=CorridorTurnRecovery()
     for attempt in range(8):
         assert step(r,float(attempt))[2]=='turn_recovery_settling'
         step(r,attempt+.1,requested=False)
-    assert step(r,8.)==(0.,0.,'turn_recovery_exhausted')
+    assert r.episodes==1
+    assert step(r,8.)[2]=='turn_recovery_settling'
+    assert r.started_at==0.
+    assert step(r,12.1)==(0.,0.,'turn_recovery_timeout')
+
+
+def test_distinct_interrupted_episodes_still_exhaust_the_eight_episode_budget():
+    r=CorridorTurnRecovery()
+    for attempt in range(8):
+        assert step(r,float(attempt)*13)[2]=='turn_recovery_settling'
+        step(r,attempt*13+.1,requested=False)
+    assert r.episodes==8
+    assert step(r,104.)==(0.,0.,'turn_recovery_exhausted')
     r.reset()
-    assert step(r,9.)[2]=='turn_recovery_settling'
+    assert step(r,105.)[2]=='turn_recovery_settling'
+
+
+def test_resume_brakes_again_before_using_fresh_geometry_and_original_time_budget():
+    r=CorridorTurnRecovery();step(r,0.)
+    assert step(r,.81)[2]=='turn_recentering'
+    assert r.filter(0.,0.,'stationary',geometry=geometry(),sensor_radius=.22,range_min=.3,
+                    requested=False,now=.9,current_linear=.02,current_angular=0.,enabled=True)==(0.,0.,'stationary')
+    assert r.phase is None and r.snapshot()['recovery_resume_pending']
+    assert step(r,1.,geometry(-.15,math.pi/2),current_linear=.02)[2]=='turn_recovery_settling'
+    assert step(r,1.1,geometry(-.15,math.pi/2))[2]=='turn_recovery_settling'
+    assert step(r,1.91,geometry(-.15,math.pi/2))[2]=='turn_recentering'
+    assert r.episodes==1 and r.started_at==0.
+    assert step(r,12.1)[2]=='turn_recovery_timeout'
+
+
+def test_clock_reset_during_interruption_does_not_create_a_new_episode():
+    r=CorridorTurnRecovery();step(r,120.)
+    step(r,120.1,requested=False)
+    assert step(r,100.)==(0.,0.,'turn_recovery_timeout')
+    assert r.episodes==1 and r.blocked
+
+
+@pytest.mark.parametrize('width,start,offset',[(1.014,.377,-.0786),(1.56,.893,.288)])
+def test_entrance_ahead_is_not_a_turn_envelope_around_the_body(width,start,offset):
+    r=CorridorTurnRecovery()
+    g=replace(geometry(offset,.19),width_m=width,positive_wall_start_m=start,negative_wall_start_m=None)
+    assert step(r,0.,g)==(0.,.4,'turning')
+    assert r.episodes==0 and r.center_limit is None
+    # Once the same narrow walls actually surround the body, the original
+    # sensor turn-clearance restriction remains in force.
+    if width<1.1:
+        g=replace(g,positive_wall_start_m=-3.)
+        assert step(r,1.,g)==(0.,0.,'turn_sensor_clearance')
+
+
+def test_completed_episode_is_not_reused_for_the_next_recovery():
+    r=CorridorTurnRecovery();step(r,0.);step(r,.81)
+    step(r,1.,geometry(.03));step(r,1.1,geometry(.03))
+    assert step(r,1.91,geometry(.03))[2]=='turn_recovery_complete'
+    assert step(r,2.)[2]=='turn_recovery_settling'
+    assert r.episodes==2
 
 
 def test_axis_representation_flip_preserves_inward_translation():

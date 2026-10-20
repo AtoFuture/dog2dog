@@ -341,8 +341,13 @@ class CorridorTurnRecovery:
         self.episodes=0
         self.center_limit=None
         self.blocked=False
+        self.resume_started_at=None
 
-    def cancel(self):
+    def cancel(self, *, resumable=False):
+        if resumable and self.started_at is not None:
+            self.resume_started_at=self.started_at
+        elif not resumable:
+            self.resume_started_at=None
         self.phase=None
         self.started_at=None
         self.stopped_since=None
@@ -357,10 +362,24 @@ class CorridorTurnRecovery:
 
     def filter(self, linear, angular, mode, *, geometry, sensor_radius, range_min,
                requested, now, current_linear, current_angular, enabled):
-        if not enabled or not requested or geometry is None:
+        if not enabled:
             self.cancel()
             return linear,angular,mode
+        if not requested or geometry is None:
+            # A short Nav2 zero or geometry interruption does not create a
+            # new maneuver. Resumption must brake again and uses the original
+            # deadline, so neither time nor the mission budget is replenished.
+            self.cancel(resumable=True)
+            return linear,angular,mode
         g=geometry
+        if not any(start is not None and start<=-.2 for start in (
+                g.positive_wall_start_m,g.negative_wall_start_m)):
+            # A pair of walls ahead defines an entrance, not a surrounding
+            # turn envelope. Leave nominal motion to Nav2 and the final guard;
+            # do not apply the future passage width to the current body pose.
+            self.center_limit=None
+            self.cancel(resumable=True)
+            return linear,angular,mode
         # A complete rotation must keep the displaced sensor beyond its near
         # clip, with 4cm reserve. Stop/recenter well before that boundary.
         self.center_limit=min(.08,g.width_m/2-sensor_radius-range_min-.04)
@@ -373,11 +392,18 @@ class CorridorTurnRecovery:
         if self.phase is None:
             if not turning or abs(offset)<=self.center_limit:
                 return linear,angular,mode
-            if self.blocked or self.episodes>=8:
+            previous=self.resume_started_at
+            if previous is not None and now-previous < -1e-6:
+                self.blocked=True
+                return 0.,0.,'turn_recovery_timeout'
+            resume=previous is not None and now-previous<=12.
+            if self.blocked or (not resume and self.episodes>=8):
                 return 0.,0.,'turn_recovery_exhausted'
-            self.episodes+=1
+            if not resume:
+                self.episodes+=1
             self.phase='brake_turn'
-            self.started_at=now
+            self.started_at=previous if resume else now
+            self.resume_started_at=None
         elapsed=now-self.started_at
         if elapsed>12. or elapsed < -1e-6:
             self.blocked=True
@@ -406,4 +432,5 @@ class CorridorTurnRecovery:
 
     def snapshot(self):
         return dict(recovery_phase=self.phase,recovery_episodes=self.episodes,
-                    turn_center_limit_m=self.center_limit,recovery_blocked=self.blocked)
+                    turn_center_limit_m=self.center_limit,recovery_blocked=self.blocked,
+                    recovery_resume_pending=self.resume_started_at is not None)

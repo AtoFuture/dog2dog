@@ -1,6 +1,6 @@
 {
   "date": "2026-10-20",
-  "status": "Incomplete: follow-up visual narrow and original warehouse native-aisle trials fail.",
+  "status": "Incomplete: episode accounting and entrance scope fixed; latest headless native aisle still fails traversal and return.",
   "cases": [
     {
       "name": "recenter_v1",
@@ -464,6 +464,165 @@
           }
         }
       ]
+    },
+    {
+      "name": "corridor_episode_native_1",
+      "evidence_directory": ".runtime/corridor_episode_20261020/native_1",
+      "success": false,
+      "home_error_m": 3.3162804776657033,
+      "error": "Runtime entered ESTOP before mission acceptance",
+      "profile_sha256": "b0de87f0d53ea661e4f44fe7a94c3c00e6c167db49bd85647fdc42aab47d84d6",
+      "candidate_selector": "deepseek",
+      "strict_checks": {
+        "main_passed": false,
+        "runtime_exited_cleanly": true,
+        "same_profile_hash": true,
+        "sole_guard_publisher": false,
+        "no_truth_in_runtime": false,
+        "actual_guarded_motion": true,
+        "command_limits": true,
+        "completed_frontiers": false,
+        "real_return_action": false,
+        "home_reference_registered": true,
+        "body_returned_home": false,
+        "return_localization_verified": false,
+        "planning_map_preserves_observations": true,
+        "planning_map_wiring": true,
+        "backend_only_velocity_ramp": false,
+        "single_goal_pipeline": true,
+        "one_effective_configuration": true,
+        "real_deepseek_selection": true,
+        "autonomous_termination": true,
+        "final_standby_zero": false
+      },
+      "recording_complete": true,
+      "recorder_exit_code": 0,
+      "runtime_exit_code": 0,
+      "child_exit_codes": {
+        "guard": 0,
+        "battery": 0,
+        "scaler": 0,
+        "g3": 0,
+        "navigation": 0,
+        "mission_brain": 0,
+        "frontier": 0
+      },
+      "return_statuses": [
+        "waiting_for_server",
+        "goal_request_sent",
+        "accepted",
+        "aborted"
+      ],
+      "scan_sector_missing_samples": 0,
+      "native_aisle": {
+        "world_geometry_modified": false,
+        "world_source_hash_unchanged": true,
+        "aisle_width_m": 1.491979999999998,
+        "aisle_world_x_bounds": [
+          11.00679,
+          12.498769999999999
+        ],
+        "aisle_world_y_bounds": [
+          -4.33798,
+          -0.5636600000000002
+        ],
+        "row_crossing": {
+          "boxes2": true,
+          "boxes7": false
+        },
+        "whole_aisle_traversed": false,
+        "entered_aisle": true,
+        "inside_samples": 2522,
+        "farthest_y_while_in_aisle": -1.7403652771162863,
+        "generic_runtime_success": false,
+        "home_error_m": 3.3162804776657033,
+        "scan_sector_missing_samples": 0,
+        "final_body": {
+          "time_s": 355.9657220840454,
+          "state": "estop",
+          "x": 11.651281639315284,
+          "y": -1.833219991884761,
+          "yaw": -2.282729330182973,
+          "home_distance_m": 3.3162804776657033,
+          "home_yaw_error_rad": -2.2827293224350895,
+          "guard": "mission:estop",
+          "mode": "inactive",
+          "offset_m": -0.08271369296012965
+        },
+        "phase_statistics": {
+          "exploring": {
+            "max_x_m": 12.094294070008152,
+            "max_abs_y_m": 5.200238651362594,
+            "path_length_m": 6.538084016670876,
+            "absolute_rotation_rad": 11.168631736373419
+          },
+          "returning": {
+            "max_x_m": 11.651281843715799,
+            "max_abs_y_m": 1.8332736357404218,
+            "path_length_m": 0.00010044919029245894,
+            "absolute_rotation_rad": 4.412552046151319e-05
+          }
+        },
+        "method": "Closed-bag sampled body truth for acceptance only. Traversal requires continuous centre positions inside the original gap with the 0.4m body radius, spanning both ends plus radius. Generic runtime success alone does not prove the native aisle was crossed."
+      },
+      "recovery_events": [
+        {
+          "time_s": 13.532248675000002,
+          "state": "exploring",
+          "event": {
+            "status": "fault",
+            "state": "EXPLORE",
+            "monotonic_time": 729499.965889686,
+            "stamp_ns": 13616000000,
+            "missing": [
+              "localization_consistency"
+            ],
+            "reason": "stationary_map_drift"
+          }
+        },
+        {
+          "time_s": 13.534423583,
+          "state": "paused",
+          "event": {
+            "status": "paused",
+            "state": "PAUSED",
+            "monotonic_time": 729499.968148658,
+            "stamp_ns": 13616000000,
+            "reason": "health_fault"
+          }
+        },
+        {
+          "time_s": 13.609095193000002,
+          "state": "paused",
+          "event": {
+            "status": "navigation_released",
+            "state": "PAUSED",
+            "monotonic_time": 729500.042849753,
+            "stamp_ns": 13679000000
+          }
+        },
+        {
+          "time_s": 16.934424281000002,
+          "state": "exploring",
+          "event": {
+            "status": "resumed",
+            "state": "EXPLORE",
+            "monotonic_time": 729503.368030837,
+            "stamp_ns": 15350000000,
+            "paused_seconds": 3.399859720026143
+          }
+        }
+      ],
+      "source_audit": {
+        "unchanged": true,
+        "changed": []
+      },
+      "headless": true,
+      "max_episodes_by_state": {
+        "exploring": 3,
+        "returning": 3
+      },
+      "trial_exit_code": 1
     }
   ],
   "regression": {
@@ -483,5 +642,15 @@
     "A generic runtime pass alone does not prove traversal of the original warehouse aisle.",
     "Failure-branch missing identity evidence is not proof of duplicate publishers or runtime truth use.",
     "Full bags and generated per-run tools remain local under ignored .runtime/."
-  ]
+  ],
+  "episode_fix_regression": {
+    "unique_checks": 618,
+    "full_run_passed": 618,
+    "full_run_failed": 0,
+    "full_log": ".runtime/corridor_episode_20261020/full-tests.log",
+    "targeted_checks_passed": 59,
+    "targeted_log": ".runtime/corridor_episode_20261020/target-tests.log",
+    "extended_entrance_dds_check_passed": true,
+    "extended_entrance_dds_log": ".runtime/corridor_episode_20261020/entrance-transport-tests.log"
+  }
 }
