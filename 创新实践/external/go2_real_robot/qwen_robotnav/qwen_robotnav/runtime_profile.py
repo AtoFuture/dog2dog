@@ -13,7 +13,7 @@ KEYS={
  'frames':{'map','odom','base'},
  'guard':set('clearance_margin_m prediction_horizon_s prediction_speed_mps rate_hz command_timeout_s sensor_timeout_s battery_timeout_s mission_timeout_s stamp_future_tolerance_s linear_max angular_max front_half_angle_rad front_clearance_m max_tilt_rad'.split()),
  'scaler':set('linear_scale linear_max linear_min nav_deadband angular_scale angular_max linear_accel linear_decel angular_accel angular_decel ramp_rate cmd_timeout'.split()),
- 'navigation':{'robot_radius_m','inflation_radius_m','desired_linear_velocity_mps'},
+ 'navigation':{'robot_radius_m','inflation_radius_m','desired_linear_velocity_mps','goal_turn_clearance_m'},
  'mission':set('heartbeat_period_s recovery_stale_s recovery_stable_s recovery_timeout_s low_battery_threshold home_x home_y home_yaw'.split()),
  'explorer':set('max_bootstrap_scans require_path_clearance tick_period_s min_goal_distance_m task_completion_enabled exploration_budget_s coverage_stall_s coverage_min_gain_m2 candidate_wait_s no_frontier_confirm_s max_region_failures max_consecutive_failures'.split()),
  'decision':set('candidate_selector mission_instruction brain_base_url brain_model brain_timeout brain_max_candidates'.split()),
@@ -55,6 +55,7 @@ def validate_profile(value):
     for section,keys in sections.items():
         data=value[section]
         required = keys-OPTIONAL_CORRIDOR_KEYS if section=='corridor' else keys
+        if section=='navigation':required=keys-{'goal_turn_clearance_m'}
         if not isinstance(data,dict) or not required <= set(data) <= keys:raise ValueError('Unknown or missing '+section+' fields')
         for key,item in data.items():
             if section in ('corridor','return_localization') and key in ('enabled','steering_enabled','scan_match_required'):
@@ -75,7 +76,9 @@ def validate_profile(value):
                 if section=='topics' and not item.startswith('/'):raise ValueError('Use absolute topics')
             else:
                 if isinstance(item,bool) or not isinstance(item,(int,float)) or not math.isfinite(item):raise ValueError('Invalid numeric '+key)
-                if not key.startswith('home_') and item<=0:raise ValueError('Expected positive '+key)
+                if (not key.startswith('home_') and item<=0
+                        and not (section=='navigation' and key=='goal_turn_clearance_m' and item==0)):
+                    raise ValueError('Expected positive '+key)
     t,g,s,n,m=(value[k] for k in ('topics','guard','scaler','navigation','mission'))
     if len(set(t.values()))!=len(t):raise ValueError('Runtime topics must be distinct')
     if len(set(value['frames'].values()))!=3:raise ValueError('Runtime frames must be distinct')
@@ -90,6 +93,8 @@ def validate_profile(value):
     if not .30<=n['desired_linear_velocity_mps']<=.34 or not s['linear_min']<=n['desired_linear_velocity_mps']*s['linear_scale']<=s['linear_max']:
         raise ValueError('Uncalibrated simulator gait velocity range or scale')
     if n['inflation_radius_m']<n['robot_radius_m'] or n['robot_radius_m']<.4:raise ValueError('Invalid navigation clearance')
+    if n.get('goal_turn_clearance_m',0)>0 and n['goal_turn_clearance_m']<n['robot_radius_m']+g['clearance_margin_m']:
+        raise ValueError('Turning disk must include the body and clearance margin')
     if not 0<value['battery_model']['initial_percentage']<=1:raise ValueError('Invalid simulated initial battery')
     if t['action']!='/robot1/navigate_to_pose':raise ValueError('This backend requires the robot1 Nav2 action')
     if 'corridor' in value:
@@ -145,6 +150,7 @@ def ros_parameters(p, runtime_root=None):
         recovery_stable_sec=m['recovery_stable_s'],recovery_timeout_sec=m['recovery_timeout_s'],
         low_battery_threshold=m['low_battery_threshold'],home_frame=f['map'],home_x=m['home_x'],home_y=m['home_y'],home_yaw=m['home_yaw'])},
       'vision_explorer':{'ros__parameters':dict(common,require_mission_state=True,use_mission_brain=d['candidate_selector']=='deepseek',
+        goal_turn_clearance_m=float(p['navigation'].get('goal_turn_clearance_m',0.)),
         mission_instruction=d['mission_instruction'],brain_timeout_s=d['brain_timeout'],brain_max_candidates=d['brain_max_candidates'],
         goal_obstacle_clearance_m=max(p['navigation']['inflation_radius_m'],p['navigation']['robot_radius_m']+p['guard']['clearance_margin_m']+p['guard']['prediction_speed_mps']*p['guard']['prediction_horizon_s']),map_topic=t['map'],planning_map_topic=t['planning_map'],planning_map_padding_m=max(1.,p['navigation']['robot_radius_m']+p['navigation']['inflation_radius_m']),mission_state_topic=t['mission'],nav_action=t['action'],map_frame=f['map'],robot_frame=f['base'],**p['explorer'])},
     }
@@ -223,7 +229,7 @@ def configure_navigation(root,p):
         # Frontier goals may ignore final yaw. RETURN must satisfy the same
         # orientation contract as its subsequent independent home verifier.
         controller['return_goal_checker']=dict(
-            plugin='nav2_controller::SimpleGoalChecker',stateful=True,
+            plugin='nav2_controller::SimpleGoalChecker',stateful=False,
             xy_goal_tolerance=.25,
             yaw_goal_tolerance=min(.25,p['return_localization']['yaw_tolerance_rad']))
         if 'return_goal_checker' not in controller['goal_checker_plugins']:
@@ -243,6 +249,7 @@ def configure_navigation(root,p):
         # Align sooner on RETURN, using another plugin in the same server and
         # preserving the frontier controller, gait speed and home tolerances.
         controller['ReturnFollowPath']=copy.deepcopy(follow)
+        controller['ReturnFollowPath']['plugin']='qwen_robotnav_progress::ReturnController'
         controller['ReturnFollowPath']['rotate_to_heading_min_angle']=.5
         if 'ReturnFollowPath' not in controller['controller_plugins']:
             controller['controller_plugins'].append('ReturnFollowPath')

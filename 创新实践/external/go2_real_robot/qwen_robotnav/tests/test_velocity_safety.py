@@ -89,6 +89,7 @@ def test_generated_nav2_uses_profile_geometry_and_speed(tmp_path):
     assert controller['general_goal_checker']['yaw_goal_tolerance']==6.28
     assert controller['general_goal_checker']['xy_goal_tolerance']==.25
     assert controller['return_goal_checker']['xy_goal_tolerance']==.25
+    assert controller['return_goal_checker']['stateful'] is False
     assert controller['return_goal_checker']['yaw_goal_tolerance']==.25
     import xml.etree.ElementTree as ET
     assert {follow.get('goal_checker_id') for follow in ET.parse(tmp_path/'return_bt.xml').findall('.//FollowPath')}=={'return_goal_checker'}
@@ -101,7 +102,13 @@ def test_generated_nav2_uses_profile_geometry_and_speed(tmp_path):
     assert controller['FollowPath']['regulated_linear_scaling_min_speed']==.30
     assert controller['FollowPath']['max_angular_accel']==3.2
     assert controller['controller_plugins'].count('ReturnFollowPath')==1
-    assert controller['ReturnFollowPath']==dict(controller['FollowPath'],rotate_to_heading_min_angle=.5)
+    assert controller['ReturnFollowPath']==dict(controller['FollowPath'],rotate_to_heading_min_angle=.5,
+        plugin='qwen_robotnav_progress::ReturnController')
+    assert ros_parameters(p)['vision_explorer']['ros__parameters']['goal_turn_clearance_m']==0.
+    p['navigation']['goal_turn_clearance_m']=.75
+    assert ros_parameters(p)['vision_explorer']['ros__parameters']['goal_turn_clearance_m']==.75
+    p['navigation']['goal_turn_clearance_m']=1
+    assert type(ros_parameters(p)['vision_explorer']['ros__parameters']['goal_turn_clearance_m']) is float
     assert config['global_costmap']['global_costmap']['ros__parameters']['static_layer']['map_topic']==p['topics']['planning_map']
     assert ros_parameters(p)['vision_explorer']['ros__parameters']['planning_map_topic']==p['topics']['planning_map']
     assert ros_parameters(p)['vision_explorer']['ros__parameters']['goal_obstacle_clearance_m']==pytest.approx(.7)

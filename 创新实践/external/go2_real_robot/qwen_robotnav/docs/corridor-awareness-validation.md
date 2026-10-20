@@ -307,3 +307,6 @@ RETURN 的来源为 `exploration:candidates_unavailable`，活动探索约 138.3
 本节三轮共 7 次真实选择、0 次回退，21 个运行子进程及 3 个记录器均正常退出 0，
 录包全部正常关闭，测试期间 193 个运行文件哈希未变化。
 汇总为 `.runtime/return_alignment_20261020/verification-index.json`。
+
+后续已实现[返航阶段锁定与可选掉头空间准入](return-phase-and-turn-admission.md)，
+该记录区分控制修正、转向观测、保守拒绝深入和真正完成探索，避免混用验收结论。

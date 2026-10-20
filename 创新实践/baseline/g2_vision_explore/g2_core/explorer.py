@@ -167,6 +167,13 @@ class ExplorerParams:
     goal_obstacle_clearance_m: float = 0.0
     """Formal endpoint standoff for the execution envelope; zero preserves historical behavior."""
 
+    goal_turn_clearance_m: float = 0.0
+    """Optional known-free endpoint disk for returning without reverse gait.
+
+    This is endpoint admission, not a guarantee that every path bend is drivable.
+    Zero preserves archived experiments and sparse-view startup scans.
+    """
+
     max_bootstrap_scans: int = 0
     """Bounded in-place scan goals when sparse initial rays leave no route; zero preserves historical behavior."""
 
@@ -334,6 +341,9 @@ class GoalSelector:
         p = self.params
         if not math.isfinite(p.goal_obstacle_clearance_m) or p.goal_obstacle_clearance_m<0:
             raise ValueError('goal_obstacle_clearance_m must be finite and nonnegative')
+        if (not math.isfinite(p.goal_turn_clearance_m) or p.goal_turn_clearance_m<0
+                or (p.goal_turn_clearance_m>0 and not p.require_path_clearance)):
+            raise ValueError('goal_turn_clearance_m requires finite nonnegative radius and path checking')
         if type(p.max_bootstrap_scans) is not int or not 0<=p.max_bootstrap_scans<=3:
             raise ValueError('max_bootstrap_scans must be 0..3')
         if type(p.require_path_clearance) is not bool:
@@ -552,6 +562,10 @@ class GoalSelector:
         # Endpoint clearance alone allows paths through lidar-visible slits.
         clearance = grid.clearance_m()
         valid_goal = grid.traversable & (clearance >= p.safety_radius_m)
+        if p.goal_turn_clearance_m>0:
+            # clearance_m treats unknown space and map edges as blocked.
+            # A lidar-visible endpoint is not sufficient turning evidence.
+            valid_goal &= clearance >= p.goal_turn_clearance_m
         path_free = self._path_free(grid, start, clearance)
         if p.require_path_clearance and p.goal_obstacle_clearance_m>0:
             observed=GridMap(np.where(grid.occupied,100,0),grid.resolution,grid.origin)
@@ -564,7 +578,8 @@ class GoalSelector:
 
         uf_map = self._unknown_fraction_map(grid)
 
-        pullback_m=max(p.goal_pullback_m,p.goal_obstacle_clearance_m if p.require_path_clearance else 0.)
+        pullback_m=max(p.goal_pullback_m,p.goal_turn_clearance_m,
+                       p.goal_obstacle_clearance_m if p.require_path_clearance else 0.)
         pullback_cells = max(0, int(math.ceil(pullback_m / grid.resolution) if p.require_path_clearance else round(pullback_m / grid.resolution)))
         kernel = np.ones((2 * pullback_cells + 1, 2 * pullback_cells + 1), np.uint8)
 
@@ -690,6 +705,9 @@ class GoalSelector:
             and math.hypot(goal.x-robot_xy[0],goal.y-robot_xy[1]) < self.params.min_goal_distance_m):
             return False
         if not grid.traversable[row, col] or grid.clearance_m()[row, col] < self.params.safety_radius_m:
+            return False
+        if (goal.purpose=='frontier' and self.params.goal_turn_clearance_m>0
+                and grid.clearance_m()[row,col]<self.params.goal_turn_clearance_m):
             return False
         if self.params.require_path_clearance and goal.purpose=='frontier' and self.params.goal_obstacle_clearance_m>0:
             observed=GridMap(np.where(grid.occupied,100,0),grid.resolution,grid.origin)

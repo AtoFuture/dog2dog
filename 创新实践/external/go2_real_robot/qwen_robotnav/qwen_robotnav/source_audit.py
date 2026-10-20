@@ -11,7 +11,8 @@ def runtime_sources(repository):
     result = {}
     for root in roots:
         for path in root.rglob('*'):
-            if (not path.is_file() or path.suffix not in ('.py','.sh','.yaml','.xml','.sdf')
+            if (not path.is_file() or (path.suffix not in ('.py','.sh','.yaml','.xml','.sdf','.cpp','.hpp')
+                    and path.name != 'CMakeLists.txt')
                     or any(part in ('test','tests','__pycache__','.venv','build','install','log')
                            for part in path.relative_to(root).parts)):
                 continue

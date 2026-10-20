@@ -203,7 +203,7 @@ class VisionExplorer(Node):
         self._selection_frame_id = None
         self._sm = ExplorerStateMachine()
         # 安全与增益参数沿用内核默认值，物理目标的最小距离由 ROS 参数指定。
-        self._selector = GoalSelector(ExplorerParams(min_goal_distance_m=p['min_goal_distance_m'], require_path_clearance=p['require_path_clearance'],max_bootstrap_scans=p['max_bootstrap_scans'],goal_obstacle_clearance_m=p['goal_obstacle_clearance_m']))
+        self._selector = GoalSelector(ExplorerParams(min_goal_distance_m=p['min_goal_distance_m'], require_path_clearance=p['require_path_clearance'],max_bootstrap_scans=p['max_bootstrap_scans'],goal_obstacle_clearance_m=p['goal_obstacle_clearance_m'],goal_turn_clearance_m=p['goal_turn_clearance_m']))
 
         self._grid: GridMap | None = None
         self._grid_stamp: float = -math.inf
@@ -275,6 +275,7 @@ class VisionExplorer(Node):
             ("min_goal_distance_m", 0.5),
             ("require_path_clearance", False),
             ("goal_obstacle_clearance_m", 0.0),
+            ("goal_turn_clearance_m", 0.0),
             ("planning_map_topic", ""),
             ("planning_map_padding_m", 1.0),
             ("max_bootstrap_scans", 0),
@@ -295,7 +296,7 @@ class VisionExplorer(Node):
         return {n: self.get_parameter(n).value for n in (
             "map_topic", "mission_state_topic", "nav_action", "tick_period_s",
             "max_nav_timeout_s", "robot_frame", "map_frame",
-            "min_frontier_area_m2", "require_mission_state", "map_timeout_s", "min_goal_distance_m", "require_path_clearance", "max_bootstrap_scans", "scan_bt_path", "planning_map_topic", "planning_map_padding_m", "goal_obstacle_clearance_m",
+            "min_frontier_area_m2", "require_mission_state", "map_timeout_s", "min_goal_distance_m", "require_path_clearance", "max_bootstrap_scans", "scan_bt_path", "planning_map_topic", "planning_map_padding_m", "goal_obstacle_clearance_m", "goal_turn_clearance_m",
             "use_mission_brain", "brain_timeout_s", "brain_max_candidates", "mission_instruction",
             "active_observation", "track_observation", "observation_bt_path", "task_completion_enabled",
             *ProgressLimits.__dataclass_fields__)}
@@ -635,7 +636,8 @@ class VisionExplorer(Node):
 
     def _track_select_failure(self) -> None:
         status = self._last_select_status
-        self._event('search_unavailable',reason=status.value if status is not None else 'map_or_pose_unavailable')
+        self._event('search_unavailable',reason=status.value if status is not None else 'map_or_pose_unavailable',
+                    required_goal_turn_clearance_m=self._selector.params.goal_turn_clearance_m)
         if status is None:
             self.get_logger().debug("本轮没发点（无地图）")
         elif status is SelectStatus.SMALL_FRONTIERS:

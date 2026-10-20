@@ -1,0 +1,5 @@
+<library path="qwen_robotnav_return">
+  <class name="qwen_robotnav_progress::ReturnController" type="qwen_robotnav_progress::ReturnController" base_class_type="nav2_core::Controller">
+    <description>RPP approach with latched final RETURN alignment and position hysteresis.</description>
+  </class>
+</library>

@@ -65,3 +65,10 @@ def test_source_manifest_detects_additions_deletions_and_changes(tmp_path):
     assert len(changed_sources(before,after))==2
     first.unlink()
     assert any(name.endswith('state.py') for name in changed_sources(after,runtime_sources(tmp_path)))
+    # Controller behavior now depends on compiled sources and build settings.
+    for filename in ('return_controller.cpp','return_phase.hpp','CMakeLists.txt'):
+        (root/filename).write_text('before')
+    before=runtime_sources(tmp_path)
+    for filename in ('return_controller.cpp','return_phase.hpp','CMakeLists.txt'):
+        (root/filename).write_text('after')
+    assert len(changed_sources(before,runtime_sources(tmp_path)))==3
