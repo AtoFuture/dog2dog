@@ -13,7 +13,7 @@ KEYS={
  'frames':{'map','odom','base'},
  'guard':set('clearance_margin_m prediction_horizon_s prediction_speed_mps rate_hz command_timeout_s sensor_timeout_s battery_timeout_s mission_timeout_s stamp_future_tolerance_s linear_max angular_max front_half_angle_rad front_clearance_m max_tilt_rad'.split()),
  'scaler':set('linear_scale linear_max linear_min nav_deadband angular_scale angular_max linear_accel linear_decel angular_accel angular_decel ramp_rate cmd_timeout'.split()),
- 'navigation':{'robot_radius_m','inflation_radius_m','desired_linear_velocity_mps','goal_turn_clearance_m'},
+ 'navigation':{'robot_radius_m','inflation_radius_m','desired_linear_velocity_mps','goal_turn_clearance_m','return_turn_handoff_enabled'},
  'mission':set('heartbeat_period_s recovery_stale_s recovery_stable_s recovery_timeout_s low_battery_threshold home_x home_y home_yaw'.split()),
  'explorer':set('max_bootstrap_scans require_path_clearance tick_period_s min_goal_distance_m task_completion_enabled exploration_budget_s coverage_stall_s coverage_min_gain_m2 candidate_wait_s no_frontier_confirm_s max_region_failures max_consecutive_failures'.split()),
  'decision':set('candidate_selector mission_instruction brain_base_url brain_model brain_timeout brain_max_candidates'.split()),
@@ -55,9 +55,12 @@ def validate_profile(value):
     for section,keys in sections.items():
         data=value[section]
         required = keys-OPTIONAL_CORRIDOR_KEYS if section=='corridor' else keys
-        if section=='navigation':required=keys-{'goal_turn_clearance_m'}
+        if section=='navigation':required=keys-{'goal_turn_clearance_m','return_turn_handoff_enabled'}
         if not isinstance(data,dict) or not required <= set(data) <= keys:raise ValueError('Unknown or missing '+section+' fields')
         for key,item in data.items():
+            if section=='navigation' and key=='return_turn_handoff_enabled':
+                if type(item) is not bool:raise ValueError('Expected boolean navigation '+key)
+                continue
             if section in ('corridor','return_localization') and key in ('enabled','steering_enabled','scan_match_required','turn_settle_enabled','reversal_turn_enabled'):
                 if type(item) is not bool:raise ValueError('Expected boolean '+section+' '+key)
                 continue
@@ -251,6 +254,7 @@ def configure_navigation(root,p):
         controller['ReturnFollowPath']=copy.deepcopy(follow)
         controller['ReturnFollowPath']['plugin']='qwen_robotnav_progress::ReturnController'
         controller['ReturnFollowPath']['rotate_to_heading_min_angle']=.5
+        controller['ReturnFollowPath']['terminal_turn_handoff_enabled']=n.get('return_turn_handoff_enabled',False)
         if 'ReturnFollowPath' not in controller['controller_plugins']:
             controller['controller_plugins'].append('ReturnFollowPath')
     config.pop('velocity_smoother',None)

@@ -65,7 +65,9 @@ def test_resolved_configuration_connects_one_velocity_chain():
     lambda p:p['topics'].update(guarded_input=p['topics']['actuator_command']),lambda p:p['guard'].update(command_timeout_s=float('nan')),
     lambda p:p['mission'].update(heartbeat_period_s=1.),lambda p:p.update(unknown=True),lambda p:p['navigation'].update(desired_linear_velocity_mps=.15),
     lambda p:p['navigation'].update(desired_linear_velocity_mps=.5),lambda p:p['scaler'].update(linear_scale=.01),
-    lambda p:p['scaler'].update(linear_scale=.2)])
+    lambda p:p['scaler'].update(linear_scale=.2),
+    lambda p:p['navigation'].update(return_turn_handoff_enabled=1),
+    lambda p:p['navigation'].update(return_turn_handoff_enabled='true')])
 def test_unmeasured_or_inconsistent_profiles_are_rejected(tmp_path,mutation):
     import yaml
     p=load_profile(PROFILE);mutation(p);path=tmp_path/'bad.yaml';path.write_text(yaml.safe_dump(p))
@@ -103,7 +105,7 @@ def test_generated_nav2_uses_profile_geometry_and_speed(tmp_path):
     assert controller['FollowPath']['max_angular_accel']==3.2
     assert controller['controller_plugins'].count('ReturnFollowPath')==1
     assert controller['ReturnFollowPath']==dict(controller['FollowPath'],rotate_to_heading_min_angle=.5,
-        plugin='qwen_robotnav_progress::ReturnController')
+        plugin='qwen_robotnav_progress::ReturnController',terminal_turn_handoff_enabled=False)
     assert ros_parameters(p)['vision_explorer']['ros__parameters']['goal_turn_clearance_m']==0.
     p['navigation']['goal_turn_clearance_m']=.75
     assert ros_parameters(p)['vision_explorer']['ros__parameters']['goal_turn_clearance_m']==.75
@@ -127,6 +129,12 @@ def test_generated_nav2_uses_profile_geometry_and_speed(tmp_path):
     assert 'velocity_smoother' not in config
     assert direct_navigation_commands(source,p['topics']['nav_command'])==source
     assert 'cmd_vel_nav' not in source
+    p['navigation']['return_turn_handoff_enabled']=True
+    configure_navigation(tmp_path,p)
+    explicit=yaml.safe_load((tmp_path/'nav2.yaml').read_text())['controller_server']['ros__parameters']
+    assert explicit['ReturnFollowPath']['terminal_turn_handoff_enabled'] is True
+    assert explicit['return_goal_checker']==controller['return_goal_checker']
+    assert explicit['FollowPath']==controller['FollowPath']
 
 
 

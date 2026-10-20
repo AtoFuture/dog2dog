@@ -9,6 +9,12 @@ int main() {
   require(phase.update(.5, 2., .25, .25) == S::Approach);
   require(phase.update(.24, 2., .25, .25) == S::Approach);
   require(phase.update(.12, 2., .25, .25) == S::Approach);
+  require(phase.update(.13, 2., .25, .25, true) == S::Approach);
+  // A near lateral endpoint must finish yaw, rather than keep chasing its
+  // path bearing under corridor guidance. The actual success disk is .25.
+  require(phase.update(.12, 2., .25, .25, true) == S::Align);
+  require(phase.update(.20, 1., .25, .25, false) == S::Align);
+  phase.reset();
   require(phase.update(.04, 2., .25, .25) == S::Align);
   // Noise around the entry threshold must not switch back to path heading.
   for (double d : {.26, .23, .29, .24, .34}) {
@@ -29,4 +35,10 @@ int main() {
   try {phase.update(std::numeric_limits<double>::quiet_NaN(), .1, .25, .25);}
   catch (const std::invalid_argument &) {rejected = true;}
   require(rejected);
+  // Handoff scales with the real checker; it cannot create a fixed larger
+  // acceptance radius for another profile.
+  phase.reset();
+  require(phase.update(.06, 1., .10, .25, true) == S::Approach);
+  require(phase.update(.04, 1., .10, .25, true) == S::Align);
+  require(phase.update(.11, .1, .10, .25, true) == S::Approach);
 }
