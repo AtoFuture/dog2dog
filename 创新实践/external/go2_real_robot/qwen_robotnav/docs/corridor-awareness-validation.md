@@ -268,3 +268,42 @@ RETURN 的来源为 `exploration:candidates_unavailable`，活动探索约 138.3
 `source_sha256.json`、两轮 `summary.json` 及各自 `trial/runtime_validation.json`。
 本次只补验两类链路，没有重跑六组 DeepSeek 静态矩阵；上一节本地矩阵的 3/6 失败结果保留。
 窄通道掉头侧滑和近目标绕圈仍待修复，这两次通过不代表它们已解决。
+
+### 2026-10-20：返航提前对准的控制修正
+
+针对近目标时固定前进速度与角速度饱和造成持续绕行的风险，在原 `controller_server`
+增加 `ReturnFollowPath` 插件配置，复制正常 `FollowPath` 的全部参数，
+仅将 `rotate_to_heading_min_angle` 从 π/2 调整为 0.5rad。
+生成的 `return_bt.xml` 显式选择它及既有 `return_goal_checker`；
+探索和扫描仍选择原 `FollowPath`，返航定位保护关闭的旧配置不启用新插件。
+两个插件仍属于同一个 Nav2 控制节点，沿用同一 action、目标交接和最终执行器链。
+这项修正使返航更早停止前进、先对准路径，不降低固定步态速度、归位精度或安全阈值。
+
+速度安全回归 41 项通过，导航与 G3 全量回归 **562 项通过**。
+生成配置回归同时检查返航/探索行为树选择、插件注册及两份控制参数只有旋转阈值不同。
+实测源码清单位于 `.runtime/return_alignment_20261020/source_sha256.json`。
+
+在同一固定代码及静态 profile 下，真实 DeepSeek 不可达场景重复两次均通过 29 项严格检查，
+自主结束原因均为 `candidates_unavailable`，不是已穷尽全图：
+
+| 案例 | 身体归位误差 | DeepSeek / 回退 | 身体墙距几何代理最小值 |
+| --- | --- | --- | --- |
+| unreachable_1 | 0.252m | 2 / 0 | 0.840m |
+| unreachable_2 | 0.228m | 2 / 0 | 0.835m |
+
+首轮 RETURN action 接受至 Nav2 成功约 87.4s，第二轮约 22.6s，仍存在明显耗时波动。
+首轮最后约 60s 的身体行程 2.09m、累计绝对转角 14.05rad，轨迹显示接近起点后的
+反复原地对准；因此不能表述为“近目标问题彻底解决”。第二轮整个返航采样段约 27.1s，
+身体行程 2.50m、净位移 2.18m、累计绝对转角 6.10rad。
+这些离线真值统计只用于诊断，不输入运行时控制；与历史失败轮的选点和轨迹不同，
+不能据此给出严格配对的性能提升比例。
+
+两轮证据为该目录下各自的 `summary.json`、`trial/runtime_validation.json`、
+正常闭包后生成的 `trial/motion_diagnostics.json` 和 `unreachable_*-motion-summary.json`。
+没有重跑完整六组静态矩阵，窄通道掉头侧滑仍未修复。
+
+随后普通仓库两目标兼容性复测也通过全部 19 项检查，身体归位误差 **0.095m**，
+3 次真实 DeepSeek 选择、0 次回退。该轮由验证器请求 RETURN，不属于自主结束证明。
+本节三轮共 7 次真实选择、0 次回退，21 个运行子进程及 3 个记录器均正常退出 0，
+录包全部正常关闭，测试期间 193 个运行文件哈希未变化。
+汇总为 `.runtime/return_alignment_20261020/verification-index.json`。

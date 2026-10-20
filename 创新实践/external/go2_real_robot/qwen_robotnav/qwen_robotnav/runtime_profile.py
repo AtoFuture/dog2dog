@@ -1,5 +1,6 @@
 """One validated configuration for the Gazebo navigation runtime."""
 import ast
+import copy
 import hashlib
 import json
 import math
@@ -230,12 +231,21 @@ def configure_navigation(root,p):
         tree=ET.parse(root/'nav2_go2_bt.xml')
         for follow_path in tree.findall('.//FollowPath'):
             follow_path.set('goal_checker_id','return_goal_checker')
+            follow_path.set('controller_id','ReturnFollowPath')
         tree.write(root/'return_bt.xml',encoding='utf-8',xml_declaration=True)
     follow=controller['FollowPath']
     follow.update(lookahead_dist=.35,min_lookahead_dist=.25,max_lookahead_dist=.5,
                   rotate_to_heading_min_angle=math.pi/2,rotate_to_heading_angular_vel=.4,max_angular_accel=3.2,
                   regulated_linear_scaling_min_speed=n['desired_linear_velocity_mps'],
                   min_approach_linear_velocity=n['desired_linear_velocity_mps'])
+    if p.get('return_localization',{}).get('enabled',False):
+        # A fixed-speed approach with saturated yaw can orbit a nearby goal.
+        # Align sooner on RETURN, using another plugin in the same server and
+        # preserving the frontier controller, gait speed and home tolerances.
+        controller['ReturnFollowPath']=copy.deepcopy(follow)
+        controller['ReturnFollowPath']['rotate_to_heading_min_angle']=.5
+        if 'ReturnFollowPath' not in controller['controller_plugins']:
+            controller['controller_plugins'].append('ReturnFollowPath')
     config.pop('velocity_smoother',None)
     planner=config['planner_server']['ros__parameters']['GridBased']
     planner.update(tolerance=.05,allow_unknown=False)
