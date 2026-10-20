@@ -125,6 +125,7 @@ class CmdVelScaler(Node):
             self._corridor_recovery = CorridorTurnRecovery()
             self._corridor_sensor_radius = math.inf
             self._corridor_range_min = math.inf
+            self._corridor_points = None
             self._corridor_scan_at = -math.inf
             self._corridor_mission_at = -math.inf
             self._corridor_mission = 'standby'
@@ -279,10 +280,12 @@ class CmdVelScaler(Node):
                 raise ValueError('incomplete scan')
             stamp = msg.header.stamp.sec*10**9 + msg.header.stamp.nanosec
             if self._corridor.observe(points, stamp):
+                self._corridor_points = points
                 self._corridor_scan_at = time.monotonic()
                 self._corridor_sensor_radius = math.hypot(*sensor[:2])
                 self._corridor_range_min = msg.range_min
         except Exception:
+            self._corridor_points = None
             self._corridor_scan_at = -math.inf
             self._corridor.geometry = self._corridor.previous = None
             self._corridor.confirmations = 0
@@ -312,7 +315,10 @@ class CmdVelScaler(Node):
             geometry=self._corridor.geometry,sensor_radius=self._corridor_sensor_radius,
             range_min=self._corridor_range_min,requested=abs(raw_x)+abs(raw_z)>1e-6,
             now=self.get_clock().now().nanoseconds*1e-9,
-            current_linear=self._current_lx,current_angular=self._current_az,enabled=recovery_enabled)
+            current_linear=self._current_lx,current_angular=self._current_az,enabled=recovery_enabled,
+            escape_points=self._corridor_points,
+            escape_settings=self._corridor_config.get('clearance_escape'),
+            scan_age=max(0.,now-self._corridor_scan_at))
         z, settling = self._corridor_turn_settler.filter(
             x, z, self._current_lx, self._current_az,
             self.get_clock().now().nanoseconds * 1e-9,

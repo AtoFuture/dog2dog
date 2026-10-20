@@ -133,6 +133,73 @@ def test_completed_episode_is_not_reused_for_the_next_recovery():
     assert r.episodes==2
 
 
+def escape_args(points):
+    p=load_profile(PROFILE)
+    return dict(escape_points=points,escape_settings=dict(robot_radius_m=.4,
+        **{k:p['guard'][k] for k in ('clearance_margin_m','prediction_speed_mps','prediction_horizon_s')}))
+
+
+def test_forward_escape_avoids_turning_toward_a_central_obstacle_and_stops_after_clearance_gain():
+    r=CorridorTurnRecovery();g=geometry(.08,math.pi/2)
+    kw=escape_args(((-.435,-.04),(-.5,.1),(1.5,0.)))
+    assert step(r,0.,g,**kw)[2]=='turn_recovery_settling'
+    assert step(r,.79,g,**kw)[0]==0.
+    assert step(r,.81,g,**kw)==(.32,0.,'turn_clearance_escape')
+    # The pair of outer walls asks for the opposite heading, but the full
+    # scan proves a forward escape. No turn is requested during the escape.
+    assert step(r,1.,g,**kw)==(.32,0.,'turn_clearance_escape')
+    clear=escape_args(((-.56,-.04),(-.6,.1),(1.5,0.)))
+    assert step(r,1.1,g,**clear)==(0.,0.,'turn_recovery_settling')
+    step(r,1.2,g,**clear)
+    assert step(r,2.01,g,**clear)[2]=='turn_recovery_complete'
+    assert r.episodes==1
+
+
+@pytest.mark.parametrize('points',[
+    ((.435,0.),), ((-.415,0.),), ((-.435,0.),(.6,0.)),
+    tuple((i*.025,.435) for i in range(-60,61)),
+])
+def test_escape_requires_outward_swept_clearance_and_physical_body_margin(points):
+    r=CorridorTurnRecovery();kw=escape_args(points);g=geometry(.15,math.pi/2)
+    step(r,0.,g,**kw)
+    assert step(r,.81,g,**kw)[2]=='turn_recovery_orienting'
+
+
+def test_escape_keeps_original_deadline_and_cannot_restart_from_zero_or_missing_geometry():
+    r=CorridorTurnRecovery();kw=escape_args(((-.435,0.),(2.,0.)))
+    step(r,0.,**kw);assert step(r,.81,**kw)[2]=='turn_clearance_escape'
+    assert r.filter(0.,0.,'stationary',geometry=geometry(),sensor_radius=.22,range_min=.3,
+        requested=False,now=1.,current_linear=.024,current_angular=0.,enabled=True,**kw)==(0.,0.,'stationary')
+    assert step(r,2.,**kw)[2]=='turn_recovery_settling'
+    assert step(r,12.1,**kw)[2]=='turn_recovery_timeout'
+    other=CorridorTurnRecovery()
+    assert other.filter(0.,.4,'unconfirmed',geometry=None,sensor_radius=.22,range_min=.3,
+        requested=True,now=0.,current_linear=0.,current_angular=0.,enabled=True,**kw)==(0.,.4,'unconfirmed')
+
+
+def test_final_guard_still_rejects_escape_when_real_residual_velocity_moves_toward_obstacle():
+    points=tuple((-.435,i*.025)for i in range(-60,61))
+    r=CorridorTurnRecovery();kw=escape_args(points)
+    step(r,0.,**kw)
+    assert step(r,.81,**kw)==(.32,0.,'turn_clearance_escape')
+    guard=ready(points);guard.measured_velocity=(-.05,0.,0.)
+    assert guard.output(10.1)==(0.,0.,'footprint_clearance')
+
+
+def test_virtual_wall_continuations_do_not_override_measured_full_rotation_space():
+    r=CorridorTurnRecovery()
+    g=replace(geometry(.001,.2),width_m=1.016)
+    points=((.508,.32),(.508,-.32),(-.508,.32),(-.508,-.32))
+    assert step(r,0.,g,escape_points=points)==(0.,.4,'turning')
+    assert r.episodes==0
+
+
+@pytest.mark.parametrize('points',[None,((.54,0.),),((.56-1e-5,0.),)])
+def test_measured_rotation_still_requires_sensor_offset_clip_and_original_reserve(points):
+    r=CorridorTurnRecovery();g=replace(geometry(.001,.2),width_m=1.016)
+    assert step(r,0.,g,escape_points=points)==(0.,0.,'turn_sensor_clearance')
+
+
 def test_axis_representation_flip_preserves_inward_translation():
     r=CorridorTurnRecovery()
     step(r,0.,geometry(.15,-math.pi/2))

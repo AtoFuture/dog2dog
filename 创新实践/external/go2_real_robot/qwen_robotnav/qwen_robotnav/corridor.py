@@ -361,7 +361,8 @@ class CorridorTurnRecovery:
         return now-self.stopped_since>=.8
 
     def filter(self, linear, angular, mode, *, geometry, sensor_radius, range_min,
-               requested, now, current_linear, current_angular, enabled):
+               requested, now, current_linear, current_angular, enabled,
+               escape_points=None, escape_settings=None, scan_age=0.):
         if not enabled:
             self.cancel()
             return linear,angular,mode
@@ -383,14 +384,35 @@ class CorridorTurnRecovery:
         # A complete rotation must keep the displaced sensor beyond its near
         # clip, with 4cm reserve. Stop/recenter well before that boundary.
         self.center_limit=min(.08,g.width_m/2-sensor_radius-range_min-.04)
-        if self.center_limit<=.02:
+        escape_ok=False
+        if escape_settings and escape_points and math.isfinite(scan_age) and scan_age>=0:
+            from .velocity_safety import clearance_increasing_escape
+            radius=escape_settings['robot_radius_m']
+            clearance=min(math.hypot(x,y) for x,y in escape_points)
+            # Plan a short forward escape only within the existing protected
+            # recovery band. The final guard independently checks real residual
+            # velocity and freshness; this is a request, never an authorization.
+            escape_ok=(radius+.02<=clearance<radius+escape_settings['clearance_margin_m']+.10
+                and clearance_increasing_escape(escape_points,clearance,
+                    escape_settings['prediction_speed_mps'],
+                    escape_settings['prediction_horizon_s']+scan_age,(0.,0.,0.)))
+        escape_phase=self.phase in ('brake_escape','escape','escape_settle')
+        if self.center_limit<=.02 and not escape_ok and not escape_phase:
+            # Fitted wall lines extend beyond their measured surfaces. At a
+            # junction, require the actual full-scan points to clear the same
+            # sensor-offset + near-clip + 4cm rotation envelope before using
+            # nominal turning instead of the infinite-wall approximation.
+            if (escape_points and math.isfinite(scan_age) and scan_age>=0
+                    and min(math.hypot(x,y) for x,y in escape_points)>=sensor_radius+range_min+.04):
+                self.cancel(resumable=True)
+                return linear,angular,mode
             return (0.,0.,'turn_sensor_clearance') if angular else (linear,angular,mode)
         offset=g.center_offset_m
         inward_x=-math.sin(g.heading_rad)*math.copysign(1.,offset)
         inward_y=math.cos(g.heading_rad)*math.copysign(1.,offset)
         turning=abs(angular)>1e-6 and abs(linear)<1e-6
         if self.phase is None:
-            if not turning or abs(offset)<=self.center_limit:
+            if not turning or (abs(offset)<=self.center_limit and not escape_ok):
                 return linear,angular,mode
             previous=self.resume_started_at
             if previous is not None and now-previous < -1e-6:
@@ -401,21 +423,32 @@ class CorridorTurnRecovery:
                 return 0.,0.,'turn_recovery_exhausted'
             if not resume:
                 self.episodes+=1
-            self.phase='brake_turn'
+            self.phase='brake_escape' if escape_ok else 'brake_turn'
             self.started_at=previous if resume else now
             self.resume_started_at=None
         elapsed=now-self.started_at
         if elapsed>12. or elapsed < -1e-6:
             self.blocked=True
             return 0.,0.,'turn_recovery_timeout'
-        if self.phase in ('brake_turn','brake_center','settle'):
+        if escape_ok and self.phase in ('brake_turn','brake_center','orient','center'):
+            self.phase='brake_escape'
+            self.stopped_since=None
+        if self.phase in ('brake_turn','brake_center','brake_escape','settle','escape_settle'):
             if not self._settled(now,current_linear,current_angular):
                 return 0.,0.,'turn_recovery_settling'
             self.stopped_since=None
-            if self.phase=='settle':
+            if self.phase in ('settle','escape_settle'):
                 self.cancel()
                 return 0.,0.,'turn_recovery_complete'
-            self.phase='center' if inward_x>=.6 else 'orient'
+            if self.phase=='brake_escape':
+                self.phase='escape'
+            else:
+                self.phase='center' if inward_x>=.6 else 'orient'
+        if self.phase=='escape':
+            if not escape_ok:
+                self.phase='escape_settle'
+                return 0.,0.,'turn_recovery_settling'
+            return .32,0.,'turn_clearance_escape'
         if self.phase=='orient':
             if inward_x>=.6:
                 self.phase='brake_center'

@@ -1,6 +1,6 @@
 {
   "date": "2026-10-20",
-  "status": "Incomplete: episode accounting and entrance scope fixed; latest headless native aisle still fails traversal and return.",
+  "status": "Native aisle traversal and return remain incomplete.",
   "cases": [
     {
       "name": "recenter_v1",
@@ -623,6 +623,238 @@
         "returning": 3
       },
       "trial_exit_code": 1
+    },
+    {
+      "name": "corridor_geometry_native_1",
+      "evidence_directory": ".runtime/corridor_geometry_20261020/native_1",
+      "success": false,
+      "home_error_m": 2.709325902344561,
+      "error": "Runtime validation deadline",
+      "profile_sha256": "b0de87f0d53ea661e4f44fe7a94c3c00e6c167db49bd85647fdc42aab47d84d6",
+      "candidate_selector": "deepseek",
+      "strict_checks": {
+        "main_passed": false,
+        "runtime_exited_cleanly": true,
+        "same_profile_hash": true,
+        "sole_guard_publisher": false,
+        "no_truth_in_runtime": false,
+        "actual_guarded_motion": true,
+        "command_limits": true,
+        "completed_frontiers": true,
+        "real_return_action": false,
+        "home_reference_registered": true,
+        "body_returned_home": false,
+        "return_localization_verified": false,
+        "planning_map_preserves_observations": true,
+        "planning_map_wiring": true,
+        "backend_only_velocity_ramp": false,
+        "single_goal_pipeline": true,
+        "one_effective_configuration": true,
+        "real_deepseek_selection": true,
+        "autonomous_termination": true,
+        "final_standby_zero": false
+      },
+      "recording_complete": true,
+      "recorder_exit_code": 0,
+      "runtime_exit_code": 0,
+      "child_exit_codes": {
+        "guard": 0,
+        "battery": 0,
+        "scaler": 0,
+        "g3": 0,
+        "navigation": 0,
+        "mission_brain": 0,
+        "frontier": 0
+      },
+      "return_statuses": [
+        "waiting_for_server",
+        "goal_request_sent",
+        "accepted",
+        "cancel_request_sent",
+        "cancel_accepted",
+        "canceled"
+      ],
+      "native_aisle": {
+        "world_geometry_modified": false,
+        "world_source_hash_unchanged": true,
+        "aisle_width_m": 1.491979999999998,
+        "aisle_world_x_bounds": [
+          11.00679,
+          12.498769999999999
+        ],
+        "aisle_world_y_bounds": [
+          -4.33798,
+          -0.5636600000000002
+        ],
+        "row_crossing": {
+          "boxes2": true,
+          "boxes7": false
+        },
+        "whole_aisle_traversed": false,
+        "entered_aisle": true,
+        "inside_samples": 3216,
+        "farthest_y_while_in_aisle": -2.2354420801058708,
+        "generic_runtime_success": false,
+        "home_error_m": 2.709325902344561,
+        "scan_sector_missing_samples": 0,
+        "final_body": {
+          "time_s": 428.5718660354614,
+          "state": "estop",
+          "x": 11.2866437674257,
+          "y": -2.4615721085563886,
+          "yaw": -2.889823685674495,
+          "home_distance_m": 2.709325759814979,
+          "home_yaw_error_rad": -2.8898236708490135,
+          "guard": "mission:estop",
+          "mode": "inactive",
+          "offset_m": -0.0012281326557644912
+        },
+        "phase_statistics": {
+          "exploring": {
+            "max_x_m": 11.739323723134854,
+            "max_abs_y_m": 5.176477510695213,
+            "path_length_m": 4.632333854264915,
+            "absolute_rotation_rad": 7.290122395074784
+          },
+          "returning": {
+            "max_x_m": 11.286642621005338,
+            "max_abs_y_m": 2.461626073633217,
+            "path_length_m": 0.00017156075608959785,
+            "absolute_rotation_rad": 5.2557342677506114e-05
+          }
+        },
+        "method": "Closed-bag sampled body truth for acceptance only. Traversal requires continuous centre positions inside the original gap with the 0.4m body radius, spanning both ends plus radius. Generic runtime success alone does not prove the native aisle was crossed."
+      },
+      "recovery_events": [],
+      "source_audit": {
+        "unchanged": true,
+        "changed": []
+      },
+      "headless": true,
+      "dynamic_escape_transitions": 0,
+      "escape_body_samples": 0,
+      "escape_body_path_m": 0,
+      "measured_rotation_transitions": 0,
+      "max_episodes_by_state": {
+        "exploring": 0,
+        "returning": 0
+      }
+    },
+    {
+      "name": "corridor_geometry_native_2",
+      "evidence_directory": ".runtime/corridor_geometry_20261020/native_2",
+      "success": false,
+      "home_error_m": 2.6509113464210268,
+      "error": "Runtime validation deadline",
+      "profile_sha256": "b0de87f0d53ea661e4f44fe7a94c3c00e6c167db49bd85647fdc42aab47d84d6",
+      "candidate_selector": "deepseek",
+      "strict_checks": {
+        "main_passed": false,
+        "runtime_exited_cleanly": true,
+        "same_profile_hash": true,
+        "sole_guard_publisher": false,
+        "no_truth_in_runtime": false,
+        "actual_guarded_motion": true,
+        "command_limits": true,
+        "completed_frontiers": true,
+        "real_return_action": false,
+        "home_reference_registered": true,
+        "body_returned_home": false,
+        "return_localization_verified": false,
+        "planning_map_preserves_observations": true,
+        "planning_map_wiring": true,
+        "backend_only_velocity_ramp": false,
+        "single_goal_pipeline": true,
+        "one_effective_configuration": true,
+        "real_deepseek_selection": true,
+        "autonomous_termination": true,
+        "final_standby_zero": false
+      },
+      "recording_complete": true,
+      "recorder_exit_code": 0,
+      "runtime_exit_code": 0,
+      "child_exit_codes": {
+        "guard": 0,
+        "battery": 0,
+        "scaler": 0,
+        "g3": 0,
+        "navigation": 0,
+        "mission_brain": 0,
+        "frontier": 0
+      },
+      "return_statuses": [
+        "waiting_for_server",
+        "goal_request_sent",
+        "accepted",
+        "cancel_request_sent",
+        "cancel_accepted",
+        "canceled"
+      ],
+      "native_aisle": {
+        "world_geometry_modified": false,
+        "world_source_hash_unchanged": true,
+        "aisle_width_m": 1.491979999999998,
+        "aisle_world_x_bounds": [
+          11.00679,
+          12.498769999999999
+        ],
+        "aisle_world_y_bounds": [
+          -4.33798,
+          -0.5636600000000002
+        ],
+        "row_crossing": {
+          "boxes2": true,
+          "boxes7": false
+        },
+        "whole_aisle_traversed": false,
+        "entered_aisle": true,
+        "inside_samples": 3436,
+        "farthest_y_while_in_aisle": -2.2326335768915597,
+        "generic_runtime_success": false,
+        "home_error_m": 2.6509113464210268,
+        "scan_sector_missing_samples": 0,
+        "final_body": {
+          "time_s": 428.79045391082764,
+          "state": "estop",
+          "x": 11.308554042500958,
+          "y": -2.516626221314369,
+          "yaw": -3.1060222843084224,
+          "home_distance_m": 2.6509113464210268,
+          "home_yaw_error_rad": -3.1060222515226594,
+          "guard": "mission:estop",
+          "mode": "inactive",
+          "offset_m": -0.052069559263392434
+        },
+        "phase_statistics": {
+          "exploring": {
+            "max_x_m": 12.011622370868858,
+            "max_abs_y_m": 5.205468258664897,
+            "path_length_m": 5.35510877420585,
+            "absolute_rotation_rad": 7.316590374155172
+          },
+          "returning": {
+            "max_x_m": 11.308553925130463,
+            "max_abs_y_m": 2.5166693763453076,
+            "path_length_m": 0.00020638923024227673,
+            "absolute_rotation_rad": 1.9861680175203844e-05
+          }
+        },
+        "method": "Closed-bag sampled body truth for acceptance only. Traversal requires continuous centre positions inside the original gap with the 0.4m body radius, spanning both ends plus radius. Generic runtime success alone does not prove the native aisle was crossed."
+      },
+      "recovery_events": [],
+      "source_audit": {
+        "unchanged": true,
+        "changed": []
+      },
+      "headless": true,
+      "dynamic_escape_transitions": 0,
+      "escape_body_samples": 0,
+      "escape_body_path_m": 0,
+      "measured_rotation_transitions": 0,
+      "max_episodes_by_state": {
+        "exploring": 0,
+        "returning": 0
+      }
     }
   ],
   "regression": {
@@ -652,5 +884,18 @@
     "targeted_log": ".runtime/corridor_episode_20261020/target-tests.log",
     "extended_entrance_dds_check_passed": true,
     "extended_entrance_dds_log": ".runtime/corridor_episode_20261020/entrance-transport-tests.log"
+  },
+  "geometry_fix_regression": {
+    "unique_checks": 640,
+    "full_run_passed": 640,
+    "full_run_failed": 0,
+    "full_log": ".runtime/corridor_geometry_20261020/full-tests-rotation.log",
+    "earlier_variant_passed": 636,
+    "earlier_log": ".runtime/corridor_geometry_20261020/full-tests.log",
+    "dds_final_passed": 2,
+    "dds_log": ".runtime/corridor_geometry_20261020/rotation-transport-corrected.log",
+    "dds_initial_fixture_failed": 2,
+    "dds_initial_log": ".runtime/corridor_geometry_20261020/rotation-transport-tests.log",
+    "javascript_syntax_passed": true
   }
 }

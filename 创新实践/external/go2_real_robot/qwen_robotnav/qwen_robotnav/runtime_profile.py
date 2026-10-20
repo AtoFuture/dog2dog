@@ -166,7 +166,10 @@ def ros_parameters(p, runtime_root=None):
         result['cmd_vel_scaler']['ros__parameters']['corridor_config']=json.dumps(dict(
             settings=p['corridor'],scan_topic=t['scan'],base_frame=f['base'],mission_topic=t['mission'],
             path_topic=t['action'].rsplit('/',1)[0]+'/plan',
-            status_topic=t['guard_status']+'/corridor',sensor_timeout_s=min(.5,p['guard']['sensor_timeout_s'])))
+            status_topic=t['guard_status']+'/corridor',sensor_timeout_s=min(.5,p['guard']['sensor_timeout_s']),
+            clearance_escape=(dict(robot_radius_m=p['navigation']['robot_radius_m'],
+                **{k:p['guard'][k] for k in ('clearance_margin_m','prediction_speed_mps','prediction_horizon_s')})
+                if p['guard'].get('clearance_recovery_enabled',False) else None)))
     if p.get('return_localization',{}).get('enabled',False):
         result['g3_state_machine']['ros__parameters'].update(
             odometry_topic=t['odometry'],odom_frame=f['odom'],

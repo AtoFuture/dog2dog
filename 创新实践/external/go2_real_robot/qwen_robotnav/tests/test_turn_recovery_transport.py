@@ -17,7 +17,8 @@ from rclpy.qos import QoSProfile, DurabilityPolicy
 from qwen_robotnav.runtime_profile import load_profile
 
 
-def test_measured_recenter_uses_settled_ramps_and_cancels_on_zero_or_stale_scan(tmp_path):
+@pytest.mark.parametrize('clearance_escape',[False,True])
+def test_measured_recenter_uses_settled_ramps_and_cancels_on_zero_or_stale_scan(tmp_path,clearance_escape):
     import yaml
     nav=Path(__file__).parents[1]
     rclpy.init()
@@ -27,6 +28,10 @@ def test_measured_recenter_uses_settled_ramps_and_cancels_on_zero_or_stale_scan(
                   turn_recenter_enabled=True,turn_settle_enabled=True)
     cfg=dict(settings=settings,scan_topic=prefix+'/scan',mission_topic=prefix+'/mission',
              path_topic=prefix+'/path',status_topic=prefix+'/status',base_frame='base_link',sensor_timeout_s=.5)
+    if clearance_escape:
+        g=load_profile(nav/'config/sim_runtime.yaml')['guard']
+        cfg['clearance_escape']=dict(robot_radius_m=.4,
+            **{k:g[k]for k in ('clearance_margin_m','prediction_speed_mps','prediction_horizon_s')})
     params=tmp_path/'params.yaml'
     params.write_text(yaml.safe_dump({'cmd_vel_scaler':{'ros__parameters':dict(
         input_topic=prefix+'/input',output_topic=prefix+'/output',corridor_config=json.dumps(cfg),
@@ -37,20 +42,24 @@ def test_measured_recenter_uses_settled_ramps_and_cancels_on_zero_or_stale_scan(
     outputs=[];statuses=[]
     peer.create_subscription(Twist,prefix+'/output',lambda m:outputs.append((time.monotonic(),m.linear.x,m.angular.z)),10)
     peer.create_subscription(String,prefix+'/status',lambda m:statuses.append((time.monotonic(),json.loads(m.data))),10)
-    state=dict(offset=.15,scan=True,angular=.4,entrance_start=.8)
+    offset=.25 if clearance_escape else .15
+    recovery_mode='turn_clearance_escape' if clearance_escape else 'turn_recentering'
+    state=dict(offset=offset,scan=True,angular=.4,entrance_start=.8,halfwidth=.7,wall_gap=0.,range_min=.3)
     def publish():
         msg=Twist();msg.angular.z=state['angular'];command.publish(msg)
         mission.publish(String(data='returning'))
         if state['scan']:
             scan=LaserScan();scan.header.stamp=peer.get_clock().now().to_msg();scan.header.frame_id='base_link'
-            scan.angle_min=-math.pi;scan.angle_increment=math.pi/180;scan.range_min=.3;scan.range_max=10.
+            scan.angle_min=-math.pi;scan.angle_increment=math.pi/180;scan.range_min=state['range_min'];scan.range_max=10.
             # Corridor normal points forward in the body frame. Forward motion
             # moves away from the closer wall behind the robot.
             for i in range(360):
                 c=math.cos(scan.angle_min+i*scan.angle_increment)
-                distance=(state['offset']+(.7 if c>0 else -.7))/c if abs(c)>1e-8 else math.inf
+                distance=(state['offset']+(state['halfwidth'] if c>0 else -state['halfwidth']))/c if abs(c)>1e-8 else math.inf
                 if (state['entrance_start'] is not None and math.isfinite(distance)
                         and distance*math.sin(scan.angle_min+i*scan.angle_increment)<state['entrance_start']):
+                    distance=math.inf
+                if math.isfinite(distance) and abs(distance*math.sin(scan.angle_min+i*scan.angle_increment))<state['wall_gap']:
                     distance=math.inf
                 scan.ranges.append(distance if distance<10. else math.inf)
             scans.publish(scan)
@@ -74,24 +83,34 @@ def test_measured_recenter_uses_settled_ramps_and_cancels_on_zero_or_stale_scan(
         state['entrance_start']=None
         wait(lambda:any(s['mode']=='turn_recovery_settling' for _,s in statuses))
         began=next(t for t,s in statuses if s['mode']=='turn_recovery_settling')
-        wait(lambda:statuses[-1][1]['mode']=='turn_recentering' and outputs[-1][1]>.019)
+        wait(lambda:statuses[-1][1]['mode']==recovery_mode and outputs[-1][1]>.019)
         assert outputs[-1][0]-began>=.7
         assert abs(outputs[-1][2])<1e-7
         state['offset']=.025
         wait(lambda:stopped())
         wait(lambda:statuses[-1][1]['mode']=='turning' and outputs[-1][2]>.1)
-        state['offset']=.15
-        wait(lambda:statuses[-1][1]['mode']=='turn_recentering' and outputs[-1][1]>.019)
+        state['offset']=offset
+        wait(lambda:statuses[-1][1]['mode']==recovery_mode and outputs[-1][1]>.019)
         episodes=statuses[-1][1]['recovery_episodes']
         state['angular']=0.
         wait(lambda:stopped() and statuses[-1][1]['requested']==[0.,0.]
              and statuses[-1][1]['recovery_phase'] is None)
         assert statuses[-1][1]['recovery_resume_pending']
         state['angular']=.4
-        wait(lambda:statuses[-1][1]['mode']=='turn_recentering' and outputs[-1][1]>.019)
+        wait(lambda:statuses[-1][1]['mode']==recovery_mode and outputs[-1][1]>.019)
         assert statuses[-1][1]['recovery_episodes']==episodes
         state['angular']=.4;state['scan']=False
         wait(lambda:statuses[-1][1]['mode']=='scan_unavailable' and stopped())
+        # The fitted infinite wall pair is 1m apart, but the observed walls
+        # have openings beside the body. Actual points leave the full sensor
+        # sweep clear; imaginary wall continuations must not prohibit a turn.
+        # This fixture's sensor is at base origin: a 0.48m near clip makes
+        # 0.50m wall continuations insufficient but 0.58m actual points safe.
+        state.update(scan=True,offset=0.,halfwidth=.5,wall_gap=.3,range_min=.48)
+        wait(lambda:statuses[-1][1]['confirmed'] and statuses[-1][1]['geometry']['width_m']<1.1
+             and statuses[-1][1]['mode']=='turning' and outputs[-1][2]>.1)
+        state['wall_gap']=0.
+        wait(lambda:statuses[-1][1]['mode']=='turn_sensor_clearance' and stopped())
     finally:
         child.send_signal(signal.SIGTERM)
         try:child.wait(timeout=5)
