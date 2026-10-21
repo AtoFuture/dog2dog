@@ -1,11 +1,13 @@
 {
-  "status": "experimental_default_disabled_end_to_end_return_not_passed",
+  "status": "experimental_private_nav2_return_demonstrated_warehouse_unvalidated",
   "profile_flag": "navigation.reverse_retreat_enabled",
   "default_enabled": false,
   "regression": {
-    "passed": 671,
-    "seconds": 124.83,
-    "log": ".runtime/reverse_20261020/full-tests-final.log"
+    "passed": 685,
+    "failed": 0,
+    "all_passed": true,
+    "seconds": 124.42,
+    "log": ".runtime/reverse_followup_20261020/full-tests-reserve.log"
   },
   "calibration": {
     "calibration_1": {
@@ -287,5 +289,1148 @@
     "Initial forward goal was operator-supplied; final test did not run autonomous DeepSeek exploration",
     "Cumulative odometry distance differs from independent body displacement",
     "Warehouse admission trial used an earlier policy version; no warehouse pass claimed"
+  ],
+  "follow_up_20261020": {
+    "trials": {
+      "nav2_trial_1": {
+        "manual_initial_nav2_goal": true,
+        "real_nav2_return": true,
+        "autonomous_exploration": false,
+        "truth_used_for_control": false,
+        "success": false,
+        "private_overrides": {
+          "frontier_mission_topic": "/reverse_calibration/frontier_disabled"
+        },
+        "calibration_geometry_modified": true,
+        "entry_body": {
+          "t": 39.877,
+          "x": 1.2329515203340888,
+          "y": -0.006860533088055804,
+          "z": 0.2299996786459826,
+          "yaw": 0.04302733987526502
+        },
+        "home_reference_body": {
+          "t": 31.188000000000002,
+          "x": -0.13772206294690487,
+          "y": 0.0007319322766774741,
+          "z": 0.2299998143043047,
+          "yaw": -0.002536233537835256
+        },
+        "final_body": {
+          "t": 132.386,
+          "x": 0.5147543498147821,
+          "y": -0.02020730832490568,
+          "z": 0.22999962612556915,
+          "yaw": -0.06717214474499897
+        },
+        "home_error_m": 0.6528123168318213,
+        "return_verified": false,
+        "reverse_complete": false,
+        "negative_actuator_samples": 84,
+        "last_mission": "estop",
+        "recorder_exit_code": 0,
+        "recording_complete": true,
+        "child_exit_codes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evidence_dir": ".runtime/reverse_followup_20261020/nav2_trial_1",
+        "return_event_statuses": [
+          "waiting_for_server",
+          "goal_request_sent",
+          "accepted",
+          "cancel_request_sent",
+          "cancel_accepted",
+          "canceled"
+        ],
+        "frontier_sending_events": 0,
+        "max_raw_odometry_path_m": 1.7304091769211933,
+        "max_odometry_extent_m": 1.4864130868552383,
+        "configured_extent_limit_m": 1.5,
+        "exit_budget_stop_samples": 0,
+        "motion_diagnosis": {
+          "method": "Closed-bag sampled independent body diagnosis, never runtime input. Body interval endpoints approximate actuator intervals; ramp stopping motion may extend beyond them.",
+          "negative_actuator_samples": 84,
+          "negative_segments": [
+            {
+              "start": 1792508737.5908854,
+              "end": 1792508741.7410705,
+              "duration_wall_s": 4.1501851081848145,
+              "negative_commands": 84,
+              "body_dx_m": -0.7632682240826274,
+              "body_dy_m": 0.04537211474041526,
+              "yaw_change_rad": -0.17086745308409182,
+              "max_abs_command": 0.024,
+              "max_abs_yaw_command": 0.0
+            }
+          ],
+          "max_episodes": 1
+        },
+        "source_audit": {
+          "unchanged": true,
+          "changed": []
+        },
+        "geometry": {
+          "canonical_static_scene": false,
+          "visible_collision_match": true,
+          "passage_width_m": 1.2,
+          "original_fixture_sha256": "97d03697e44a6a236f13a1a4fee568a527a2ec19e8fdfe5325b86d581ce274bf",
+          "world_sha256": "7d3e5104a109fc074c61f0ca47fc80b0749be2fa3b4c35b2efe37b07fd3970d7",
+          "source_world_modified": false
+        },
+        "operator_stop": {
+          "command": "ESTOP",
+          "reason": "Observed latched reverse limit; terminate failed trial instead of waiting for deadline",
+          "domain": 229
+        }
+      },
+      "nav2_trial_2": {
+        "manual_initial_nav2_goal": true,
+        "real_nav2_return": true,
+        "autonomous_exploration": false,
+        "truth_used_for_control": false,
+        "success": false,
+        "private_overrides": {
+          "frontier_mission_topic": "/reverse_calibration/frontier_disabled"
+        },
+        "calibration_geometry_modified": true,
+        "error": "TimeoutError('Nav2 operator trial deadline')",
+        "recorder_exit_code": 0,
+        "recording_complete": true,
+        "child_exit_codes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evidence_dir": ".runtime/reverse_followup_20261020/nav2_trial_2",
+        "return_event_statuses": [],
+        "frontier_sending_events": 0,
+        "max_raw_odometry_path_m": 0.0,
+        "max_odometry_extent_m": 0.0,
+        "configured_extent_limit_m": 1.5,
+        "exit_budget_stop_samples": 0,
+        "negative_actuator_samples": 0,
+        "source_audit": {
+          "unchanged": true,
+          "changed": []
+        },
+        "geometry": {
+          "canonical_static_scene": false,
+          "visible_collision_match": true,
+          "passage_width_m": 1.2,
+          "original_fixture_sha256": "97d03697e44a6a236f13a1a4fee568a527a2ec19e8fdfe5325b86d581ce274bf",
+          "world_sha256": "7d3e5104a109fc074c61f0ca47fc80b0749be2fa3b4c35b2efe37b07fd3970d7",
+          "source_world_modified": false
+        }
+      },
+      "nav2_trial_3": {
+        "manual_initial_nav2_goal": true,
+        "real_nav2_return": true,
+        "autonomous_exploration": false,
+        "truth_used_for_control": false,
+        "success": false,
+        "private_overrides": {
+          "frontier_mission_topic": "/reverse_calibration/frontier_disabled"
+        },
+        "calibration_geometry_modified": true,
+        "explore_start_requests": 1,
+        "entry_body": {
+          "t": 42.587,
+          "x": 1.2581237793870035,
+          "y": 0.0014348670192481105,
+          "z": 0.22999959094545105,
+          "yaw": 0.00472999429731048
+        },
+        "failure_stage": "reverse_limit",
+        "home_reference_body": {
+          "t": 33.572,
+          "x": -0.13772206294348852,
+          "y": 0.0007319322283776966,
+          "z": 0.2299998143043034,
+          "yaw": -0.002536233495719508
+        },
+        "final_body": {
+          "t": 50.536,
+          "x": 0.4725917243972074,
+          "y": -0.040636231097253256,
+          "z": 0.22999961038932226,
+          "yaw": -0.04389554301238214
+        },
+        "home_error_m": 0.6117141848568499,
+        "return_verified": false,
+        "reverse_complete": false,
+        "negative_actuator_samples": 81,
+        "last_mission": "returning",
+        "recorder_exit_code": 0,
+        "recording_complete": true,
+        "child_exit_codes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evidence_dir": ".runtime/reverse_followup_20261020/nav2_trial_3",
+        "return_event_statuses": [
+          "waiting_for_server",
+          "goal_request_sent",
+          "accepted",
+          "cancel_request_sent",
+          "cancel_accepted",
+          "canceled"
+        ],
+        "frontier_sending_events": 0,
+        "max_raw_odometry_path_m": 1.5253722507153096,
+        "max_odometry_extent_m": 1.5054430409282418,
+        "configured_extent_limit_m": 1.5,
+        "exit_budget_stop_samples": 0,
+        "motion_diagnosis": {
+          "method": "Closed-bag sampled independent body diagnosis, never runtime input. Body interval endpoints approximate actuator intervals; ramp stopping motion may extend beyond them.",
+          "negative_actuator_samples": 81,
+          "negative_segments": [
+            {
+              "start": 1792509191.244388,
+              "end": 1792509195.2448657,
+              "duration_wall_s": 4.00047755241394,
+              "negative_commands": 81,
+              "body_dx_m": -0.8342298437064466,
+              "body_dy_m": -0.0038781126222950917,
+              "yaw_change_rad": -0.026547891526712792,
+              "max_abs_command": 0.024,
+              "max_abs_yaw_command": 0.0
+            }
+          ],
+          "max_episodes": 1
+        },
+        "source_audit": {
+          "unchanged": true,
+          "changed": []
+        },
+        "geometry": {
+          "canonical_static_scene": false,
+          "visible_collision_match": true,
+          "passage_width_m": 1.2,
+          "original_fixture_sha256": "97d03697e44a6a236f13a1a4fee568a527a2ec19e8fdfe5325b86d581ce274bf",
+          "world_sha256": "7d3e5104a109fc074c61f0ca47fc80b0749be2fa3b4c35b2efe37b07fd3970d7",
+          "source_world_modified": false
+        }
+      },
+      "nav2_trial_4": {
+        "manual_initial_nav2_goal": true,
+        "real_nav2_return": true,
+        "autonomous_exploration": false,
+        "truth_used_for_control": false,
+        "success": true,
+        "private_overrides": {
+          "frontier_mission_topic": "/reverse_calibration/frontier_disabled"
+        },
+        "calibration_geometry_modified": true,
+        "explore_start_requests": 1,
+        "entry_body": {
+          "t": 40.297000000000004,
+          "x": 1.2211695615959117,
+          "y": -0.018152581637315833,
+          "z": 0.22999967941994076,
+          "yaw": 0.0009010965946920826
+        },
+        "home_reference_body": {
+          "t": 33.099000000000004,
+          "x": -0.1377220629435367,
+          "y": 0.0007319322300684846,
+          "z": 0.22999981430430383,
+          "yaw": -0.0025362335178354795
+        },
+        "final_body": {
+          "t": 67.754,
+          "x": 0.0723765485461442,
+          "y": -0.06434195453619775,
+          "z": 0.22999968347094435,
+          "yaw": 0.11381095613579721
+        },
+        "home_error_m": 0.21994553255013094,
+        "return_verified": true,
+        "reverse_complete": true,
+        "negative_actuator_samples": 84,
+        "last_mission": "standby",
+        "recorder_exit_code": 0,
+        "recording_complete": true,
+        "child_exit_codes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evidence_dir": ".runtime/reverse_followup_20261020/nav2_trial_4",
+        "return_event_statuses": [
+          "waiting_for_server",
+          "goal_request_sent",
+          "accepted",
+          "nav_succeeded_pending_verification",
+          "succeeded"
+        ],
+        "frontier_sending_events": 0,
+        "max_raw_odometry_path_m": 1.6342926431643243,
+        "max_odometry_extent_m": 1.4848032110275955,
+        "configured_extent_limit_m": 1.5,
+        "exit_budget_stop_samples": 0,
+        "motion_diagnosis": {
+          "method": "Closed-bag sampled independent body diagnosis, never runtime input. Body interval endpoints approximate actuator intervals; ramp stopping motion may extend beyond them.",
+          "negative_actuator_samples": 84,
+          "negative_segments": [
+            {
+              "start": 1792509439.5189242,
+              "end": 1792509443.667789,
+              "duration_wall_s": 4.14886474609375,
+              "negative_commands": 84,
+              "body_dx_m": -0.8334520197213046,
+              "body_dy_m": 0.016289055541791022,
+              "yaw_change_rad": -0.03344299758486814,
+              "max_abs_command": 0.024,
+              "max_abs_yaw_command": 0.0
+            }
+          ],
+          "max_episodes": 1
+        },
+        "home_verification": {
+          "correction_count": 0,
+          "map_error_m": 0.18798382678178444,
+          "map_error_yaw": 0.1138110474789024,
+          "method": "dynamic_map_odom_and_lidar_home_keyframe",
+          "odom_error_m": 0.30398978257064707,
+          "odom_error_yaw": 0.11634727791814868,
+          "scan_match": {
+            "inlier_count": 360,
+            "inlier_ratio": 1.0,
+            "iterations": 10,
+            "position_error_m": 0.2109086487770589,
+            "reason": "matched",
+            "rmse_m": 0.04296448239137265,
+            "valid": true,
+            "yaw_error_rad": 0.11482903166650034
+          },
+          "stable_s": 3.0,
+          "verified_map_home": {
+            "x": 0.0,
+            "y": 0.0,
+            "yaw": 0.0
+          }
+        },
+        "source_audit": {
+          "unchanged": true,
+          "changed": []
+        },
+        "geometry": {
+          "canonical_static_scene": false,
+          "visible_collision_match": true,
+          "passage_width_m": 1.2,
+          "original_fixture_sha256": "97d03697e44a6a236f13a1a4fee568a527a2ec19e8fdfe5325b86d581ce274bf",
+          "world_sha256": "7d3e5104a109fc074c61f0ca47fc80b0749be2fa3b4c35b2efe37b07fd3970d7",
+          "source_world_modified": false
+        }
+      },
+      "nav2_trial_5": {
+        "manual_initial_nav2_goal": true,
+        "real_nav2_return": true,
+        "autonomous_exploration": false,
+        "truth_used_for_control": false,
+        "success": false,
+        "private_overrides": {
+          "frontier_mission_topic": "/reverse_calibration/frontier_disabled"
+        },
+        "calibration_geometry_modified": true,
+        "explore_start_requests": 1,
+        "entry_body": {
+          "t": 40.752,
+          "x": 1.2342186904805077,
+          "y": -0.012310769565666053,
+          "z": 0.22999968992570197,
+          "yaw": 0.06592346401237865
+        },
+        "failure_stage": "reverse_limit",
+        "home_reference_body": {
+          "t": 33.386,
+          "x": -0.1377217308545694,
+          "y": 0.0007316091460423593,
+          "z": 0.22999923763947475,
+          "yaw": -0.0025354467174442015
+        },
+        "final_body": {
+          "t": 55.987,
+          "x": 0.7641322555719342,
+          "y": -0.03175754307454788,
+          "z": 0.22999947070078208,
+          "yaw": 0.15504620895883853
+        },
+        "home_error_m": 0.9024390050554048,
+        "return_verified": false,
+        "reverse_complete": false,
+        "negative_actuator_samples": 60,
+        "last_mission": "returning",
+        "recorder_exit_code": 0,
+        "recording_complete": true,
+        "child_exit_codes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evidence_dir": ".runtime/reverse_followup_20261020/nav2_trial_5",
+        "return_event_statuses": [
+          "waiting_for_server",
+          "goal_request_sent",
+          "accepted",
+          "cancel_request_sent",
+          "cancel_accepted",
+          "canceled"
+        ],
+        "frontier_sending_events": 0,
+        "max_raw_odometry_path_m": 1.1595994300376062,
+        "max_odometry_extent_m": 0.9921708401871564,
+        "configured_extent_limit_m": 1.5,
+        "exit_budget_stop_samples": 0,
+        "motion_diagnosis": {
+          "method": "Closed-bag sampled independent body diagnosis, never runtime input. Body interval endpoints approximate actuator intervals; ramp stopping motion may extend beyond them.",
+          "negative_actuator_samples": 60,
+          "negative_segments": [
+            {
+              "start": 1792509635.0613759,
+              "end": 1792509638.0081718,
+              "duration_wall_s": 2.94679594039917,
+              "negative_commands": 60,
+              "body_dx_m": -0.518093589793743,
+              "body_dy_m": -0.0031879168768549,
+              "yaw_change_rad": 0.018329365030066935,
+              "max_abs_command": 0.024,
+              "max_abs_yaw_command": 0.0
+            }
+          ],
+          "max_episodes": 1
+        },
+        "source_audit": {
+          "unchanged": true,
+          "changed": []
+        },
+        "geometry": {
+          "canonical_static_scene": false,
+          "visible_collision_match": true,
+          "passage_width_m": 1.2,
+          "original_fixture_sha256": "97d03697e44a6a236f13a1a4fee568a527a2ec19e8fdfe5325b86d581ce274bf",
+          "world_sha256": "7d3e5104a109fc074c61f0ca47fc80b0749be2fa3b4c35b2efe37b07fd3970d7",
+          "source_world_modified": false
+        }
+      },
+      "nav2_trial_6": {
+        "manual_initial_nav2_goal": true,
+        "real_nav2_return": true,
+        "autonomous_exploration": false,
+        "truth_used_for_control": false,
+        "success": false,
+        "private_overrides": {
+          "frontier_mission_topic": "/reverse_calibration/frontier_disabled"
+        },
+        "calibration_geometry_modified": true,
+        "explore_start_requests": 2,
+        "entry_body": {
+          "t": 44.39,
+          "x": 1.23857490705391,
+          "y": -0.011179180589641098,
+          "z": 0.22999955034646868,
+          "yaw": 0.07944509667859927
+        },
+        "failure_stage": "reverse_limit",
+        "home_reference_body": {
+          "t": 33.482,
+          "x": -0.1377220629435646,
+          "y": 0.0007319322294901015,
+          "z": 0.22999981430430336,
+          "yaw": -0.0025362334944847827
+        },
+        "final_body": {
+          "t": 52.351000000000006,
+          "x": 0.4102701892014366,
+          "y": -0.05137504520829129,
+          "z": 0.22999979464304912,
+          "yaw": 0.047488184645746445
+        },
+        "home_error_m": 0.5504640274428947,
+        "return_verified": false,
+        "reverse_complete": false,
+        "negative_actuator_samples": 90,
+        "last_mission": "returning",
+        "recorder_exit_code": 0,
+        "recording_complete": true,
+        "child_exit_codes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evidence_dir": ".runtime/reverse_followup_20261020/nav2_trial_6",
+        "return_event_statuses": [
+          "waiting_for_server",
+          "goal_request_sent",
+          "accepted",
+          "cancel_request_sent",
+          "cancel_accepted",
+          "canceled"
+        ],
+        "frontier_sending_events": 0,
+        "max_raw_odometry_path_m": 1.5371448733176183,
+        "max_odometry_extent_m": 1.5162349317983477,
+        "configured_extent_limit_m": 1.5,
+        "exit_budget_stop_samples": 0,
+        "motion_diagnosis": {
+          "method": "Closed-bag sampled independent body diagnosis, never runtime input. Body interval endpoints approximate actuator intervals; ramp stopping motion may extend beyond them.",
+          "negative_actuator_samples": 90,
+          "negative_segments": [
+            {
+              "start": 1792509866.831539,
+              "end": 1792509871.2817464,
+              "duration_wall_s": 4.450207471847534,
+              "negative_commands": 90,
+              "body_dx_m": -0.8845805982608047,
+              "body_dy_m": 0.022430890524232985,
+              "yaw_change_rad": -0.05290362029982222,
+              "max_abs_command": 0.024,
+              "max_abs_yaw_command": 0.0
+            }
+          ],
+          "max_episodes": 1
+        },
+        "source_audit": {
+          "unchanged": true,
+          "changed": []
+        },
+        "geometry": {
+          "canonical_static_scene": false,
+          "visible_collision_match": true,
+          "passage_width_m": 1.2,
+          "original_fixture_sha256": "97d03697e44a6a236f13a1a4fee568a527a2ec19e8fdfe5325b86d581ce274bf",
+          "world_sha256": "7d3e5104a109fc074c61f0ca47fc80b0749be2fa3b4c35b2efe37b07fd3970d7",
+          "source_world_modified": false
+        }
+      },
+      "nav2_trial_7": {
+        "manual_initial_nav2_goal": true,
+        "real_nav2_return": true,
+        "autonomous_exploration": false,
+        "truth_used_for_control": false,
+        "success": true,
+        "private_overrides": {
+          "frontier_mission_topic": "/reverse_calibration/frontier_disabled"
+        },
+        "calibration_geometry_modified": true,
+        "explore_start_requests": 1,
+        "entry_body": {
+          "t": 42.469,
+          "x": 1.2347313984676018,
+          "y": -0.003139347181651148,
+          "z": 0.22999959706402773,
+          "yaw": 0.030437305671547364
+        },
+        "home_reference_body": {
+          "t": 33.291000000000004,
+          "x": -0.1377220629438073,
+          "y": 0.0007319322338359185,
+          "z": 0.22999981430430355,
+          "yaw": -0.0025362335388791897
+        },
+        "final_body": {
+          "t": 69.41900000000001,
+          "x": -0.15542400425705194,
+          "y": 0.10174286026860793,
+          "z": 0.22999961044694708,
+          "yaw": -0.0692612684514445
+        },
+        "home_error_m": 0.10255031110973506,
+        "return_verified": true,
+        "reverse_complete": true,
+        "negative_actuator_samples": 82,
+        "last_mission": "standby",
+        "recorder_exit_code": 0,
+        "recording_complete": true,
+        "child_exit_codes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evidence_dir": ".runtime/reverse_followup_20261020/nav2_trial_7",
+        "return_event_statuses": [
+          "waiting_for_server",
+          "goal_request_sent",
+          "accepted",
+          "nav_succeeded_pending_verification",
+          "succeeded"
+        ],
+        "frontier_sending_events": 0,
+        "max_raw_odometry_path_m": 1.591458768991011,
+        "max_odometry_extent_m": 1.4699289053651494,
+        "configured_extent_limit_m": 1.5,
+        "exit_budget_stop_samples": 0,
+        "motion_diagnosis": {
+          "method": "Closed-bag sampled independent body diagnosis, never runtime input. Body interval endpoints approximate actuator intervals; ramp stopping motion may extend beyond them.",
+          "negative_actuator_samples": 82,
+          "negative_segments": [
+            {
+              "start": 1792510193.6306813,
+              "end": 1792510197.6790545,
+              "duration_wall_s": 4.048373222351074,
+              "negative_commands": 82,
+              "body_dx_m": -0.7810114370385347,
+              "body_dy_m": 0.024641417753602082,
+              "yaw_change_rad": -0.0368698336672739,
+              "max_abs_command": 0.024,
+              "max_abs_yaw_command": 0.0
+            }
+          ],
+          "max_episodes": 1
+        },
+        "home_verification": {
+          "correction_count": 0,
+          "map_error_m": 0.10159825662672181,
+          "map_error_yaw": 0.07275136441522127,
+          "method": "dynamic_map_odom_and_lidar_home_keyframe",
+          "odom_error_m": 0.009675524276192114,
+          "odom_error_yaw": 0.05088347957428763,
+          "scan_match": {
+            "inlier_count": 360,
+            "inlier_ratio": 1.0,
+            "iterations": 8,
+            "position_error_m": 0.09652583308292545,
+            "reason": "matched",
+            "rmse_m": 0.033690936298363186,
+            "valid": true,
+            "yaw_error_rad": 0.057089019469725666
+          },
+          "stable_s": 3.0,
+          "verified_map_home": {
+            "x": 0.0,
+            "y": 0.0,
+            "yaw": 0.0
+          }
+        },
+        "source_audit": {
+          "unchanged": true,
+          "changed": []
+        },
+        "geometry": {
+          "canonical_static_scene": false,
+          "visible_collision_match": true,
+          "passage_width_m": 1.2,
+          "original_fixture_sha256": "97d03697e44a6a236f13a1a4fee568a527a2ec19e8fdfe5325b86d581ce274bf",
+          "world_sha256": "7d3e5104a109fc074c61f0ca47fc80b0749be2fa3b4c35b2efe37b07fd3970d7",
+          "source_world_modified": false
+        }
+      },
+      "nav2_trial_8": {
+        "manual_initial_nav2_goal": true,
+        "real_nav2_return": true,
+        "autonomous_exploration": false,
+        "truth_used_for_control": false,
+        "success": false,
+        "private_overrides": {
+          "frontier_mission_topic": "/reverse_calibration/frontier_disabled"
+        },
+        "calibration_geometry_modified": true,
+        "explore_start_requests": 1,
+        "entry_body": {
+          "t": 39.838,
+          "x": 1.2074259524815532,
+          "y": 0.024079239430987713,
+          "z": 0.2299994843575397,
+          "yaw": -0.026525264016745292
+        },
+        "failure_stage": "reverse_limit",
+        "home_reference_body": {
+          "t": 32.774,
+          "x": -0.13772173085393474,
+          "y": 0.0007316091354541317,
+          "z": 0.22999923763947394,
+          "yaw": -0.002535446727347299
+        },
+        "final_body": {
+          "t": 48.719,
+          "x": 0.4552425132913282,
+          "y": 0.07762218374106963,
+          "z": 0.22999961041476571,
+          "yaw": 0.09789911161820054
+        },
+        "home_error_m": 0.5979287209174223,
+        "return_verified": false,
+        "reverse_complete": false,
+        "negative_actuator_samples": 84,
+        "last_mission": "returning",
+        "recorder_exit_code": 0,
+        "recording_complete": true,
+        "child_exit_codes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evidence_dir": ".runtime/reverse_followup_20261020/nav2_trial_8",
+        "return_event_statuses": [
+          "waiting_for_server",
+          "goal_request_sent",
+          "accepted",
+          "cancel_request_sent",
+          "cancel_accepted",
+          "canceled"
+        ],
+        "frontier_sending_events": 0,
+        "max_raw_odometry_path_m": 1.7281764619516813,
+        "max_odometry_extent_m": 1.5755129891481263,
+        "configured_extent_limit_m": 1.5,
+        "exit_budget_stop_samples": 9,
+        "motion_diagnosis": {
+          "method": "Closed-bag sampled independent body diagnosis, never runtime input. Body interval endpoints approximate actuator intervals; ramp stopping motion may extend beyond them.",
+          "negative_actuator_samples": 84,
+          "negative_segments": [
+            {
+              "start": 1792540731.965088,
+              "end": 1792540736.1145778,
+              "duration_wall_s": 4.149489879608154,
+              "negative_commands": 84,
+              "body_dx_m": -0.7873734749329022,
+              "body_dy_m": 0.020850646113409498,
+              "yaw_change_rad": 0.05068288799618337,
+              "max_abs_command": 0.024,
+              "max_abs_yaw_command": 0.0
+            }
+          ],
+          "max_episodes": 1
+        },
+        "source_audit": {
+          "unchanged": true,
+          "changed": []
+        },
+        "geometry": {
+          "canonical_static_scene": false,
+          "visible_collision_match": true,
+          "passage_width_m": 1.2,
+          "original_fixture_sha256": "97d03697e44a6a236f13a1a4fee568a527a2ec19e8fdfe5325b86d581ce274bf",
+          "world_sha256": "7d3e5104a109fc074c61f0ca47fc80b0749be2fa3b4c35b2efe37b07fd3970d7",
+          "source_world_modified": false
+        }
+      },
+      "nav2_trial_9": {
+        "manual_initial_nav2_goal": true,
+        "real_nav2_return": true,
+        "autonomous_exploration": false,
+        "truth_used_for_control": false,
+        "success": true,
+        "private_overrides": {
+          "frontier_mission_topic": "/reverse_calibration/frontier_disabled"
+        },
+        "calibration_geometry_modified": true,
+        "explore_start_requests": 2,
+        "entry_body": {
+          "t": 42.967000000000006,
+          "x": 1.202737411188382,
+          "y": -0.008787420537352533,
+          "z": 0.22999983648217823,
+          "yaw": 0.060783747669573354
+        },
+        "home_reference_body": {
+          "t": 33.762,
+          "x": -0.13772206294208159,
+          "y": 0.0007319322091486755,
+          "z": 0.22999981430430344,
+          "yaw": -0.0025362334943243342
+        },
+        "final_body": {
+          "t": 72.215,
+          "x": -0.14260412891092542,
+          "y": -0.16940623310772995,
+          "z": 0.2299995358650238,
+          "yaw": 0.09955667231663759
+        },
+        "home_error_m": 0.17020819564732384,
+        "return_verified": true,
+        "reverse_complete": true,
+        "negative_actuator_samples": 87,
+        "last_mission": "standby",
+        "recorder_exit_code": 0,
+        "recording_complete": true,
+        "child_exit_codes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evidence_dir": ".runtime/reverse_followup_20261020/nav2_trial_9",
+        "return_event_statuses": [
+          "waiting_for_server",
+          "goal_request_sent",
+          "accepted",
+          "nav_succeeded_pending_verification",
+          "localization_rejected",
+          "waiting_for_server",
+          "goal_request_sent",
+          "accepted",
+          "nav_succeeded_pending_verification",
+          "succeeded"
+        ],
+        "frontier_sending_events": 0,
+        "max_raw_odometry_path_m": 1.8199335290104812,
+        "max_odometry_extent_m": 1.6637547239390424,
+        "configured_extent_limit_m": 2.0,
+        "exit_budget_stop_samples": 0,
+        "motion_diagnosis": {
+          "method": "Closed-bag sampled independent body diagnosis, never runtime input. Body interval endpoints approximate actuator intervals; ramp stopping motion may extend beyond them.",
+          "negative_actuator_samples": 87,
+          "negative_segments": [
+            {
+              "start": 1792541842.6531422,
+              "end": 1792541846.9500659,
+              "duration_wall_s": 4.296923637390137,
+              "negative_commands": 87,
+              "body_dx_m": -0.8800517412969695,
+              "body_dy_m": 0.006080897701350452,
+              "yaw_change_rad": -0.033576018364962545,
+              "max_abs_command": 0.024,
+              "max_abs_yaw_command": 0.0
+            }
+          ],
+          "max_episodes": 1
+        },
+        "home_verification": {
+          "correction_count": 1,
+          "map_error_m": 0.16395525688487897,
+          "map_error_yaw": 0.10292973459040887,
+          "method": "dynamic_map_odom_and_lidar_home_keyframe",
+          "odom_error_m": 0.04713677695871663,
+          "odom_error_yaw": 0.05949850466576079,
+          "scan_match": {
+            "inlier_count": 360,
+            "inlier_ratio": 1.0,
+            "iterations": 11,
+            "position_error_m": 0.1655091226277638,
+            "reason": "matched",
+            "rmse_m": 0.030059764109053463,
+            "valid": true,
+            "yaw_error_rad": 0.09779536362406391
+          },
+          "stable_s": 3.0,
+          "verified_map_home": {
+            "x": -0.006987649244718598,
+            "y": -0.024804453840315405,
+            "yaw": -0.003373034489568112
+          }
+        },
+        "source_audit": {
+          "unchanged": true,
+          "changed": []
+        },
+        "geometry": {
+          "canonical_static_scene": false,
+          "visible_collision_match": true,
+          "passage_width_m": 1.2,
+          "original_fixture_sha256": "97d03697e44a6a236f13a1a4fee568a527a2ec19e8fdfe5325b86d581ce274bf",
+          "world_sha256": "7d3e5104a109fc074c61f0ca47fc80b0749be2fa3b4c35b2efe37b07fd3970d7",
+          "source_world_modified": false
+        }
+      },
+      "nav2_trial_10": {
+        "manual_initial_nav2_goal": true,
+        "real_nav2_return": true,
+        "autonomous_exploration": false,
+        "truth_used_for_control": false,
+        "success": true,
+        "private_overrides": {
+          "frontier_mission_topic": "/reverse_calibration/frontier_disabled"
+        },
+        "calibration_geometry_modified": true,
+        "explore_start_requests": 2,
+        "entry_body": {
+          "t": 44.742000000000004,
+          "x": 1.2372595878344572,
+          "y": -0.01840282237463721,
+          "z": 0.2299995776740177,
+          "yaw": 0.0492958036638913
+        },
+        "home_reference_body": {
+          "t": 34.137,
+          "x": -0.1377220629408163,
+          "y": 0.000731932192295112,
+          "z": 0.22999981430430336,
+          "yaw": -0.0025362334889224725
+        },
+        "final_body": {
+          "t": 73.62,
+          "x": -0.03938426422957626,
+          "y": -0.16137835721888918,
+          "z": 0.2299996761415114,
+          "yaw": 0.09823165417218516
+        },
+        "home_error_m": 0.18960503313032145,
+        "return_verified": true,
+        "reverse_complete": true,
+        "negative_actuator_samples": 87,
+        "last_mission": "standby",
+        "recorder_exit_code": 0,
+        "recording_complete": true,
+        "child_exit_codes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "evidence_dir": ".runtime/reverse_followup_20261020/nav2_trial_10",
+        "return_event_statuses": [
+          "waiting_for_server",
+          "goal_request_sent",
+          "accepted",
+          "nav_succeeded_pending_verification",
+          "succeeded"
+        ],
+        "frontier_sending_events": 0,
+        "max_raw_odometry_path_m": 1.824111876470325,
+        "max_odometry_extent_m": 1.6804784776138575,
+        "configured_extent_limit_m": 2.0,
+        "exit_budget_stop_samples": 0,
+        "motion_diagnosis": {
+          "method": "Closed-bag sampled independent body diagnosis, never runtime input. Body interval endpoints approximate actuator intervals; ramp stopping motion may extend beyond them.",
+          "negative_actuator_samples": 87,
+          "negative_segments": [
+            {
+              "start": 1792541995.4207222,
+              "end": 1792541999.719681,
+              "duration_wall_s": 4.298958778381348,
+              "negative_commands": 87,
+              "body_dx_m": -0.9370575058724393,
+              "body_dy_m": 0.0045310386137185354,
+              "yaw_change_rad": -0.012113227100473058,
+              "max_abs_command": 0.024,
+              "max_abs_yaw_command": 0.0
+            }
+          ],
+          "max_episodes": 1
+        },
+        "home_verification": {
+          "correction_count": 0,
+          "map_error_m": 0.17461730171699846,
+          "map_error_yaw": 0.10172171421267609,
+          "method": "dynamic_map_odom_and_lidar_home_keyframe",
+          "odom_error_m": 0.02127878418754207,
+          "odom_error_yaw": 0.08420035676248629,
+          "scan_match": {
+            "inlier_count": 360,
+            "inlier_ratio": 1.0,
+            "iterations": 11,
+            "position_error_m": 0.18381227487336346,
+            "reason": "matched",
+            "rmse_m": 0.03570659128360357,
+            "valid": true,
+            "yaw_error_rad": 0.09618808497690058
+          },
+          "stable_s": 3.0,
+          "verified_map_home": {
+            "x": 0.0,
+            "y": 0.0,
+            "yaw": 0.0
+          }
+        },
+        "source_audit": {
+          "unchanged": true,
+          "changed": []
+        },
+        "geometry": {
+          "canonical_static_scene": false,
+          "visible_collision_match": true,
+          "passage_width_m": 1.2,
+          "original_fixture_sha256": "97d03697e44a6a236f13a1a4fee568a527a2ec19e8fdfe5325b86d581ce274bf",
+          "world_sha256": "7d3e5104a109fc074c61f0ca47fc80b0749be2fa3b4c35b2efe37b07fd3970d7",
+          "source_world_modified": false
+        }
+      }
+    },
+    "regression_logs": {
+      "policy-tests-endpoint-corrected.log": {
+        "passed": 34,
+        "failed": 0,
+        "all_passed": true,
+        "seconds": 0.87
+      },
+      "full-tests-endpoint.log": {
+        "passed": 675,
+        "failed": 0,
+        "all_passed": true,
+        "seconds": 124.42
+      },
+      "policy-tests-intent.log": {
+        "passed": 39,
+        "failed": 0,
+        "all_passed": true,
+        "seconds": 1.46
+      },
+      "policy-tests-exit.log": {
+        "passed": 37,
+        "failed": 0,
+        "all_passed": true,
+        "seconds": 1.34
+      },
+      "full-tests.log": {
+        "passed": 674,
+        "failed": 0,
+        "all_passed": true,
+        "seconds": 125.06
+      },
+      "full-tests-exit.log": {
+        "passed": 678,
+        "failed": 0,
+        "all_passed": true,
+        "seconds": 124.13
+      },
+      "policy-tests-order.log": {
+        "passed": 40,
+        "failed": 0,
+        "all_passed": true,
+        "seconds": 1.1
+      },
+      "full-tests-final.log": {
+        "passed": 679,
+        "failed": 0,
+        "all_passed": true,
+        "seconds": 123.65
+      },
+      "full-tests-order.log": {
+        "passed": 681,
+        "failed": 0,
+        "all_passed": true,
+        "seconds": 125.12
+      },
+      "policy-tests-final.log": {
+        "passed": 38,
+        "failed": 0,
+        "all_passed": true,
+        "seconds": 1.31
+      },
+      "full-tests-intent.log": {
+        "passed": 680,
+        "failed": 0,
+        "all_passed": true,
+        "seconds": 127.06
+      },
+      "full-tests-reserve.log": {
+        "passed": 685,
+        "failed": 0,
+        "all_passed": true,
+        "seconds": 124.42
+      },
+      "policy-tests.log": {
+        "passed": 33,
+        "failed": 0,
+        "all_passed": true,
+        "seconds": 1.2
+      },
+      "policy-tests-endpoint.log": {
+        "passed": 33,
+        "failed": 1,
+        "all_passed": false,
+        "seconds": 0.93
+      },
+      "policy-tests-reserve.log": {
+        "passed": 43,
+        "failed": 0,
+        "all_passed": true,
+        "seconds": 1.56
+      }
+    },
+    "upstream_odometry": {
+      "source": "/home/wy/go2_sim_ws/ROS2-Gazebo-GO2/src/quadropted_controller/scripts/QuadrupedOdometryNode.py",
+      "sha256": "aa84b6a2941378f855cfad013f54c548a7c6be034a95a5cd6d204599a371531c",
+      "installed_file_is_source_symlink": true,
+      "observed_code": "contact_count += 0.65; delta_x = delta_x_total / contact_count",
+      "interpretation": "This is not a literal contact count: denominator is 0.65 per contacting foot, expanding mean foot displacement by 1/0.65 before smoothing. Actual estimator bias also depends on contacts, slipping and EKF inputs; not a full physical calibration.",
+      "source_modified": false
+    },
+    "distance_trace": "docs/assets/reverse-odometry-distance.svg",
+    "limits": {
+      "legacy_default_max_excursion_m": 1.5,
+      "configured_max_excursion_m": 2.0,
+      "allowed_excursion_range_m": [
+        0.5,
+        2.0
+      ],
+      "max_reverse_episode_sim_seconds": 12,
+      "wide_entry_clearance_m": 0.65,
+      "exit_braking_trigger_clearance_m": 0.81,
+      "wide_exit_clearance_m": 0.76,
+      "meaning": "Thresholds stop additional reverse requests; coasting during a zero-command exit may increase measured excursion. Only an already-open exit may finish stationary verification; losing clearance latches stop."
+    },
+    "limitations": [
+      "Private 1.2m modified geometry, not canonical registered static scene or native warehouse",
+      "Operator supplied the initial Nav2 goal; G2 autonomous exploration requests disabled by a private topic override",
+      "Truth used only for closed-bag independent acceptance, never control",
+      "Default reverse feature remains disabled",
+      "Raw foot odometry scale remains uncalibrated; upstream shared workspace untouched",
+      "Intermediate failures and changed policy variants are retained; results are not a statistical success rate"
+    ],
+    "cleanup": {
+      "228": [],
+      "229": []
+    }
+  },
+  "initial_stage_commit": "64db3ad",
+  "current_stage": "follow_up_20261020",
+  "current_runtime_snapshot": ".runtime/reverse_followup_20261020/reserve-source_sha256.json",
+  "current_policy_trials": [
+    "nav2_trial_9",
+    "nav2_trial_10"
+  ],
+  "initial_regression": {
+    "passed": 671,
+    "seconds": 124.83,
+    "log": ".runtime/reverse_20261020/full-tests-final.log"
+  },
+  "demonstrated_private_trials": [
+    "nav2_trial_4",
+    "nav2_trial_7",
+    "nav2_trial_9",
+    "nav2_trial_10"
   ]
 }

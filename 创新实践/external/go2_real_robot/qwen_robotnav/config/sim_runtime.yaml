@@ -56,6 +56,7 @@ navigation:
   desired_linear_velocity_mps: 0.32
   return_turn_handoff_enabled: true
   reverse_retreat_enabled: false
+  reverse_retreat_max_extent_m: 2.0  # Filtered odometry excursion, not physical body distance.
 corridor:
   enabled: true
   steering_enabled: true

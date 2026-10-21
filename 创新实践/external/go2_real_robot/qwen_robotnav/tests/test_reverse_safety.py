@@ -61,3 +61,18 @@ def test_full_scan_is_required_and_the_feature_flag_is_strict():
     p=load_profile(PROFILE);p['navigation']['reverse_retreat_enabled']=True;validate_profile(p)
     p['navigation']['reverse_retreat_enabled']='true'
     with pytest.raises(ValueError):validate_profile(p)
+
+
+def test_reverse_excursion_profile_limit_has_bounded_units_and_backward_compatible_default():
+ from qwen_robotnav.runtime_profile import ros_parameters
+ import json
+ p=load_profile(PROFILE);p['navigation']['reverse_retreat_enabled']=True
+ p['navigation'].pop('reverse_retreat_max_extent_m',None);validate_profile(p)
+ def extent():
+  cfg=json.loads(ros_parameters(p)['cmd_vel_scaler']['ros__parameters']['corridor_config'])
+  return cfg['reverse_retreat']['max_extent_m']
+ assert extent()==1.5
+ p['navigation']['reverse_retreat_max_extent_m']=2.;validate_profile(p);assert extent()==2.
+ for value in (True,0.,.49,2.01,float('nan')):
+  p['navigation']['reverse_retreat_max_extent_m']=value
+  with pytest.raises(ValueError):validate_profile(p)

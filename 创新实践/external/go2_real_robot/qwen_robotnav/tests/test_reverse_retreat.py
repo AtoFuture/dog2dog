@@ -28,9 +28,9 @@ def test_retreat_brakes_follows_recorded_trail_and_stops_in_verified_open_space(
  r=policy();begin(r);size=len(r.trail)
  r.observe_pose((2.3,0.,0.),6.);assert len(r.trail)==size
  assert step(r,1.1)[0]<0
- assert step(r,1.2,points=walls(.8),current_linear=-.024)[0]==0
- step(r,1.3,points=walls(.8));assert step(r,2.11,points=walls(.8))[2]=='reverse_retreat_complete'
- assert step(r,2.2,points=walls(.8))is None
+ assert step(r,1.2,points=walls(.85),current_linear=-.024)[0]==0
+ step(r,1.3,points=walls(.85));assert step(r,2.11,points=walls(.85))[2]=='reverse_retreat_complete'
+ assert step(r,2.2,points=walls(.85))is None
  assert r.episodes==1
 
 @pytest.mark.parametrize('kw',[dict(enabled=False),dict(odom_fresh=False),dict(points=None),dict(target=None),dict(target=(1.,0.)),dict(target=(-1.,.4)),dict(scan_age=.51)])
@@ -93,9 +93,130 @@ def test_exhausted_retreat_remains_stopped_and_does_not_count_subsequent_pose_mo
  r.observe_pose((2.4,0.,0.),7.)
  assert r.travel==distance
  assert step(r,13.1)[2]=='reverse_retreat_limit'
- assert step(r,13.2,points=walls(.8))[2]=='reverse_retreat_limit'
+ assert step(r,13.2,points=walls(.85))[2]=='reverse_retreat_limit'
 
 def test_exit_reserves_sensor_and_gait_room_without_forcing_wide_corridor_admission():
  r=policy();assert step(r,0.,points=walls(.7))is None
  r=policy();begin(r);assert step(r,1.1,points=walls(.7))[2]=='reverse_retreat'
- assert step(r,1.2,points=walls(.8))[2]=='reverse_retreat_settling'
+ assert step(r,1.2,points=walls(.85))[2]=='reverse_retreat_settling'
+
+
+def test_settling_oscillations_do_not_spend_the_straight_excursion_budget():
+ r=policy();begin(r)
+ for i in range(30):r.observe_pose((2.5-(.06 if i%2 else 0.),0.,0.),6.+i*.1)
+ assert r.travel>1.5 and r.extent==pytest.approx(.06)
+ assert step(r,5.)[0]<0 and not r.blocked
+ # A real excursion beyond the unchanged 1.5m boundary still latches a stop.
+ for i in range(1,9):r.observe_pose((2.44-.2*i,0.,0.),10.+i*.1)
+ assert step(r,6.)[2]=='reverse_retreat_limit'
+
+
+def test_history_covers_predicted_travel_without_requiring_full_body_radius():
+ r=policy();r.trail.clear();r.trail.extend(((2.2,0.,0.),(2.35,0.,0.),(2.5,0.,0.)))
+ begin(r)
+ r=policy();r.trail.clear();r.trail.extend(((2.3,0.,0.),(2.5,0.,0.)))
+ assert step(r,0.)is None
+ r=policy();r.trail.clear();r.trail.extend(((2.2,.13,0.),(2.5,0.,0.)))
+ assert step(r,0.)is None
+
+
+def test_zero_request_does_not_reset_the_original_excursion_origin():
+ r=policy();begin(r);origin=r.origin
+ r.observe_pose((2.2,0.,0.),6.)
+ step(r,1.1,requested=False)
+ for t in(1.2,1.3,1.4):step(r,t)
+ assert r.origin==origin and r.episodes==1 and r.extent==pytest.approx(.3)
+ r.observe_pose((2.,0.,0.),7.)
+ assert r.extent==pytest.approx(.5)
+
+
+def test_near_trail_origin_uses_same_traversed_segment_ahead_with_full_rear_guard():
+ r=policy();r.pose=(.1,0.,0.);begin(r)
+ assert r._on_trail()
+ assert step(r,3.,points=walls()+((-.55,0.),))[2]=='reverse_retreat_path_blocked'
+ # Neither extending beyond the original body nor reversing direction is valid.
+ r.pose=(-.13,0.,0.);assert not r._on_trail()
+ r.pose=(.1,0.,math.pi);assert not r._on_trail()
+ r.pose=(.1,.2,0.);assert not r._on_trail()
+
+
+@pytest.mark.parametrize('budget',['distance','time'])
+def test_budget_while_braking_in_open_space_only_permits_stationary_verified_exit(budget):
+ r=policy();begin(r)
+ assert step(r,2.,points=walls(.85),current_linear=-.024)[2]=='reverse_retreat_settling'
+ if budget=='distance':
+  for i in range(1,9):r.observe_pose((2.5-.2*i,0.,0.),6.+i*.1)
+ t=13. if budget=='time' else 2.1
+ assert step(r,t,points=walls(.85),current_linear=-.002)[0]==0
+ assert r.exit_budget_stop and not r.blocked
+ assert step(r,t+.1,points=walls(.85))[0]==0
+ assert step(r,t+1.,points=walls(.85))[2]=='reverse_retreat_complete'
+ assert step(r,t+1.1,points=walls(.85))is None
+
+
+def test_budget_during_exit_never_allows_restarting_retreat_or_losing_wide_clearance():
+ r=policy();begin(r);step(r,2.,points=walls(.85))
+ step(r,13.,points=walls(.85))
+ assert step(r,13.1)[2]=='reverse_retreat_limit'
+ assert step(r,14.,points=walls(.85))[2]=='reverse_retreat_limit'
+ r=policy();begin(r);step(r,2.,points=walls(.85))
+ step(r,13.,requested=False)
+ assert step(r,13.1,points=walls(.85))[2]=='reverse_retreat_settling'
+ assert r.exit_budget_stop
+ assert step(r,13.2)[2]=='reverse_retreat_limit'
+
+
+def test_zero_request_in_wide_space_cannot_skip_pending_exit_confirmation():
+ r=policy();begin(r)
+ assert step(r,1.2,points=walls(.85),current_linear=-.024)[0]==0
+ assert step(r,1.3,requested=False)[2]=='reverse_retreat_cancelled'
+ assert step(r,1.4,points=walls(.85))[2]=='reverse_retreat_settling'
+ assert r.started==.2 and r.episodes==1
+ step(r,1.5,points=walls(.85))
+ assert step(r,2.3,points=walls(.85))[2]=='reverse_retreat_complete'
+
+
+def test_remote_path_intent_includes_existing_position_tolerance_but_never_overrides_local_safety():
+ r=policy()
+ for t in(0.,.1,.2,1.1):result=step(r,t,target=(-.85,.198))
+ assert result[0]<0
+ for target in ((-.85,.4),(-.3,.19),(.85,0.)):
+  assert step(policy(),0.,target=target)is None
+ assert step(policy(),0.,target=(-.85,.198),points=walls()+((-.55,0.),))is None
+ r=policy();r.pose=(2.5,.2,0.)
+ assert step(r,0.,target=(-.85,.198))is None
+
+
+def test_current_wide_scan_wins_over_previous_retreat_phase_at_budget_crossing():
+ r=policy();begin(r)
+ for i in range(1,9):r.observe_pose((2.5-.19*i,0.,0.),6.+i*.1)
+ assert r.phase=='retreat' and r.extent>1.5
+ assert step(r,2.,points=walls(.825),current_linear=-.024)[2]=='reverse_retreat_settling'
+ assert r.exit_budget_stop and not r.blocked
+ assert step(r,2.3,points=walls(.825))[0]==0
+ assert step(r,3.2,points=walls(.825))[2]=='reverse_retreat_complete'
+
+
+def test_braking_reserves_clearance_and_holds_the_original_exit_threshold_during_rebound():
+ r=policy();begin(r)
+ assert step(r,1.2,points=walls(.79))[0]<0
+ assert step(r,1.3,points=walls(.82),current_linear=-.024)[2]=='reverse_retreat_settling'
+ assert step(r,1.4,points=walls(.78))[0]==0
+ assert step(r,2.3,points=walls(.78))[2]=='reverse_retreat_complete'
+
+
+def test_configured_excursion_limit_is_still_finite_and_does_not_reset_on_resume():
+ r=policy();r.settings['max_extent_m']=2.;begin(r)
+ for i in range(1,10):r.observe_pose((2.5-.19*i,0.,0.),6.+i*.1)
+ assert r.extent>1.5 and step(r,2.)[0]<0
+ step(r,2.1,requested=False)
+ for t in(2.2,2.3,2.4):step(r,t)
+ for i in range(10,12):r.observe_pose((2.5-.19*i,0.,0.),6.+i*.1)
+ assert r.extent>2. and step(r,3.)[2]=='reverse_retreat_limit'
+
+
+def test_cancelled_retreat_cannot_handoff_to_a_changed_path_before_verified_exit():
+ r=policy();begin(r);step(r,1.2,requested=False)
+ assert step(r,1.3,target=(1.,0.))[2]=='reverse_retreat_path_blocked'
+ assert r.started==.2 and r.episodes==1
+ assert step(r,1.4,target=(-1.,0.))[2]=='reverse_retreat_confirming'
