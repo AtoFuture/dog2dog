@@ -1,0 +1,1035 @@
+<?xml version='1.0' encoding='ASCII'?>
+<sdf version='1.7'>
+  <world name='world_demo'>
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin
+      filename="gz-sim-sensors-system"
+      name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin
+      filename="gz-sim-physics-system"
+      name="gz::sim::systems::Physics">
+    </plugin>
+    <plugin
+      filename="gz-sim-user-commands-system"
+      name="gz::sim::systems::UserCommands">
+    </plugin>
+    <plugin
+      filename="gz-sim-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster">
+    </plugin>
+
+    <model name='ground_plane'>
+      <static>1</static>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>1 1</size>
+            </plane>
+          </geometry>
+          <surface>
+            <friction>
+              <ode/>
+            </friction>
+            <bounce/>
+            <contact/>
+          </surface>
+        </collision>
+      </link>
+      <pose>0 0 0 0 0 0</pose>
+    </model>
+
+    <include>
+      <uri>
+        https://fuel.ignitionrobotics.org/1.0/OpenRobotics/models/Depot
+      </uri>
+      <pose>7.19009 1.09982 0 0 0 0</pose>
+    </include>
+
+    <model name='depot_collision'>
+      <static>1</static>
+      <pose>7.19009 1.09982 0 0 0 0</pose>
+      <link name='collision_link'>
+        <pose>0 0 0 0 0 0</pose>
+        <collision name='wall1'>
+          <pose>0 -7.6129 4.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>30.167 0.08 9</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='wall2'>
+          <pose>0 7.2875 4.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>30.167 0.08 9</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='wall3'>
+          <pose>-15 0 4.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.08 15.360 9</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='wall4'>
+          <pose>15 0 4.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.08 15.360 9</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='boxes1'>
+          <pose>0.22268 -4.7268 0.68506 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.288 1.422 1.288</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='boxes2'>
+          <pose>3.1727 -4.7268 0.68506 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.288 1.422 1.288</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='boxes3'>
+          <pose>5.95268 -4.7268 0.68506 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.288 1.422 1.288</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='boxes4'>
+          <pose>8.55887 -4.7268 0.68506 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.288 1.422 1.288</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='boxes5'>
+          <pose>11.326 -4.7268 0.68506 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.288 1.422 1.288</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='boxes6'>
+          <pose>0.22268 -2.37448 0.68506 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.288 1.422 1.288</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='boxes7'>
+          <pose>3.1727 -2.37448 0.68506 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.288 1.422 1.288</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='boxes8'>
+          <pose>5.95268 -2.37448 0.68506 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.288 1.422 1.288</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='boxes9'>
+          <pose>8.55887 -2.37448 0.68506 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.288 1.422 1.288</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='boxes10'>
+          <pose>11.326 -2.37448 0.68506 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.288 1.422 1.288</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='boxes11'>
+          <pose>-1.2268 4.1557 0.68506 0 0 -1.02799893</pose>
+          <geometry>
+            <box>
+              <size>1.288 1.422 1.288</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='pilar1'>
+          <pose>-7.5402 3.6151 1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.465 0.465 2</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='pilar2'>
+          <pose>7.4575 3.6151 1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.465 0.465 2</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='pilar3'>
+          <pose>-7.5402 -3.8857 1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.465 0.465 2</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='pilar4'>
+          <pose>7.4575 -3.8857 1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.465 0.465 2</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='pallet_mover1'>
+          <pose>-0.6144 -2.389 0.41838 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.363 0.440 0.719</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='pallet_mover2'>
+          <pose>-1.6004 4.8225 0.41838 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.363 0.244 0.719</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='stairs'>
+          <pose>13.018 3.1652 0.25 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.299 0.6 0.5</size>
+            </box>
+          </geometry>
+        </collision>
+        <collision name='shelfs1'>
+          <pose>1.4662 -0.017559 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <collision name='shelfs2'>
+          <pose>2.6483 -0.017559 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <collision name='shelfs3'>
+          <pose>5.3247 -0.017559 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <collision name='shelfs4'>
+          <pose>6.5063 -0.017559 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <collision name='shelfs5'>
+          <pose>9.0758 -0.017559 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <collision name='shelfs6'>
+          <pose>10.258 -0.017559 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <collision name='shelfs7'>
+          <pose>1.4662 2.5664 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <collision name='shelfs8'>
+          <pose>2.6483 2.5664 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <collision name='shelfs9'>
+          <pose>5.3247 2.5664 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <collision name='shelfs10'>
+          <pose>6.5063 2.5664 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <collision name='shelfs11'>
+          <pose>9.0758 2.5664 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <collision name='shelfs12'>
+          <pose>10.258 2.5664 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <collision name='shelfs13'>
+          <pose>1.4662 5.1497 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <collision name='shelfs14'>
+          <pose>2.6483 5.1497 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <collision name='shelfs15'>
+          <pose>5.3247 5.1497 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <collision name='shelfs16'>
+          <pose>6.5063 5.1497 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <collision name='shelfs17'>
+          <pose>9.0758 5.1497 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <collision name='shelfs18'>
+          <pose>10.258 5.1497 0.5 0 0 0</pose>
+          <geometry>
+            <cylinder>
+              <radius>0.03</radius>
+              <length>1</length>
+            </cylinder>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+    <model name='maze_walls'>
+      <static>1</static>
+      <link name='walls_link'>
+        <collision name='mz_A1'>
+          <pose>-4.3 -3.0 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.2 2.0 2.0</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='mz_A1_vis'>
+          <pose>-4.3 -3.0 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.2 2.0 2.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+        <collision name='mz_A2'>
+          <pose>-4.3 3.0 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.2 2.0 2.0</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='mz_A2_vis'>
+          <pose>-4.3 3.0 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.2 2.0 2.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+        <collision name='mz_B1'>
+          <pose>-3.3 2.0 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.0 0.2 2.0</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='mz_B1_vis'>
+          <pose>-3.3 2.0 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.0 0.2 2.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+        <collision name='mz_B2'>
+          <pose>1.0 2.0 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.0 0.2 2.0</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='mz_B2_vis'>
+          <pose>1.0 2.0 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.0 0.2 2.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+        <collision name='mz_C1'>
+          <pose>-5.2 -2.0 0.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 0.2 1.0</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='mz_C1_vis'>
+          <pose>-5.2 -2.0 0.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.6 0.2 1.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+        <collision name='mz_C2'>
+          <pose>-1.0 -2.0 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.0 0.2 2.0</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='mz_C2_vis'>
+          <pose>-1.0 -2.0 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.0 0.2 2.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+        <collision name='mz_D3'>
+          <pose>-7.0 -3.0 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.2 3.0 2.0</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='mz_D3_vis'>
+          <pose>-7.0 -3.0 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.2 3.0 2.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+        <collision name='mz_D4'>
+          <pose>-5.0 -3.0 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.2 3.0 2.0</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='mz_D4_vis'>
+          <pose>-5.0 -3.0 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.2 3.0 2.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+        <collision name='mz_D5'>
+          <pose>-6.0 -1.5 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.2 0.2 2.0</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='mz_D5_vis'>
+          <pose>-6.0 -1.5 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.2 0.2 2.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+        <collision name='mz_E1'>
+          <pose>-2.4 4.5 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.6 0.2 2.0</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='mz_E1_vis'>
+          <pose>-2.4 4.5 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.6 0.2 2.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+        <collision name='mz_E2'>
+          <pose>-2.4 6.5 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.6 0.2 2.0</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='mz_E2_vis'>
+          <pose>-2.4 6.5 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.6 0.2 2.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+        <collision name='mz_E3'>
+          <pose>-1.0 5.5 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.2 2.2 2.0</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='mz_E3_vis'>
+          <pose>-1.0 5.5 1.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.2 2.2 2.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+        <collision name='mz_F1'>
+          <pose>-2.0 -0.5 1.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.0 1.0 2.2</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='mz_F1_vis'>
+          <pose>-2.0 -0.5 1.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.0 1.0 2.2</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+        <collision name='mz_F2'>
+          <pose>-5.2 2.8 1.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.0 1.0 2.2</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='mz_F2_vis'>
+          <pose>-5.2 2.8 1.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.0 1.0 2.2</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+        <collision name='mz_F3'>
+          <pose>-1.2 -3.6 0.45 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.0 1.0 0.9</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name='mz_F3_vis'>
+          <pose>-1.2 -3.6 0.45 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.0 1.0 0.9</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+      <pose>0 0 0 0 0 0</pose>
+    </model>
+  
+    <!-- ==== 行人：<actor> 长走廊矩形环 ==== -->
+
+    <actor name="person_1">
+      <pose>10.8 0.4 0 0 0 0</pose>
+      <skin><filename>model://person_standing/meshes/standing.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x></animation>
+      <script>
+        <loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk" tension="1.0">
+          <waypoint><time>0.0</time><pose>0.0 0.0 0 0 0 0</pose></waypoint>
+          <waypoint><time>23.333</time><pose>0.0 7.0 0 0 0 0</pose></waypoint>
+          <waypoint><time>46.667</time><pose>0 0 0 0 0 0</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+
+    <actor name="person_2">
+      <pose>18.75 0.4 0 0 0 0</pose>
+      <skin><filename>model://person_standing/meshes/standing.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x></animation>
+      <script>
+        <loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk" tension="1.0">
+          <waypoint><time>0.0</time><pose>0.0 0.0 0 0 0 0</pose></waypoint>
+          <waypoint><time>23.333</time><pose>0.0 7.0 0 0 0 0</pose></waypoint>
+          <waypoint><time>46.667</time><pose>0 0 0 0 0 0</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+
+    <actor name="person_3">
+      <pose>8.0 0.25 0 0 0 0</pose>
+      <skin><filename>model://person_standing/meshes/standing.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x></animation>
+      <script>
+        <loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk" tension="1.0">
+          <waypoint><time>0.0</time><pose>0.0 0.0 0 0 0 0</pose></waypoint>
+          <waypoint><time>41.667</time><pose>12.5 0.0 0 0 0 0</pose></waypoint>
+          <waypoint><time>83.333</time><pose>0 0 0 0 0 0</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+
+    <actor name="person_4">
+      <pose>14.65 -0.4 0 0 0 0</pose>
+      <skin><filename>model://person_standing/meshes/standing.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x></animation>
+      <script>
+        <loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk" tension="1.0">
+          <waypoint><time>0.0</time><pose>0.0 0.0 0 0 0 0</pose></waypoint>
+          <waypoint><time>14.0</time><pose>0.0 4.2 0 0 0 0</pose></waypoint>
+          <waypoint><time>28.0</time><pose>0 0 0 0 0 0</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+
+    <actor name="person_5">
+      <pose>8.0 -5.1 0 0 0 0</pose>
+      <skin><filename>model://person_standing/meshes/standing.dae</filename><scale>1.0</scale></skin>
+      <animation name="walk"><filename>model://walking_actor/meshes/walk.dae</filename><scale>1.0</scale><interpolate_x>true</interpolate_x></animation>
+      <script>
+        <loop>true</loop><auto_start>true</auto_start>
+        <trajectory id="0" type="walk" tension="1.0">
+          <waypoint><time>0.0</time><pose>0.0 0.0 0 0 0 0</pose></waypoint>
+          <waypoint><time>40.0</time><pose>12.0 0.0 0 0 0 0</pose></waypoint>
+          <waypoint><time>80.0</time><pose>0 0 0 0 0 0</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+
+    <!-- ==== 车辆：带轮整车 + 官方 AckermannSteering + TrajDrive(cmd_vel) ==== -->
+
+    <model name='suv_1'>
+      <pose>3.6 -5.4 0.325 0 0 1.5708</pose>
+      <link name='chassis'>
+        <pose>-0.151427 0 0.175 0 0 0</pose>
+        <inertial><mass>1.14395</mass><inertia>
+          <ixx>0.126164</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.416519</iyy><iyz>0</iyz><izz>0.481014</izz></inertia></inertial>
+        <visual name='visual'><geometry><box><size>2.01142 1 0.568726</size></box></geometry>
+          <material><ambient>0.55 0.57 0.60 1</ambient><diffuse>0.55 0.57 0.60 1</diffuse>
+          <specular>0.9 0.9 0.9 1</specular></material></visual>
+        <collision name='collision'><geometry><box><size>2.01142 1 0.568726</size></box></geometry></collision>
+      </link>
+
+      <link name='front_left_wheel'>
+        <pose>0.554283 0.625029 -0.025 -1.5707 0 0</pose>
+        <inertial><mass>2</mass><inertia>
+          <ixx>0.145833</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.145833</iyy><iyz>0</iyz><izz>0.125</izz></inertia></inertial>
+        <visual name='visual'><geometry><cylinder><length>0.15</length><radius>0.3</radius></cylinder></geometry>
+          <material><ambient>0.15 0.15 0.15 1</ambient><diffuse>0.15 0.15 0.15 1</diffuse></material></visual>
+        <collision name='collision'><geometry><cylinder><length>0.15</length><radius>0.3</radius></cylinder></geometry>
+          <surface><friction><ode><mu>0.5</mu><mu2>1.0</mu2><fdir1>0 0 1</fdir1></ode></friction></surface></collision>
+      </link>
+
+
+      <link name='front_right_wheel'>
+        <pose>0.554282 -0.625029 -0.025 -1.5707 0 0</pose>
+        <inertial><mass>2</mass><inertia>
+          <ixx>0.145833</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.145833</iyy><iyz>0</iyz><izz>0.125</izz></inertia></inertial>
+        <visual name='visual'><geometry><cylinder><length>0.15</length><radius>0.3</radius></cylinder></geometry>
+          <material><ambient>0.15 0.15 0.15 1</ambient><diffuse>0.15 0.15 0.15 1</diffuse></material></visual>
+        <collision name='collision'><geometry><cylinder><length>0.15</length><radius>0.3</radius></cylinder></geometry>
+          <surface><friction><ode><mu>0.5</mu><mu2>1.0</mu2><fdir1>0 0 1</fdir1></ode></friction></surface></collision>
+      </link>
+
+
+      <link name='rear_left_wheel'>
+        <pose>-0.957138 0.625029 -0.025 -1.5707 0 0</pose>
+        <inertial><mass>2</mass><inertia>
+          <ixx>0.145833</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.145833</iyy><iyz>0</iyz><izz>0.125</izz></inertia></inertial>
+        <visual name='visual'><geometry><cylinder><length>0.15</length><radius>0.3</radius></cylinder></geometry>
+          <material><ambient>0.15 0.15 0.15 1</ambient><diffuse>0.15 0.15 0.15 1</diffuse></material></visual>
+        <collision name='collision'><geometry><cylinder><length>0.15</length><radius>0.3</radius></cylinder></geometry>
+          <surface><friction><ode><mu>0.5</mu><mu2>1.0</mu2><fdir1>0 0 1</fdir1></ode></friction></surface></collision>
+      </link>
+
+
+      <link name='rear_right_wheel'>
+        <pose>-0.957138 -0.625029 -0.025 -1.5707 0 0</pose>
+        <inertial><mass>2</mass><inertia>
+          <ixx>0.145833</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.145833</iyy><iyz>0</iyz><izz>0.125</izz></inertia></inertial>
+        <visual name='visual'><geometry><cylinder><length>0.15</length><radius>0.3</radius></cylinder></geometry>
+          <material><ambient>0.15 0.15 0.15 1</ambient><diffuse>0.15 0.15 0.15 1</diffuse></material></visual>
+        <collision name='collision'><geometry><cylinder><length>0.15</length><radius>0.3</radius></cylinder></geometry>
+          <surface><friction><ode><mu>0.5</mu><mu2>1.0</mu2><fdir1>0 0 1</fdir1></ode></friction></surface></collision>
+      </link>
+
+
+      <link name='front_left_wheel_steering_link'>
+        <pose>0.554283 0.5 0.02 0 0 0</pose>
+        <inertial><mass>0.5</mass><inertia>
+          <ixx>0.0153</ixx><iyy>0.025</iyy><izz>0.0153</izz></inertia></inertial>
+        <visual name='v'><geometry><cylinder><length>0.1</length><radius>0.03</radius></cylinder></geometry>
+          <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse></material></visual>
+      </link>
+
+
+      <link name='front_right_wheel_steering_link'>
+        <pose>0.554283 -0.5 0.02 0 0 0</pose>
+        <inertial><mass>0.5</mass><inertia>
+          <ixx>0.0153</ixx><iyy>0.025</iyy><izz>0.0153</izz></inertia></inertial>
+        <visual name='v'><geometry><cylinder><length>0.1</length><radius>0.03</radius></cylinder></geometry>
+          <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse></material></visual>
+      </link>
+
+      <joint name='front_left_wheel_steering_joint' type='revolute'>
+        <child>front_left_wheel_steering_link</child><parent>chassis</parent>
+        <axis><xyz>0 0 1</xyz><limit><lower>-0.6</lower><upper>0.6</upper><velocity>1.0</velocity><effort>25</effort></limit><use_parent_model_frame>1</use_parent_model_frame></axis>
+      </joint>
+      <joint name='front_right_wheel_steering_joint' type='revolute'>
+        <parent>chassis</parent><child>front_right_wheel_steering_link</child>
+        <axis><xyz>0 0 1</xyz><limit><lower>-0.6</lower><upper>0.6</upper><velocity>1.0</velocity><effort>25</effort></limit></axis>
+      </joint>
+      <joint name='front_left_wheel_joint' type='revolute'>
+        <parent>front_left_wheel_steering_link</parent><child>front_left_wheel</child>
+        <axis><xyz>0 0 1</xyz></axis>
+      </joint>
+      <joint name='front_right_wheel_joint' type='revolute'>
+        <parent>front_right_wheel_steering_link</parent><child>front_right_wheel</child>
+        <axis><xyz>0 0 1</xyz></axis>
+      </joint>
+      <joint name='rear_left_wheel_joint' type='revolute'>
+        <parent>chassis</parent><child>rear_left_wheel</child>
+        <axis><xyz>0 0 1</xyz></axis>
+      </joint>
+      <joint name='rear_right_wheel_joint' type='revolute'>
+        <parent>chassis</parent><child>rear_right_wheel</child>
+        <axis><xyz>0 0 1</xyz></axis>
+      </joint>
+
+      <plugin filename="ignition-gazebo-ackermann-steering-system" name="gz::sim::systems::AckermannSteering">
+        <left_joint>front_left_wheel_joint</left_joint>
+        <left_joint>rear_left_wheel_joint</left_joint>
+        <right_joint>front_right_wheel_joint</right_joint>
+        <right_joint>rear_right_wheel_joint</right_joint>
+        <left_steering_joint>front_left_wheel_steering_joint</left_steering_joint>
+        <right_steering_joint>front_right_wheel_steering_joint</right_steering_joint>
+        <kingpin_width>1.0</kingpin_width>
+        <steering_limit>0.5</steering_limit>
+        <wheel_base>1.0</wheel_base>
+        <wheel_separation>1.25</wheel_separation>
+        <wheel_radius>0.3</wheel_radius>
+        <min_velocity>-1</min_velocity>
+        <max_velocity>1</max_velocity>
+        <min_acceleration>-3</min_acceleration>
+        <max_acceleration>3</max_acceleration>
+      </plugin>
+      <plugin filename="libTrajDrive.so" name="traj_drive::TrajDrive">
+        <link>chassis</link><speed>0.6</speed><kp>1.5</kp><lookahead>2.0</lookahead><loop>true</loop>
+        <waypoint>3.6 -5.4 0</waypoint>
+        <waypoint>3.6 7.0 0</waypoint>
+      </plugin>
+    </model>
+
+    <model name='suv_2'>
+      <pose>5.4 -5.4 0.325 0 0 1.5708</pose>
+      <link name='chassis'>
+        <pose>-0.151427 0 0.175 0 0 0</pose>
+        <inertial><mass>1.14395</mass><inertia>
+          <ixx>0.126164</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.416519</iyy><iyz>0</iyz><izz>0.481014</izz></inertia></inertial>
+        <visual name='visual'><geometry><box><size>2.01142 1 0.568726</size></box></geometry>
+          <material><ambient>0.55 0.57 0.60 1</ambient><diffuse>0.55 0.57 0.60 1</diffuse>
+          <specular>0.9 0.9 0.9 1</specular></material></visual>
+        <collision name='collision'><geometry><box><size>2.01142 1 0.568726</size></box></geometry></collision>
+      </link>
+
+      <link name='front_left_wheel'>
+        <pose>0.554283 0.625029 -0.025 -1.5707 0 0</pose>
+        <inertial><mass>2</mass><inertia>
+          <ixx>0.145833</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.145833</iyy><iyz>0</iyz><izz>0.125</izz></inertia></inertial>
+        <visual name='visual'><geometry><cylinder><length>0.15</length><radius>0.3</radius></cylinder></geometry>
+          <material><ambient>0.15 0.15 0.15 1</ambient><diffuse>0.15 0.15 0.15 1</diffuse></material></visual>
+        <collision name='collision'><geometry><cylinder><length>0.15</length><radius>0.3</radius></cylinder></geometry>
+          <surface><friction><ode><mu>0.5</mu><mu2>1.0</mu2><fdir1>0 0 1</fdir1></ode></friction></surface></collision>
+      </link>
+
+
+      <link name='front_right_wheel'>
+        <pose>0.554282 -0.625029 -0.025 -1.5707 0 0</pose>
+        <inertial><mass>2</mass><inertia>
+          <ixx>0.145833</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.145833</iyy><iyz>0</iyz><izz>0.125</izz></inertia></inertial>
+        <visual name='visual'><geometry><cylinder><length>0.15</length><radius>0.3</radius></cylinder></geometry>
+          <material><ambient>0.15 0.15 0.15 1</ambient><diffuse>0.15 0.15 0.15 1</diffuse></material></visual>
+        <collision name='collision'><geometry><cylinder><length>0.15</length><radius>0.3</radius></cylinder></geometry>
+          <surface><friction><ode><mu>0.5</mu><mu2>1.0</mu2><fdir1>0 0 1</fdir1></ode></friction></surface></collision>
+      </link>
+
+
+      <link name='rear_left_wheel'>
+        <pose>-0.957138 0.625029 -0.025 -1.5707 0 0</pose>
+        <inertial><mass>2</mass><inertia>
+          <ixx>0.145833</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.145833</iyy><iyz>0</iyz><izz>0.125</izz></inertia></inertial>
+        <visual name='visual'><geometry><cylinder><length>0.15</length><radius>0.3</radius></cylinder></geometry>
+          <material><ambient>0.15 0.15 0.15 1</ambient><diffuse>0.15 0.15 0.15 1</diffuse></material></visual>
+        <collision name='collision'><geometry><cylinder><length>0.15</length><radius>0.3</radius></cylinder></geometry>
+          <surface><friction><ode><mu>0.5</mu><mu2>1.0</mu2><fdir1>0 0 1</fdir1></ode></friction></surface></collision>
+      </link>
+
+
+      <link name='rear_right_wheel'>
+        <pose>-0.957138 -0.625029 -0.025 -1.5707 0 0</pose>
+        <inertial><mass>2</mass><inertia>
+          <ixx>0.145833</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>0.145833</iyy><iyz>0</iyz><izz>0.125</izz></inertia></inertial>
+        <visual name='visual'><geometry><cylinder><length>0.15</length><radius>0.3</radius></cylinder></geometry>
+          <material><ambient>0.15 0.15 0.15 1</ambient><diffuse>0.15 0.15 0.15 1</diffuse></material></visual>
+        <collision name='collision'><geometry><cylinder><length>0.15</length><radius>0.3</radius></cylinder></geometry>
+          <surface><friction><ode><mu>0.5</mu><mu2>1.0</mu2><fdir1>0 0 1</fdir1></ode></friction></surface></collision>
+      </link>
+
+
+      <link name='front_left_wheel_steering_link'>
+        <pose>0.554283 0.5 0.02 0 0 0</pose>
+        <inertial><mass>0.5</mass><inertia>
+          <ixx>0.0153</ixx><iyy>0.025</iyy><izz>0.0153</izz></inertia></inertial>
+        <visual name='v'><geometry><cylinder><length>0.1</length><radius>0.03</radius></cylinder></geometry>
+          <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse></material></visual>
+      </link>
+
+
+      <link name='front_right_wheel_steering_link'>
+        <pose>0.554283 -0.5 0.02 0 0 0</pose>
+        <inertial><mass>0.5</mass><inertia>
+          <ixx>0.0153</ixx><iyy>0.025</iyy><izz>0.0153</izz></inertia></inertial>
+        <visual name='v'><geometry><cylinder><length>0.1</length><radius>0.03</radius></cylinder></geometry>
+          <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse></material></visual>
+      </link>
+
+      <joint name='front_left_wheel_steering_joint' type='revolute'>
+        <child>front_left_wheel_steering_link</child><parent>chassis</parent>
+        <axis><xyz>0 0 1</xyz><limit><lower>-0.6</lower><upper>0.6</upper><velocity>1.0</velocity><effort>25</effort></limit><use_parent_model_frame>1</use_parent_model_frame></axis>
+      </joint>
+      <joint name='front_right_wheel_steering_joint' type='revolute'>
+        <parent>chassis</parent><child>front_right_wheel_steering_link</child>
+        <axis><xyz>0 0 1</xyz><limit><lower>-0.6</lower><upper>0.6</upper><velocity>1.0</velocity><effort>25</effort></limit></axis>
+      </joint>
+      <joint name='front_left_wheel_joint' type='revolute'>
+        <parent>front_left_wheel_steering_link</parent><child>front_left_wheel</child>
+        <axis><xyz>0 0 1</xyz></axis>
+      </joint>
+      <joint name='front_right_wheel_joint' type='revolute'>
+        <parent>front_right_wheel_steering_link</parent><child>front_right_wheel</child>
+        <axis><xyz>0 0 1</xyz></axis>
+      </joint>
+      <joint name='rear_left_wheel_joint' type='revolute'>
+        <parent>chassis</parent><child>rear_left_wheel</child>
+        <axis><xyz>0 0 1</xyz></axis>
+      </joint>
+      <joint name='rear_right_wheel_joint' type='revolute'>
+        <parent>chassis</parent><child>rear_right_wheel</child>
+        <axis><xyz>0 0 1</xyz></axis>
+      </joint>
+
+      <plugin filename="ignition-gazebo-ackermann-steering-system" name="gz::sim::systems::AckermannSteering">
+        <left_joint>front_left_wheel_joint</left_joint>
+        <left_joint>rear_left_wheel_joint</left_joint>
+        <right_joint>front_right_wheel_joint</right_joint>
+        <right_joint>rear_right_wheel_joint</right_joint>
+        <left_steering_joint>front_left_wheel_steering_joint</left_steering_joint>
+        <right_steering_joint>front_right_wheel_steering_joint</right_steering_joint>
+        <kingpin_width>1.0</kingpin_width>
+        <steering_limit>0.5</steering_limit>
+        <wheel_base>1.0</wheel_base>
+        <wheel_separation>1.25</wheel_separation>
+        <wheel_radius>0.3</wheel_radius>
+        <min_velocity>-1</min_velocity>
+        <max_velocity>1</max_velocity>
+        <min_acceleration>-3</min_acceleration>
+        <max_acceleration>3</max_acceleration>
+      </plugin>
+      <plugin filename="libTrajDrive.so" name="traj_drive::TrajDrive">
+        <link>chassis</link><speed>0.6</speed><kp>1.5</kp><lookahead>2.0</lookahead><loop>true</loop>
+        <waypoint>5.4 -5.4 0</waypoint>
+        <waypoint>5.4 4.0 0</waypoint>
+      </plugin>
+    </model>
+</world>
+</sdf>
