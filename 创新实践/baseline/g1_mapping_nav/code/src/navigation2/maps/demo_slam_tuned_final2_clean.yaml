@@ -1,1 +1,7 @@
-image: demo_slam_tuned_final2_clean.pgm\nmode: trinary\nresolution: 0.05\norigin: [-11.3, -12.6, 0]\nnegate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n
+image: demo_slam_tuned_final2_clean.pgm
+mode: trinary
+resolution: 0.05
+origin: [-11.3, -12.6, 0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.25
