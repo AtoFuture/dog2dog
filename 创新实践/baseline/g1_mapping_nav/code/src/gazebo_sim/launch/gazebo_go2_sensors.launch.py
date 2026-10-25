@@ -7,7 +7,8 @@ from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
     GroupAction,
-    RegisterEventHandler
+    RegisterEventHandler,
+    TimerAction,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -49,10 +50,8 @@ def generate_launch_description():
 
     # ---------- 多机器人全局话题重映射 ----------
     remappings=[
-            # NOTE(2026-10-07): /tf 与 /tf_static 不再做命名空间重映射。
-            # TF 必须发布到全局 /tf：tf2_echo / view_frames / Nav2(tf2_ros) 都监听全局 /tf。
-            # 旧的 ("/tf","tf") 会把整个 TF 树关进 /robot1/tf，导致 Nav2 与所有诊断工具都看不到 TF。
-            # 多机器人场景应使用 frame 前缀，而不是给 /tf 加命名空间。
+            ("/tf", "tf"),
+            ("/tf_static", "tf_static"),
             ("/scan", "scan"),
             ("/odom", "odometry/filtered")
         ]
@@ -154,8 +153,12 @@ def generate_launch_description():
             executable='spawner',
             namespace=namespace,
             name='joint_state_broadcaster',
-            arguments=['joint_state_broadcaster',
-                       '--controller-manager-timeout', '120'],
+            arguments=[
+                'joint_state_broadcaster',
+                '--controller-manager-timeout', '60',
+                '--service-call-timeout', '60',
+                '--switch-timeout', '60',
+            ],
             output='screen',
             remappings=remappings
         )
@@ -165,8 +168,12 @@ def generate_launch_description():
             executable='spawner',
             namespace=namespace,
             name='joint_group_controller',
-            arguments=['joint_group_controller',
-                       '--controller-manager-timeout', '120'],
+            arguments=[
+                'joint_group_controller',
+                '--controller-manager-timeout', '60',
+                '--service-call-timeout', '60',
+                '--switch-timeout', '60',
+            ],
             output='screen',
             remappings=remappings
         )
@@ -196,21 +203,7 @@ def generate_launch_description():
                 'base_frame_id': "base_link",
                 'odom_frame_id': "odom",
                 'clock_topic': f'/clock',
-                # ── 2026-09-25 双发布修复（默认不动，需显式开关）──────────────
-                # 同一个 launch 里还起了 ekf_filter_node（ekf.yaml 的 publish_tf: true），
-                # 于是 odom→base_link 有**两个发布者**：本节点和 EKF。两者姿态不一致
-                # （G3 只读诊断实测 yaw 相差约 142.7°），TF 在两个姿态间跳变，
-                # AMCL / costmap 每次拿到哪一个不确定。
-                #
-                # 设 G1_SINGLE_ODOM_TF=1 时关掉本节点的 TF，让 EKF 独占
-                # odom→base_link：EKF 融了 IMU，而出问题的正是足端里程计的偏航。
-                # 本节点仍照常发 /robot1/odom 话题（EKF 的 odom0 还要吃它），只是不发 TF。
-                #
-                # 和 GZ_HEADLESS 一个套路：不设 = 与上游一字不差，不影响别人。
-                # NOTE(2026-10-07): TF 唯一发布者 = EKF（ekf.yaml publish_tf: true）。
-                # 本节点默认不发 TF，彻底消除"双发布"与"无人发布"两种非法状态。
-                # 若要改回由本节点发布：设 G1_ODOM_NODE_TF=1，并把 ekf.yaml 的 publish_tf 改回 false。
-                'enable_odom_tf': os.environ.get('G1_ODOM_NODE_TF', '0') == '1',
+                'enable_odom_tf': False,
             }],
             remappings=remappings
         )
@@ -257,13 +250,15 @@ def generate_launch_description():
             {'use_sim_time': use_sim_time}],
             remappings=remappings)
 
+        controller_spawners = TimerAction(
+            period=30.0,
+            actions=[joint_state_broadcaster, joint_group_controller],
+        )
+
         robot_control = GroupAction([
-            # NOTE(2026-10-07): 移除组级 /tf、/tf_static 重映射。
-            # 这两行会把组内所有子节点（含 EKF）的 TF 重新关回 /robot1/tf，
-            # 是 Nav2 / tf2_echo 看不到 TF 的真正原因（比 remappings 列表更隐蔽）。
-            # EKF 现为 odom->base_link 的唯一发布者，必须发到全局 /tf。
-            joint_state_broadcaster,
-            joint_group_controller,
+            SetRemap(src="/tf", dst="tf"),
+            SetRemap(src="/tf_static", dst="tf_static"),
+            controller_spawners,
             controller,
             cmd_vel_pub,
             odom,
